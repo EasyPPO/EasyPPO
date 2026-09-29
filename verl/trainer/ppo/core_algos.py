@@ -2092,6 +2092,7 @@ def compute_value_loss(
     batch_num_tokens: Optional[int] = None,
     global_batch_size: Optional[int] = None,
     loss_scale_factor: Optional[int] = None,
+    loss_weights: Optional[torch.Tensor] = None,
 ):
     """
     Compute the clipped value-function loss for PPO.
@@ -2120,6 +2121,9 @@ def compute_value_loss(
             Global batch size, forwarded to `agg_loss` for the seq-mean modes. Defaults to None.
         loss_scale_factor (Optional[int], optional):
             Scale factor for the "seq-mean-token-sum-norm" mode, forwarded to `agg_loss`. Defaults to None.
+        loss_weights (Optional[torch.Tensor], optional):
+            Per-response weights, shaped (batch_size,) or (batch_size, 1). Multiply the
+            numerator while retaining the original global token/sequence denominator.
 
     Returns:
         vf_loss (torch.FloatTensor):
@@ -2131,6 +2135,12 @@ def compute_value_loss(
     vf_losses1 = (vpreds - returns) ** 2
     vf_losses2 = (vpredclipped - returns) ** 2
     clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
+    if loss_weights is not None:
+        if loss_weights.ndim == 1:
+            loss_weights = loss_weights.unsqueeze(-1)
+        if loss_weights.shape != (clipped_vf_losses.shape[0], 1):
+            raise ValueError("loss_weights must have shape (batch_size,) or (batch_size, 1)")
+        clipped_vf_losses = clipped_vf_losses * loss_weights.to(clipped_vf_losses)
     vf_loss = 0.5 * agg_loss(
         loss_mat=clipped_vf_losses,
         loss_mask=response_mask,
@@ -2506,3 +2516,119 @@ def compute_policy_loss_bypass_mode(
     pg_metrics.update(rollout_metrics)
 
     return pg_loss, pg_metrics
+
+
+def compute_prompt_variance_loss_weights(
+    sequence_rewards: torch.Tensor,
+    sample_uids: np.ndarray | list[Any],
+    beta: float = 1.0,
+    w_min: float = 0.02,
+    valid_mask: Optional[torch.Tensor] = None,
+    w_max: Optional[float] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-sequence inverse-variance weights from same-prompt rollout rewards.
+
+    The empirical variance uses the population convention (correction=0). Every rollout from the
+    same prompt first receives ``1 / max(variance**beta, w_min)``. The weights are then divided by
+    their mean across unique prompts so they preserve the unweighted critic loss scale. If ``w_max``
+    is set, the normalized weights are finally clipped to that maximum without renormalizing.
+    Rows excluded by ``valid_mask`` receive zero weight and do not affect prompt statistics.
+    """
+    if sequence_rewards.ndim != 1:
+        raise ValueError(f"sequence_rewards must be one-dimensional, got {tuple(sequence_rewards.shape)}")
+    if beta < 0:
+        raise ValueError(f"beta must be non-negative, got {beta}")
+    if w_min <= 0:
+        raise ValueError(f"w_min must be positive, got {w_min}")
+    if w_max is not None and w_max <= 0:
+        raise ValueError(f"w_max must be positive or None, got {w_max}")
+
+    sample_uids = np.asarray(sample_uids, dtype=object)
+    if sample_uids.ndim != 1 or sample_uids.shape[0] != sequence_rewards.numel():
+        raise ValueError(
+            "sample_uids must be one-dimensional and match sequence_rewards: "
+            f"got shape {sample_uids.shape} for {sequence_rewards.numel()} rewards"
+        )
+
+    if valid_mask is None:
+        valid_mask = torch.ones_like(sequence_rewards, dtype=torch.bool)
+    else:
+        if valid_mask.ndim != 1 or valid_mask.numel() != sequence_rewards.numel():
+            raise ValueError(
+                "valid_mask must be one-dimensional and match sequence_rewards: "
+                f"got shape {tuple(valid_mask.shape)} for {sequence_rewards.numel()} rewards"
+            )
+        valid_mask = valid_mask.to(device=sequence_rewards.device, dtype=torch.bool)
+
+    weights = torch.zeros_like(sequence_rewards, dtype=torch.float32)
+    variances = torch.zeros_like(sequence_rewards, dtype=torch.float32)
+    uid_to_indices: dict[Any, list[int]] = defaultdict(list)
+    for index, sample_uid in enumerate(sample_uids.tolist()):
+        if valid_mask[index]:
+            uid_to_indices[sample_uid].append(index)
+
+    if not uid_to_indices:
+        raise ValueError("sequence_rewards contains no valid rows")
+
+    detached_rewards = sequence_rewards.detach().float()
+    prompt_weights = []
+    for indices in uid_to_indices.values():
+        index_tensor = torch.tensor(indices, device=sequence_rewards.device, dtype=torch.long)
+        prompt_rewards = detached_rewards[index_tensor]
+        prompt_variance = torch.var(prompt_rewards, correction=0)
+        variance_scale = torch.clamp(prompt_variance.pow(beta), min=w_min)
+        prompt_weight = variance_scale.reciprocal()
+        prompt_weights.append(prompt_weight)
+        weights[index_tensor] = prompt_weight
+        variances[index_tensor] = prompt_variance
+
+    weights /= torch.stack(prompt_weights).mean()
+    if w_max is not None:
+        weights.clamp_(max=w_max)
+    return weights, variances
+
+
+def compute_prompt_variance_topk_shares(
+    reward_variances: torch.Tensor,
+    sample_uids: np.ndarray | list[Any],
+    topk: tuple[int, ...] = (1, 2, 3),
+) -> dict[int, torch.Tensor]:
+    """Return cumulative top-k prompt-variance shares over unique prompts.
+
+    ``reward_variances`` contains one value per trajectory, so trajectories from the same prompt
+    are deduplicated before computing each cumulative share. A zero-variance batch returns zero for
+    every requested ``k``.
+    """
+    if reward_variances.ndim != 1:
+        raise ValueError(f"reward_variances must be one-dimensional, got {tuple(reward_variances.shape)}")
+    if not topk or any(k <= 0 for k in topk):
+        raise ValueError(f"topk must contain positive integers, got {topk}")
+
+    sample_uids = np.asarray(sample_uids, dtype=object)
+    if sample_uids.ndim != 1 or sample_uids.shape[0] != reward_variances.numel():
+        raise ValueError(
+            "sample_uids must be one-dimensional and match reward_variances: "
+            f"got shape {sample_uids.shape} for {reward_variances.numel()} variances"
+        )
+
+    uid_to_variance: dict[Any, torch.Tensor] = {}
+    detached_variances = reward_variances.detach().float()
+    for index, sample_uid in enumerate(sample_uids.tolist()):
+        variance = detached_variances[index]
+        if sample_uid in uid_to_variance:
+            if not torch.isclose(uid_to_variance[sample_uid], variance):
+                raise ValueError(f"Inconsistent reward variances within prompt {sample_uid!r}")
+        else:
+            uid_to_variance[sample_uid] = variance
+
+    if not uid_to_variance:
+        raise ValueError("reward_variances and sample_uids must not be empty")
+
+    prompt_variances = torch.stack(list(uid_to_variance.values()))
+    total_variance = prompt_variances.sum()
+    if total_variance <= 0:
+        zero = total_variance.new_zeros(())
+        return {k: zero for k in topk}
+
+    sorted_variances = torch.sort(prompt_variances, descending=True).values
+    return {k: sorted_variances[: min(k, sorted_variances.numel())].sum() / total_variance for k in topk}

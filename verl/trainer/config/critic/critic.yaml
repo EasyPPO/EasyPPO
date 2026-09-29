@@ -60,6 +60,18 @@ data_loader_seed: 42
 # PPO value function clipping range
 cliprange_value: 0.5
 
+# EasyPPO: inverse prompt return-STD weighting; opt-in for upstream recipes.
+variance_weighted_loss: false
+
+# Population variance exponent: 0.5 means inverse STD.
+variance_weight_beta: 0.5
+
+# Return-STD floor (AIME rewards are -1/+1).
+variance_weight_min: 0.25
+
+# Optional cap after normalization; unused by the paper recipe.
+variance_weight_max: null
+
 # Loss aggregation mode: "token-mean", "seq-mean-token-sum", or "seq-mean-token-mean"
 loss_agg_mode: ${oc.select:actor_rollout_ref.actor.loss_agg_mode,token-mean}
 

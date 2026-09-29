@@ -39,6 +39,9 @@ class MetricsAggregator:
             "sum": [
                 "training/off_policy/dropped_samples",
                 "validation/off_policy/dropped_samples",
+                "training/overlong_response_filter/total",
+                "training/overlong_response_filter/kept",
+                "training/overlong_response_filter/dropped",
             ],
             "last": [
                 "training/global_step",
@@ -121,6 +124,13 @@ class MetricsAggregator:
         """Recompute derived metrics that cannot be reduced from their per-iteration values."""
         if {"global_seqlen/minmax_diff", "global_seqlen/max", "global_seqlen/min"}.issubset(aggregated):
             aggregated["global_seqlen/minmax_diff"] = aggregated["global_seqlen/max"] - aggregated["global_seqlen/min"]
+
+        total_key = "training/overlong_response_filter/total"
+        dropped_key = "training/overlong_response_filter/dropped"
+        ratio_key = "training/overlong_response_filter/drop_ratio"
+        if total_key in aggregated and dropped_key in aggregated:
+            total = aggregated[total_key]
+            aggregated[ratio_key] = aggregated[dropped_key] / total if total > 0 else 0.0
 
         return aggregated
 

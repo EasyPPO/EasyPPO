@@ -135,6 +135,131 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
+def _overlong_response_metrics(prefix: str, kept_count: int, dropped_count: int) -> dict[str, float]:
+    total_count = kept_count + dropped_count
+    drop_ratio = dropped_count / total_count if total_count > 0 else 0.0
+    return {
+        f"{prefix}/overlong_response_filter/total": total_count,
+        f"{prefix}/overlong_response_filter/kept": kept_count,
+        f"{prefix}/overlong_response_filter/dropped": dropped_count,
+        f"{prefix}/overlong_response_filter/drop_ratio": drop_ratio,
+    }
+
+
+def set_initial_response_clip_ratio(
+    data_metrics: dict[str, Any],
+    filter_metrics: dict[str, Any],
+    metrics_prefix: str = "training",
+) -> dict[str, Any]:
+    """Use the pre-filter overlong fraction for the canonical response clip ratio metric."""
+    total = filter_metrics.get(f"{metrics_prefix}/overlong_response_filter/total")
+    dropped = filter_metrics.get(f"{metrics_prefix}/overlong_response_filter/dropped")
+    if total is not None and dropped is not None:
+        data_metrics["response_length/clip_ratio"] = float(dropped / total) if total > 0 else 0.0
+    return data_metrics
+
+
+def compute_overlong_response_mask(data: DataProto, max_response_length: int) -> torch.Tensor:
+    """Return a per-sample mask for responses that hit the rollout response length limit."""
+    if "response_mask" not in data.batch:
+        data.batch["response_mask"] = compute_response_mask(data)
+    response_lengths = data.batch["response_mask"].sum(dim=-1)
+    return response_lengths == max_response_length
+
+
+def mask_overlong_response_rows(data: DataProto) -> DataProto:
+    """Zero actor/critic loss masks for rows previously marked as overlong."""
+    if "overlong_filtered" not in data.batch:
+        return data
+
+    keep_token_mask = (~data.batch["overlong_filtered"].bool()).unsqueeze(-1)
+    data.batch["response_mask"] = data.batch["response_mask"] * keep_token_mask
+    if "loss_mask" in data.batch:
+        data.batch["loss_mask"] = data.batch["loss_mask"] * keep_token_mask
+    return data
+
+
+def filter_overlong_responses(
+    data: DataProto,
+    enabled: bool,
+    max_response_length: int,
+    metrics_prefix: str = "training",
+    mask_dropped_rows: bool = True,
+) -> tuple[DataProto, dict[str, float]]:
+    """Mark max-length rollout responses and optionally mask them immediately.
+
+    Validation code paths should not call this helper. Keeping the rows avoids
+    changing PPO mini-batch cardinality after rollout. Full filtering masks rows
+    here; actor-only filtering defers masking until after the critic update.
+    """
+    if not enabled or metrics_prefix != "training":
+        return data, {}
+
+    overlong_mask = compute_overlong_response_mask(data, max_response_length=max_response_length)
+    keep_mask = ~overlong_mask
+    kept_count = int(keep_mask.sum().item())
+    dropped_count = int(overlong_mask.sum().item())
+    metrics = _overlong_response_metrics(metrics_prefix, kept_count=kept_count, dropped_count=dropped_count)
+    if dropped_count == 0:
+        return data, metrics
+    if kept_count == 0:
+        raise ValueError(
+            "Overlong response filtering removed every training sample in the batch; "
+            "increase the sampled batch size or max_response_length."
+        )
+
+    data.batch["overlong_filtered"] = overlong_mask
+    if mask_dropped_rows:
+        mask_overlong_response_rows(data)
+    return data, metrics
+
+
+def filter_overlong_response_kv_batch(
+    batch,
+    enabled: bool,
+    max_response_length: int,
+    metrics_prefix: str = "training",
+    mask_dropped_fn=None,
+):
+    """Mask max-length KVBatchMeta rows while preserving batch keys and cardinality."""
+    if not enabled or metrics_prefix != "training":
+        return batch, {}
+
+    kept_keys, dropped_keys, updated_tags = [], [], []
+    for key, original_tag in zip(batch.keys, batch.tags, strict=True):
+        tag = dict(original_tag)
+        response_len = tag.get("response_len")
+        if response_len is None:
+            raise ValueError(f"Overlong response filtering requires response_len in the rollout tag for key {key!r}")
+        is_overlong = response_len >= max_response_length
+        tag["overlong_filtered"] = is_overlong
+        updated_tags.append(tag)
+        if is_overlong:
+            dropped_keys.append(key)
+        else:
+            kept_keys.append(key)
+
+    kept_count = len(kept_keys)
+    dropped_count = len(dropped_keys)
+    metrics = _overlong_response_metrics(metrics_prefix, kept_count=kept_count, dropped_count=dropped_count)
+    if dropped_count == 0:
+        return batch, metrics
+    if kept_count == 0:
+        raise ValueError(
+            "Overlong response filtering removed every training sample in the batch; "
+            "increase the sampled batch size or max_response_length."
+        )
+    if mask_dropped_fn is not None:
+        mask_dropped_fn(keys=dropped_keys, partition_id=batch.partition_id)
+    return type(batch)(
+        keys=list(batch.keys),
+        tags=updated_tags,
+        partition_id=batch.partition_id,
+        fields=getattr(batch, "fields", None),
+        extra_info=getattr(batch, "extra_info", None) or {},
+    ), metrics
+
+
 def compute_spec_decode_metrics(
     spec_drafts,
     spec_accepts,
@@ -1339,6 +1464,41 @@ class RayPPOTrainer:
         return actor_output
 
     def _update_critic(self, batch: DataProto) -> DataProto:
+        variance_weight_metrics = {}
+        if self.config.critic.variance_weighted_loss:
+            if "uid" not in batch.non_tensor_batch:
+                raise ValueError("variance_weighted_loss requires uid in the critic batch")
+            sequence_rewards = batch.batch["token_level_scores"].sum(dim=-1)
+            valid_rows = batch.batch["response_mask"].bool().any(dim=-1)
+            sample_uids = np.asarray(batch.non_tensor_batch["uid"], dtype=object)
+            loss_weights, reward_variances = core_algos.compute_prompt_variance_loss_weights(
+                sequence_rewards=sequence_rewards,
+                sample_uids=sample_uids,
+                beta=self.config.critic.variance_weight_beta,
+                w_min=self.config.critic.variance_weight_min,
+                w_max=self.config.critic.variance_weight_max,
+                valid_mask=valid_rows,
+            )
+            valid_uids = sample_uids[valid_rows.cpu().numpy()]
+            valid_reward_variances = reward_variances[valid_rows]
+            valid_loss_weights = loss_weights[valid_rows]
+            variance_topk_shares = core_algos.compute_prompt_variance_topk_shares(
+                reward_variances=valid_reward_variances,
+                sample_uids=valid_uids,
+            )
+            batch.batch["critic_loss_weights"] = loss_weights
+            variance_weight_metrics = {
+                "critic/reward_variance/mean": [valid_reward_variances.mean().item()],
+                "critic/reward_variance/max": [valid_reward_variances.max().item()],
+                "critic/reward_variance/min": [valid_reward_variances.min().item()],
+                "training/critic_reward_variance/top1_percent": [100.0 * variance_topk_shares[1].item()],
+                "training/critic_reward_variance/top2_percent": [100.0 * variance_topk_shares[2].item()],
+                "training/critic_reward_variance/top3_percent": [100.0 * variance_topk_shares[3].item()],
+                "critic/variance_weight/mean": [valid_loss_weights.mean().item()],
+                "critic/variance_weight/max": [valid_loss_weights.max().item()],
+                "critic/variance_weight/min": [valid_loss_weights.min().item()],
+            }
+
         batch_td = batch.to_tensordict()
         # step 2: convert from padding to no-padding
         batch_td = left_right_2_no_padding(batch_td)
@@ -1360,6 +1520,7 @@ class RayPPOTrainer:
         output = output.get()
         output = tu.get(output, "metrics")
         output = rename_dict(output, "critic/")
+        output.update(variance_weight_metrics)
         # modify key name
         output["perf/mfu/critic"] = output.pop("critic/mfu")
         critic_output = DataProto.from_single_dict(data={}, meta_info={"metrics": output})
@@ -1505,6 +1666,14 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
+                    batch, overlong_filter_metrics = filter_overlong_responses(
+                        batch,
+                        enabled=self.config.data.get("filter_overlong_responses", False),
+                        max_response_length=self.config.actor_rollout_ref.rollout.response_length,
+                        metrics_prefix="training",
+                        mask_dropped_rows=self.config.data.get("filter_overlong_responses_critic", False),
+                    )
+                    metrics.update(overlong_filter_metrics)
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
@@ -1648,6 +1817,13 @@ class RayPPOTrainer:
                         # Still in critic warmup, only update weights to wake up rollout replicas.
                         self.checkpoint_manager.update_weights(self.global_steps)
                     else:
+                        # Actor-only filtering keeps full trajectories for value/return
+                        # computation and the critic update, then masks them for policy loss.
+                        if self.config.data.get("filter_overlong_responses", False) and not self.config.data.get(
+                            "filter_overlong_responses_critic", False
+                        ):
+                            mask_overlong_response_rows(batch)
+
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             actor_output = self._update_actor(batch)
@@ -1721,7 +1897,8 @@ class RayPPOTrainer:
                     }
                 )
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                data_metrics = compute_data_metrics(batch=batch, use_critic=self.use_critic)
+                metrics.update(set_initial_response_clip_ratio(data_metrics, metrics))
                 # GDPO per-component reward metrics
                 gdpo_reward_keys = self.config.algorithm.get("gdpo_reward_keys", None)
                 if gdpo_reward_keys and self.config.algorithm.adv_estimator in ("gdpo", AdvantageEstimator.GDPO):

@@ -6,7 +6,7 @@ the ROCm software stack**. The NVIDIA images described in
 [`Dockerfile.rocm`](Dockerfile.rocm) instead.
 
 For an end-to-end walkthrough (build, run, and example PPO/GRPO commands), see
-the tutorial: [`docs/amd_tutorial/amd_build_dockerfile_page.rst`](../../docs/amd_tutorial/amd_build_dockerfile_page.rst).
+the tutorial: [`docs/amd_tutorial/amd_build_dockerfile_page.rst`](https://github.com/verl-project/verl/blob/bc67cf11389fcdbe867376e425362ca322e59fc8/docs/amd_tutorial/amd_build_dockerfile_page.rst).
 
 > The other `Dockerfile.rocm*` / `Apptainerfile.rocm` files in this directory are
 > kept only as historical references for older verl releases (ROCm 6.x, pinned

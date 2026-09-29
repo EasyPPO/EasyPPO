@@ -59,7 +59,11 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.padding_utils import upsample_batch_to_divisible_size
-from verl.trainer.ppo.ray_trainer import apply_kl_penalty, compute_spec_decode_metrics
+from verl.trainer.ppo.ray_trainer import (
+    apply_kl_penalty,
+    compute_spec_decode_metrics,
+    filter_overlong_response_kv_batch,
+)
 from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_add_to_batch
 from verl.trainer.ppo.utils import (
     Role,
@@ -96,6 +100,18 @@ def apply_greedy_sampling_params(params: dict[str, Any]) -> None:
     params["top_p"] = 1.0
     params["top_k"] = -1
     params["temperature"] = 0
+
+
+def mask_overlong_response_keys(keys: list[str], partition_id: str) -> None:
+    """Zero PPO numerator and normalization masks without clearing TransferQueue rows."""
+    data = tq.kv_batch_get(
+        keys=keys,
+        partition_id=partition_id,
+        select_fields=["response_mask", "loss_mask"],
+    )
+    data["response_mask"] = data["response_mask"] * 0
+    data["loss_mask"] = data["loss_mask"] * 0
+    tq.kv_batch_put(keys=keys, partition_id=partition_id, fields=data)
 
 
 logger = logging.getLogger(__name__)
@@ -453,6 +469,25 @@ class PPOTrainer(ABC):
                 batch_size=sample_batch_size,
             )
             metrics.update(off_policy_metrics)
+            actor_only_overlong_filter = self.config.data.get(
+                "filter_overlong_responses", False
+            ) and not self.config.data.get("filter_overlong_responses_critic", False)
+            batch, overlong_filter_metrics = filter_overlong_response_kv_batch(
+                batch,
+                enabled=self.config.data.get("filter_overlong_responses", False),
+                max_response_length=self.config.actor_rollout_ref.rollout.response_length,
+                metrics_prefix="training",
+                mask_dropped_fn=None if actor_only_overlong_filter else mask_overlong_response_keys,
+            )
+            metrics.update(overlong_filter_metrics)
+            # TransferQueue field writes return fresh metadata with persisted tags,
+            # which do not include the local overlong_filtered annotations. Keep
+            # stable keys across log-prob/advantage writes and DP batch reordering.
+            overlong_keys = []
+            if actor_only_overlong_filter:
+                overlong_keys = [
+                    key for key, tag in zip(batch.keys, batch.tags, strict=True) if tag.get("overlong_filtered", False)
+                ]
             batch.extra_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
             self.on_sample_end()
 
@@ -488,9 +523,21 @@ class PPOTrainer(ABC):
                 batch = self._update_critic(batch, metrics=metrics)
 
         # 9. update actor
+        saved_actor_masks = None
         if self.config.trainer.critic_warmup <= self.global_steps:
+            if overlong_keys:
+                saved_actor_masks = tq.kv_batch_get(
+                    keys=overlong_keys,
+                    partition_id=batch.partition_id,
+                    select_fields=["response_mask", "loss_mask"],
+                ).clone()
+                mask_overlong_response_keys(keys=overlong_keys, partition_id=batch.partition_id)
             with marked_timer("update_actor", timing_raw, color="red"):
-                batch = self._update_actor(batch, metrics=metrics)
+                try:
+                    batch = self._update_actor(batch, metrics=metrics)
+                finally:
+                    if saved_actor_masks is not None:
+                        tq.kv_batch_put(keys=overlong_keys, partition_id=batch.partition_id, fields=saved_actor_masks)
 
         return batch
 
@@ -547,6 +594,22 @@ class PPOTrainer(ABC):
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         # Used for multimodal LLM, could be None
         self.processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
+
+        # Keep V1 dataset preprocessing consistent with HFModelConfig. Some base
+        # models only define the chat template on the tokenizer, while
+        # ProcessorMixin.apply_chat_template() reads processor.chat_template.
+        custom_chat_template = self.config.actor_rollout_ref.model.get("custom_chat_template", None)
+        if custom_chat_template is not None:
+            if self.processor is not None:
+                self.processor.chat_template = custom_chat_template
+            else:
+                self.tokenizer.chat_template = custom_chat_template
+        elif (
+            self.processor is not None
+            and not getattr(self.processor, "chat_template", None)
+            and getattr(self.tokenizer, "chat_template", None)
+        ):
+            self.processor.chat_template = self.tokenizer.chat_template
 
     def _init_dataloader(self):
         """Initialize train and validate dataloader."""
@@ -862,8 +925,14 @@ class PPOTrainer(ABC):
 
             extra_fields_list = data.pop("extra_fields", None)
             if extra_fields_list is not None:
-                n_prior = len(reward_extra_infos_dict["reward"]) - len(extra_fields_list.tolist())
-                for extra_field in extra_fields_list.tolist():
+                # TensorDict.pop may return a wrapped NonTensorStack, while other
+                # backends return a plain list/LinkedList. Unwrap before reading dicts.
+                if hasattr(extra_fields_list, "tolist"):
+                    extra_fields_list = extra_fields_list.tolist()
+                else:
+                    extra_fields_list = list(extra_fields_list)
+                n_prior = len(reward_extra_infos_dict["reward"]) - len(extra_fields_list)
+                for extra_field in extra_fields_list:
                     reward_extra_info = (
                         extra_field.get("reward_extra_info", {}) if isinstance(extra_field, dict) else {}
                     )
@@ -878,7 +947,7 @@ class PPOTrainer(ABC):
 
             reward_model = data.pop("reward_model", None)
             if reward_model is not None:
-                sample_gts.extend([item.get("ground_truth", None) for item in reward_model.tolist()])
+                sample_gts.extend([item.get("ground_truth", None) for item in list(reward_model)])
             else:
                 sample_gts.extend([None] * len(final_indices))
 
@@ -1040,7 +1109,7 @@ class PPOTrainer(ABC):
 
             reward_model = data.pop("reward_model", None)
             if reward_model is not None:
-                gts = [item.get("ground_truth", None) for item in reward_model.tolist()]
+                gts = [item.get("ground_truth", None) for item in list(reward_model)]
             else:
                 gts = [None] * len(uids)
 
@@ -1392,6 +1461,40 @@ class PPOTrainer(ABC):
         data.batch["token_level_scores"] = data.batch["rm_scores"]
         data.non_tensor_batch["uid"] = np.array(data.batch.pop("uid").tolist(), dtype=object)
 
+        if self.config.critic.variance_weighted_loss:
+            sequence_rewards = data.batch["token_level_scores"].sum(dim=-1)
+            valid_rows = data.batch["response_mask"].bool().any(dim=-1)
+            sample_uids = np.asarray(data.non_tensor_batch["uid"], dtype=object)
+            loss_weights, reward_variances = core_algos.compute_prompt_variance_loss_weights(
+                sequence_rewards=sequence_rewards,
+                sample_uids=sample_uids,
+                beta=self.config.critic.variance_weight_beta,
+                w_min=self.config.critic.variance_weight_min,
+                w_max=self.config.critic.variance_weight_max,
+                valid_mask=valid_rows,
+            )
+            valid_uids = sample_uids[valid_rows.cpu().numpy()]
+            valid_reward_variances = reward_variances[valid_rows]
+            valid_loss_weights = loss_weights[valid_rows]
+            variance_topk_shares = core_algos.compute_prompt_variance_topk_shares(
+                reward_variances=valid_reward_variances,
+                sample_uids=valid_uids,
+            )
+            data.batch["critic_loss_weights"] = loss_weights
+            metrics.update(
+                {
+                    "critic/reward_variance/mean": valid_reward_variances.mean().item(),
+                    "critic/reward_variance/max": valid_reward_variances.max().item(),
+                    "critic/reward_variance/min": valid_reward_variances.min().item(),
+                    "training/critic_reward_variance/top1_percent": 100.0 * variance_topk_shares[1].item(),
+                    "training/critic_reward_variance/top2_percent": 100.0 * variance_topk_shares[2].item(),
+                    "training/critic_reward_variance/top3_percent": 100.0 * variance_topk_shares[3].item(),
+                    "critic/variance_weight/mean": valid_loss_weights.mean().item(),
+                    "critic/variance_weight/max": valid_loss_weights.max().item(),
+                    "critic/variance_weight/min": valid_loss_weights.min().item(),
+                }
+            )
+
         # 1. apply kl penalty to rewards
         if self.config.algorithm.use_kl_in_reward:
             data, kl_metrics = apply_kl_penalty(
@@ -1437,6 +1540,8 @@ class PPOTrainer(ABC):
         output = {}
         for field in fields:
             output[field] = response_to_nested(data.batch[field], response_mask)
+        if self.config.critic.variance_weighted_loss:
+            output["critic_loss_weights"] = data.batch["critic_loss_weights"]
         output = TensorDict(output, batch_size=len(batch))
 
         batch = tq.kv_batch_put(keys=batch.keys, partition_id=batch.partition_id, fields=output)

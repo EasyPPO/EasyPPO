@@ -63,6 +63,10 @@ class CriticConfig(BaseConfig):
         ppo_epochs (int): Number of PPO epochs per batch.
         shuffle (bool): Shuffle training data across PPO epochs.
         cliprange_value (float): PPO value function clipping range.
+        variance_weighted_loss (bool): Enable inverse prompt return-STD critic weighting.
+        variance_weight_beta (float): Exponent of population return variance (0.5 for inverse STD).
+        variance_weight_min (float): Positive floor before taking the reciprocal.
+        variance_weight_max (Optional[float]): Optional cap after mean-one prompt normalization.
         loss_agg_mode (str): Loss aggregation mode.
         loss_scale_factor (Optional[int]): Scale factor for 'seq-mean-token-sum-norm' loss aggregation mode.
         checkpoint (Dict[str, Any]): Checkpoint configuration.
@@ -93,6 +97,11 @@ class CriticConfig(BaseConfig):
     data_loader_seed: int = 42
     shuffle: bool = True
     cliprange_value: float = 0.5
+    # EasyPPO: population reward variance ** 0.5 gives inverse standard deviation.
+    variance_weighted_loss: bool = False
+    variance_weight_beta: float = 0.5
+    variance_weight_min: float = 0.25
+    variance_weight_max: Optional[float] = None
     loss_agg_mode: str = "token-mean"
     loss_scale_factor: Optional[int] = None
     ppo_micro_batch_size: Optional[int] = None
@@ -105,6 +114,10 @@ class CriticConfig(BaseConfig):
     def __post_init__(self):
         """Validate critic configuration parameters."""
         assert self.strategy != MISSING
+        if self.variance_weight_beta < 0 or self.variance_weight_min <= 0:
+            raise ValueError("variance_weight_beta must be non-negative and variance_weight_min positive")
+        if self.variance_weight_max is not None and self.variance_weight_max <= 0:
+            raise ValueError("variance_weight_max must be positive or None")
 
         if not self.use_dynamic_bsz:
             self._check_mutually_exclusive(self.ppo_micro_batch_size, self.ppo_micro_batch_size_per_gpu, "critic")

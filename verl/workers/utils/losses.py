@@ -178,7 +178,12 @@ def value_loss(config: CriticConfig, model_output, data: TensorDict, dp_group=No
         metric_aggregation = AggregationType.MEAN
 
     # select fields and convert to padded tensor
-    data = data.select("values", "returns", "response_mask").to_padded_tensor()
+    fields = ["values", "returns", "response_mask"]
+    if config.variance_weighted_loss:
+        if "critic_loss_weights" not in data:
+            raise ValueError("variance_weighted_loss requires precomputed critic_loss_weights")
+        fields.append("critic_loss_weights")
+    data = data.select(*fields).to_padded_tensor()
     values = data["values"]
     returns = data["returns"]
     response_mask = data["response_mask"].to(bool)
@@ -194,6 +199,7 @@ def value_loss(config: CriticConfig, model_output, data: TensorDict, dp_group=No
         batch_num_tokens=batch_num_tokens,
         global_batch_size=global_batch_size,
         loss_scale_factor=config.loss_scale_factor,
+        loss_weights=data.get("critic_loss_weights"),
     )
 
     metrics = {

@@ -128,3 +128,9 @@ continuous_token:
 
 # Additional kwargs passed to multimodal processors/backends.
 mm_processor_kwargs: {}
+
+# Mark responses reaching the configured generation budget for loss masking.
+filter_overlong_responses: false
+
+# False keeps all critic targets; actor masking happens after the critic update.
+filter_overlong_responses_critic: false

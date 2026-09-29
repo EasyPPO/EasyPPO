@@ -476,6 +476,8 @@ data:
     enable: false
     model_family: auto
   mm_processor_kwargs: {}
+  filter_overlong_responses: false
+  filter_overlong_responses_critic: false
 critic:
   optim:
     _target_: verl.workers.config.VeOmniOptimizerConfig
@@ -546,6 +548,10 @@ critic:
   shuffle: ${oc.select:actor_rollout_ref.actor.shuffle,false}
   data_loader_seed: ${oc.select:actor_rollout_ref.actor.data_loader_seed,null}
   cliprange_value: 0.5
+  variance_weighted_loss: false
+  variance_weight_beta: 0.5
+  variance_weight_min: 0.25
+  variance_weight_max: null
   loss_agg_mode: ${oc.select:actor_rollout_ref.actor.loss_agg_mode,token-mean}
   loss_scale_factor: ${oc.select:actor_rollout_ref.actor.loss_scale_factor,null}
   checkpoint:
