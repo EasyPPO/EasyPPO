@@ -1,0 +1,11 @@
+# Reuse the published B200 environment; training source is mounted at runtime.
+FROM ghcr.io/easyppo/easyppo-b200:20260926@sha256:84b12174f44070e70db08b643e3ad1238c317673c50e7751c61e3709334ce2ad
+
+USER root
+WORKDIR /workspace/EasyPPO
+ENV PYTHONPATH=/workspace/EasyPPO
+LABEL org.opencontainers.image.source="https://github.com/EasyPPO/EasyPPO" \
+      org.opencontainers.image.description="EasyPPO AIME environment for NVIDIA B200 and Modal"
+
+ENTRYPOINT []
+CMD ["python3", "scripts/check_environment.py"]

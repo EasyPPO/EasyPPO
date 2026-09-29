@@ -1,0 +1,14 @@
+services:
+  easyppo:
+    image: ${EASYPPO_IMAGE:-ghcr.io/easyppo/easyppo-b200:20260926@sha256:84b12174f44070e70db08b643e3ad1238c317673c50e7751c61e3709334ce2ad}
+    working_dir: /workspace/EasyPPO
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace/EasyPPO
+    environment:
+      PYTHONPATH: /workspace/EasyPPO
+      PYTHONDONTWRITEBYTECODE: "1"
+    shm_size: 16gb
+    entrypoint: []
+    command: ["python3", "scripts/check_environment.py"]

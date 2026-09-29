@@ -1,0 +1,18 @@
+# Shared by b200.py (8 GPUs) and b200_32gpu.py (32 GPUs).
+# Public image: no REGISTRY_USERNAME or REGISTRY_PASSWORD is needed.
+image: ghcr.io/easyppo/easyppo-b200:20260926@sha256:84b12174f44070e70db08b643e3ad1238c317673c50e7751c61e3709334ce2ad
+
+# Absolute path where the current local checkout is uploaded in each container.
+source_root: /workspace/EasyPPO
+
+# Existing Modal Volume and its absolute mount path in each container.
+volume_name: easyppo
+volume_mount: /mnt/easyppo
+
+# Paths relative to volume_mount. Changing the mount moves all of these together.
+# model_dir must contain config.json, model weights, and tokenizer files.
+model_dir: EasyPPO/models/Qwen3.5-9B-Base
+# Each run writes to <volume_mount>/<output_dir>/<run-name>/.
+output_dir: outputs
+hf_cache_dir: cache/huggingface
+vllm_cache_dir: cache/vllm
