@@ -1,6 +1,12 @@
-# EasyPPO
+<p align="center">
+  <img src="assets/easyppo.png" width="200" alt="EasyPPO logo">
+</p>
 
-**EasyPPO: Stabilizing the Critic Is Key**
+<h2 align="center">EasyPPO: Stabilizing the Critic Is Key</h2>
+
+<p align="center">
+| <a href="https://easyppo.github.io/"><b>Webpage</b></a> | <a href="https://arxiv.org/pdf/2609.36802"><b>Paper</b></a> |
+</p>
 
 EasyPPO improves PPO training stability by addressing how the critic learns from
 truncated rollouts and noisy returns. It retains token-level GAE, the clipped PPO
@@ -20,15 +26,31 @@ EasyPPO combines three changes:
 
 ## Datasets
 
-| Dataset | Source |
-| --- | --- |
-| Search-R1 | [GitHub](https://github.com/PeterGriffinJin/Search-R1) |
-| FrontierSmith | [GitHub](https://github.com/FrontierCS/FrontierSmith) |
-| DAPO-Math-17k / AIME24 | [Training data](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17k) · [Evaluation data](https://huggingface.co/datasets/BytedTsinghua-SIA/AIME-2024) |
+### Search-R1
 
-The commands below use the DAPO-Math-17k and AIME24 files included in
-[`data/aime/`](data/aime/). For Search-R1 and FrontierSmith, follow the data and
-environment setup in their repositories.
+We train on **Natural Questions (NQ) and HotpotQA** using the
+[Search-R1](https://github.com/PeterGriffinJin/Search-R1) data and retrieval
+environment. Validation uses a subset of **NQ, TriviaQA, PopQA, HotpotQA,
+2WikiMultiHopQA, MuSiQue, and Bamboogle**. Follow the Search-R1 repository for
+data preparation and retrieval setup.
+
+### FrontierSmith
+
+We use **200 synthetic open-ended coding problems** from
+[FrontierSmith](https://github.com/FrontierCS/FrontierSmith) for training and
+**172 [Frontier-CS](https://github.com/FrontierCS/Frontier-CS) algorithmic problems**
+for validation. Generated C++ solutions
+are evaluated by the problem-specific checkers. The FrontierSmith repository
+provides the training data, data preparation scripts, and judge setup.
+
+### DAPO-Math-17k / AIME24
+
+We train on [DAPO-Math-17k](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17k)
+with **17,917 problems** and validate on the **30 AIME 2024 problems** from
+[AIME24](https://huggingface.co/datasets/BytedTsinghua-SIA/AIME-2024).
+Repeated copies in the upstream files are removed; AIME24 is used only for
+validation. The prepared training and validation files are included in
+[`data/aime/`](data/aime/) and used by the commands below.
 
 ## Run local
 
@@ -123,3 +145,17 @@ are saved in the `easyppo` Volume under `outputs/<run-name>/`. The 8-GPU launche
 runs 300 steps; the 32-GPU launcher runs 150 steps.
 
 ## How to cite this paper
+
+```bibtex
+@misc{zhou2026easyppo,
+  title  = {EasyPPO: Stabilizing the Critic Is Key},
+  author = {Xuanyi Zhou and Qiuyang Mang and Huanzhi Mao and
+            Dacheng Li and Wenhao Chai and Mayank Mishra and Yichuan Wang and
+            Karthik Narasimhan and Alvin Cheung and Joseph E. Gonzalez},
+  year   = {2026},
+  eprint = {2609.36802},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  url    = {https://arxiv.org/abs/2609.36802}
+}
+```
