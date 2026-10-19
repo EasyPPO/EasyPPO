@@ -1,114 +1,63 @@
-# -------------------------------
-# build-system
-# -------------------------------
 [build-system]
 requires = [
-    "setuptools>=61.0",
-    "wheel"
+    "packaging",
+    "setuptools >= 49.4.0",
+    "wheel",
 ]
 build-backend = "setuptools.build_meta"
 
-# -------------------------------
-# project (PEP 621 metadata)
-# -------------------------------
-[project]
-name = "verl"
-# We'll mark the version as "dynamic" because it's read from the file "verl/version/version" 
-# (PEP 621 calls this "dynamic version"). 
-# The actual version is specified in the [tool.setuptools.dynamic] section below.
-dynamic = ["version", "dependencies", "optional-dependencies", "authors", "urls"]
+[tool.isort]
+profile = "black"  # black-compatible
+line_length = 119  # should match black parameters
+ignore_whitespace = true  # ignore whitespace for compatibility with the initial style
+py_version = 310  # python 3.10 as a target version
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+default_section = "THIRDPARTY"
+extend_skip = ["setup.py", "docs/source/conf.py"]
+known_first_party = ["miles", "miles_plugins"]
+known_third_party = ["megatron", "wandb", "ray", "transformers"]
+src_paths = ["miles", "miles_plugins"]
 
-description = "verl: Volcano Engine Reinforcement Learning for LLM"
-license = {text = "Apache-2.0"}  # Changed from file to text format
-readme = {file = "README.md", content-type = "text/markdown"}
-requires-python = ">=3.10"
 
-# -------------------------------
-# tool.ruff - Linting configuration
-# -------------------------------
+[tool.black]
+line_length = 119
+
 [tool.ruff]
-# Note: While the formatter will attempt to format lines such that they remain within the line-length,
-# it isn't a hard upper bound, and formatted lines may exceed the line-length.
-line-length = 120
-exclude = ["scripts/legacy_model_merger.py"]
-
-[tool.ruff.lint]
-isort = {known-first-party = ["verl"]}
-# c.f. https://github.com/vllm-project/vllm/blob/ce8d6b75fc0586045df75ee1568a5b5f9957251b/pyproject.toml
+line-length = 320  # TODO
 select = [
-    # pycodestyle
-    "E",
-    # Pyflakes
-    "F",
-    # pyupgrade
-    "UP",
-    # flake8-bugbear
-    "B",
-    # isort
-    "I",
-    "G",
+    "E",      # Pycodestyle Errors (Structural/Fundamental Errors like bad indentation)
+    "F",      # Pyflakes (Core Errors: Unused imports, undefined names)
+    "B",      # Flake8-Bugbear (Logic Bugs: Variable shadowing, dangerous default arguments)
+    "UP",     # pyupgrade (Modernization and compatibility issues)
 ]
 ignore = [
-    # star imports
-    "F405", "F403",
-    # lambda expression assignment
-    "E731",
-    # Loop control variable not used within loop body
-    "B007",
-    # f-string format
-    "UP032",
-    # `.log()` statement uses f-string
-    "G004",
-    # X | None for type annotations
-    "UP045",
-    # deprecated import
-    "UP035",
+    "E402", # module-import-not-at-top-of-file
+    "E501", # Line too long # TODO handle it later
 ]
 
-# -------------------------------
-# tool.mypy - typechecking config
-# -------------------------------
-[tool.mypy]
-pretty            = true
-ignore_missing_imports = true
-explicit_package_bases = true
-follow_imports = "skip"
 
-# Blanket silence
-ignore_errors = true
-
-[[tool.mypy.overrides]]
-module = [
-"verl.trainer.config.algorithm",
-"verl.trainer.ppo.core_algos",
-"verl.trainer.ppo.reward",
-"verl.workers.reward_manager",
-"verl.workers.reward_manager.*",
+[tool.pytest.ini_options]
+# durations=0 will display all tests execution time, sorted in ascending order starting from from the slowest one.
+# -vv will also display tests with duration = 0.00s
+addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
+testpaths = ["./tests"]  # must be an explicit path to avoid importing another "tests" module
+# directories to ignore when discovering tests
+norecursedirs = [
+    "external",
+    "snapshots",
+    "examples",
+    "docs",
+    "scripts",
+    "tools",
+    "tutorials",
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "venv",
+    "{arch}",
 ]
-ignore_errors = false
-
-# -------------------------------
-# tool.setuptools - Additional config
-# -------------------------------
-[tool.setuptools]
-# True means `setuptools` will attempt to include all relevant files in package_data automatically.
-# This corresponds to `include_package_data=True` in setup.py.
-include-package-data = true
-
-# We read the version from a file in 'verl/version/version'
-[tool.setuptools.dynamic]
-version = {file = "verl/version/version"}
-
-# If you need to mimic `package_dir={'': '.'}`:
-[tool.setuptools.package-dir]
-"" = "."
-
-# If you need to include specific non-Python data (like YAML files or version file):
-# This is the rough equivalent of package_data={'': ['version/*'], 'verl': ['trainer/config/*.yaml']}
-[tool.setuptools.package-data]
-verl = [
-  "version/*",
-  "trainer/config/*.yaml",
-  "trainer/config/*/*.yaml",
-  "experimental/*/config/*.yaml",
-]
+asyncio_mode = "auto"
+# NOTE: we do not use pytest markers currently. tests are mainly separated by folders, i.e. tests/fast vs tests/e2e

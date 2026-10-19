@@ -1,105 +1,91 @@
-# Copyright 2024 Bytedance Ltd. and/or its affiliates
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# setup.py is the fallback installation script when pyproject.toml does not work
-import os
-from pathlib import Path
+import sys
+import platform
 
 from setuptools import find_packages, setup
-
-version_folder = os.path.dirname(os.path.join(os.path.abspath(__file__)))
-
-with open(os.path.join(version_folder, "verl/version/version")) as f:
-    __version__ = f.read().strip()
-
-install_requires = [
-    "accelerate",
-    "codetiming",
-    "datasets",
-    "dill",
-    "hydra-core",
-    "numpy>=2.0.0",
-    "pandas",
-    "peft",
-    "pyarrow>=19.0.0",
-    "pybind11",
-    "pylatexenc",
-    "ray[default]>=2.41.0",
-    "torchdata",
-    "tensordict>=0.8.0,<=0.10.0,!=0.9.0",
-    # 5.6.0 ships a broken flash-attention path (crashes on s_aux=None for
-    # sink-less models); fixed in 5.6.1. See huggingface/transformers#45588.
-    "transformers!=5.6.0",
-    "wandb",
-    "packaging>=20.0",
-    "tensorboard",
-]
-
-TEST_REQUIRES = ["pytest", "pre-commit", "py-spy", "pytest-asyncio", "pytest-rerunfailures"]
-PRIME_REQUIRES = ["pyext"]
-GEO_REQUIRES = ["mathruler", "torchvision", "qwen_vl_utils"]
-GPU_REQUIRES = ["liger-kernel", "flash-attn"]
-MATH_REQUIRES = ["math-verify"]  # Add math-verify as an optional dependency
-VLLM_REQUIRES = ["tensordict>=0.8.0,<=0.10.0,!=0.9.0", "vllm>=0.8.5,<=0.12.0"]
-TRTLLM_REQUIRES = ["tensorrt-llm>=1.2.0rc6"]
-SGLANG_REQUIRES = [
-    "tensordict>=0.8.0,<=0.10.0,!=0.9.0",
-    "sglang[srt,openai]==0.5.8",
-    "torch==2.9.1",
-]
-TRL_REQUIRES = ["trl<=0.9.6"]
-# Keep the legacy mbridge dependency available during its deprecation window.
-MCORE_REQUIRES = ["megatron-bridge", "mbridge"]
-
-extras_require = {
-    "test": TEST_REQUIRES,
-    "prime": PRIME_REQUIRES,
-    "geo": GEO_REQUIRES,
-    "gpu": GPU_REQUIRES,
-    "math": MATH_REQUIRES,
-    "vllm": VLLM_REQUIRES,
-    "sglang": SGLANG_REQUIRES,
-    "trl": TRL_REQUIRES,
-    "mcore": MCORE_REQUIRES,
-    "trtllm": TRTLLM_REQUIRES,
-}
+from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
-this_directory = Path(__file__).parent
-long_description = (this_directory / "README.md").read_text()
+def _get_platform_tag():
+    if platform.system() != "Linux":
+        return platform.system().lower()
 
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "manylinux1_x86_64"
+    if machine in ("aarch64", "arm64"):
+        return "manylinux2014_aarch64"
+    return f"linux_{machine}"
+
+
+def _fetch_requirements(path):
+    with open(path) as fd:
+        return [r.strip() for r in fd.readlines() if r.strip() and not r.startswith("#")]
+
+
+# Custom wheel class to modify the wheel name
+class bdist_wheel(_bdist_wheel):
+    def finalize_options(self):
+        _bdist_wheel.finalize_options(self)
+        self.root_is_pure = False
+
+    def get_tag(self):
+        python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        abi_tag = f"{python_version}"
+        platform_tag = _get_platform_tag()
+
+        return python_version, abi_tag, platform_tag
+
+
+# Setup configuration
 setup(
-    name="verl",
-    version=__version__,
-    package_dir={"": "."},
-    packages=find_packages(where="."),
-    url="https://github.com/verl-project/verl",
-    license="Apache 2.0",
-    author="Bytedance - Seed - MLSys",
-    author_email="zhangchi.usc1992@bytedance.com, gmsheng@connect.hku.hk",
-    description="verl: Volcano Engine Reinforcement Learning for LLM",
-    install_requires=install_requires,
-    extras_require=extras_require,
-    package_data={
-        "": ["version/*"],
-        "verl": [
-            "trainer/config/*.yaml",
-            "trainer/config/*/*.yaml",
-            "experimental/*/config/*.yaml",
+    author="miles Team",
+    name="miles",
+    version="0.1.1",
+    packages=find_packages(include=["miles*", "miles_plugins*", "agentic_critic*"]),
+    include_package_data=True,
+    package_data={"miles.dashboard": ["static/*"]},
+    install_requires=_fetch_requirements("requirements.txt"),
+    extras_require={
+        "agentic": [
+            "torch>=2.0",
+            "transformers==5.12.1",
+            "numpy",
+            "PyYAML",
+            "safetensors",
+            "einops",
+        ],
+        "fsdp": [
+            "torch>=2.0",
+        ],
+        "mlflow": [
+            "mlflow>=2.0",
+        ],
+        # standalone offline serving; the training image already has these via
+        # sglang, and polars is a base requirement (used by the collector)
+        "dashboard": [
+            "fastapi>=0.135",
+            "uvicorn>=0.41",
+            "prometheus_client>=0.24",
+        ],
+        # the openenv e2b sandbox backend, imported only when that backend is
+        # selected. 2.12 is the first release that sends the template name in
+        # the `name` field, which self-hosted AgentENV reads; older ones send
+        # the deprecated `alias` and every Template.build fails with 400
+        "e2b": [
+            "e2b>=2.12",
+        ],
+        "modal": [
+            "modal>=1.5.5",
         ],
     },
-    include_package_data=True,
-    long_description=long_description,
-    long_description_content_type="text/markdown",
+    python_requires=">=3.10",
+    classifiers=[
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Environment :: GPU :: NVIDIA CUDA",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+        "Topic :: System :: Distributed Computing",
+    ],
+    cmdclass={"bdist_wheel": bdist_wheel},
 )
