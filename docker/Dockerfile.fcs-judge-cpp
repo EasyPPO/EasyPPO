@@ -1,0 +1,24 @@
+# Frontier-CS judge, C++ only. Same orchestrator and go-judge as the upstream Dockerfile
+# (Frontier-CS/algorithmic/Dockerfile), without the Java/Kotlin/Rust/Go/PyPy toolchains, and
+# with few layers because the local Docker uses the vfs storage driver (every layer is a full copy).
+# Build context: Frontier-CS/algorithmic of FrontierSmith.
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+ARG GO_JUDGE_VERSION=v1.11.1
+WORKDIR /app
+COPY package.json package-lock.json* server.js entrypoint.sh ./
+COPY judge/src/ ./src/
+COPY judge/include/ ./include/
+COPY judge/config/ ./config/
+COPY judge/include/ /lib/testlib/
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl build-essential python3; \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; \
+    apt-get install -y --no-install-recommends nodejs; \
+    curl -fsSL -o /usr/local/bin/go-judge "https://github.com/criyle/go-judge/releases/download/${GO_JUDGE_VERSION}/go-judge_${GO_JUDGE_VERSION#v}_linux_amd64v2"; \
+    chmod +x /usr/local/bin/go-judge entrypoint.sh; sed -i 's/\r$//' entrypoint.sh; \
+    npm install --omit=dev --ignore-scripts; \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+ENV PORT=8081 GJ_ADDR=http://127.0.0.1:5050
+ENTRYPOINT ["/app/entrypoint.sh"]
