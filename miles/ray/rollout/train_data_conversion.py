@@ -419,9 +419,66 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
 
 def split_train_data_by_dp_shards(args, data: dict[str, Any], train_parallel_config: dict | None) -> list[dict]:
     """The per-rank shards of `split_train_data_by_dp`, before they go into the object store."""
+    # Critic mini-batches count complete episodes, including compacted siblings.
+    if getattr(args, "critic_num_steps_per_rollout", 1) > 1 and "rollout_ids" in data:
+        return split_episode_aligned_shards(args, data, dp_size=train_parallel_config["dp_size"])
     if can_schedule_on_rollout_side(args, data, train_parallel_config):
         return split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     return split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
+
+
+
+def split_episode_aligned_shards(args, data, *, dp_size, partitions=None):
+    """Keep complete episodes on a rank and in one packed forward micro-batch.
+
+    With equal episode counts per rank, the four critic steps contain equal
+    episode counts even when compaction produces different segment counts.
+    Packing the segments of one episode retains their independent attention
+    boundaries. This changes routing only, not tokens, masks or the objective.
+    """
+    groups = {}
+    for index, rollout in enumerate(data["rollout_ids"]):
+        groups.setdefault(rollout, []).append(index)
+    if len(groups) % dp_size:
+        raise ValueError("Episode count must divide evenly across data-parallel ranks")
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    if len(groups) != global_batch_size:
+        raise ValueError("Episode-aligned critic replay requires one complete logical batch")
+    data["total_lengths"] = [len(tokens) for tokens in data["tokens"]]
+    episode_groups = list(groups.values())
+    if partitions is None:
+        costs = [sum(data["total_lengths"][index] for index in group) for group in episode_groups]
+        if args.balance_data:
+            episode_partitions = get_seqlen_balanced_partitions(costs, dp_size, equal_size=True)
+        else:
+            episode_partitions = [range(rank, len(groups), dp_size) for rank in range(dp_size)]
+        partitions = [[index for episode in part for index in episode_groups[episode]] for part in episode_partitions]
+    shards = _package_shards(args, data, partitions)
+    for shard in shards:
+        local_groups = {}
+        for local, rollout in enumerate(shard["rollout_ids"]):
+            local_groups.setdefault(rollout, []).append(local)
+        if len(local_groups) != len(groups) // dp_size:
+            raise ValueError("Data-parallel ranks must contain equal complete-episode counts")
+        for rollout, local_indices in local_groups.items():
+            if len(local_indices) != len(groups[rollout]):
+                raise ValueError("An episode was split across data-parallel ranks")
+        shard["micro_batch_indices"] = list(local_groups.values())
+        shard["num_microbatches"] = [len(local_groups)]
+        shard["num_rollouts"] = [global_batch_size]
+    return shards
+
+
+def split_full_history_shards(args, data, critic_data, spans, parallel):
+    """Route actor siblings to the rank holding their episode-level critic input."""
+    critic_shards = split_episode_aligned_shards(args, critic_data, dp_size=parallel["dp_size"])
+    owners = {episode: rank for rank, shard in enumerate(critic_shards) for episode in shard["partition"]}
+    partitions = [[] for _ in critic_shards]
+    for actor_index, (episode, _start, _length) in enumerate(spans):
+        partitions[owners[episode]].append(actor_index)
+    shards = split_episode_aligned_shards(args, data, dp_size=parallel["dp_size"], partitions=partitions)
+    attach_value_slices(shards, critic_shards, spans)
+    return shards, critic_shards
 
 
 def build_critic_samples(samples) -> tuple[list[Sample], list[tuple[int, int, int]]]:

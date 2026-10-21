@@ -195,3 +195,9 @@ _examples_synced/
 .humanize/
 
 charts/*/charts/
+
+# Critic run environments and generated data
+.venv-agentic-*/
+artifacts/agentic_critic/
+artifacts/judge-cache/
+!scripts/agentic_critic/requirements-*.lock

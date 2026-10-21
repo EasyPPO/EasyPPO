@@ -467,6 +467,18 @@ def _shuffled_step_indices(num_samples: int, num_steps: int, *, seed: int) -> li
     return [chunk.tolist() for chunk in torch.tensor_split(permutation, num_steps)]
 
 
+
+def _episode_step_groups(rollout_ids, num_steps, *, seed):
+    """Shuffle whole episodes; keep all compacted siblings in the same step."""
+    groups = {}
+    for index, rollout in enumerate(rollout_ids):
+        groups.setdefault(rollout, []).append(index)
+    episodes = list(groups.values())
+    if len(episodes) % num_steps:
+        raise ValueError("The local episode count must divide evenly across critic mini-batches")
+    return [[episodes[index] for index in step] for step in _shuffled_step_indices(len(episodes), num_steps, seed=seed)]
+
+
 def get_critic_train_schedule(
     args: Namespace,
     rollout_data: RolloutBatch,
@@ -498,6 +510,23 @@ def get_critic_train_schedule(
     assert (
         total_rollouts % num_steps == 0
     ), f"--critic-num-steps-per-rollout {num_steps} does not divide the {total_rollouts} rollouts of this batch"
+
+    # The stored-episode recipe packs one complete episode per micro-batch.
+    # In shared mode this may contain several independently attended segments.
+    if args.use_dynamic_batch_size and "rollout_ids" in rollout_data:
+        steps = _episode_step_groups(
+            rollout_data["rollout_ids"], num_steps, seed=args.seed + rollout_id * dp.size + dp.rank
+        )
+        budget = args.max_tokens_per_gpu * parallel_state.cp.size
+        for step in steps:
+            for episode in step:
+                if sum(total_lengths[index] for index in episode) > budget:
+                    raise ValueError("A complete episode exceeds --max-tokens-per-gpu times context parallelism")
+        micro_batches = [episode for step in steps for episode in step]
+        data_iterator = [
+            DataIterator(rollout_data, micro_batch_indices=micro_batches) for _ in range(parallel_state.vpp_size)
+        ]
+        return data_iterator, [len(step) for step in steps], [total_rollouts // num_steps] * num_steps
 
     step_indices = _shuffled_step_indices(
         len(total_lengths), num_steps, seed=args.seed + rollout_id * dp.size + dp.rank
