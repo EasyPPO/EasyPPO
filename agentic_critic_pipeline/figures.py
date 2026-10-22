@@ -47,10 +47,18 @@ def mean_interval(events, side, field, bootstrap, seed):
     )
 
 
+JUMP_ERROR_FIELDS = ("error_improvement", "sq_error_improvement", "abs_error_before", "abs_error_after")
+
+
 def jump_row(events, bootstrap, seed, **labels):
-    return dict(
+    # Mode keys hold the absolute jump (what the plots draw); the error fields beside them
+    # say whether that jump moved the value toward or away from the final return.
+    row = dict(
         **labels, **{mode: mean_interval(events, i, "abs_jump", bootstrap, seed) for i, mode in enumerate(MODES)}
     )
+    for field in JUMP_ERROR_FIELDS:
+        row[field] = {mode: mean_interval(events, i, field, bootstrap, seed) for i, mode in enumerate(MODES)}
+    return row
 
 
 def retention_row(events, bootstrap, seed, **labels):

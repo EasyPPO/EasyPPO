@@ -13,6 +13,20 @@ from pathlib import Path
 import numpy as np
 
 BUCKETS = ("all", "0", "1", "2", "3", "4+")
+# Per-event quantities averaged (with paired problem-bootstrap CIs) at boundaries and midpoints.
+EVENT_FIELDS = (
+    "signed_jump",
+    "abs_jump",
+    "error_improvement",
+    "signed_error_before",
+    "signed_error_after",
+    "abs_error_before",
+    "abs_error_after",
+    "sq_error_before",
+    "sq_error_after",
+    "sq_error_improvement",
+    "moved_closer",
+)
 
 
 def bucket(segment):
@@ -248,6 +262,16 @@ def boundary_events(pairs, *, window=32):
                     signed_jump=v1 - v0,
                     abs_jump=abs(v1 - v0),
                     error_improvement=abs(v0 - reward) - abs(v1 - reward),
+                    # True error against the final return on both sides of the event, so a large
+                    # jump can be read as a correction (error falls) or a regression (error rises).
+                    signed_error_before=v0 - reward,
+                    signed_error_after=v1 - reward,
+                    abs_error_before=abs(v0 - reward),
+                    abs_error_after=abs(v1 - reward),
+                    sq_error_before=(v0 - reward) ** 2,
+                    sq_error_after=(v1 - reward) ** 2,
+                    sq_error_improvement=(v0 - reward) ** 2 - (v1 - reward) ** 2,
+                    moved_closer=float(abs(v1 - reward) < abs(v0 - reward)),
                 )
             )
         return dict(
@@ -273,12 +297,16 @@ def boundary_events(pairs, *, window=32):
 
 
 def event_metrics(events, bootstrap=2000, seed=0):
-    fields = ("signed_jump", "abs_jump", "error_improvement")
+    fields = EVENT_FIELDS
     groups = defaultdict(list)
     for event in events:
         groups[event["problem_id"]].append([[side[name] for name in fields] for side in event["sides"]])
     result = dict(events=len(events), problems=len(groups))
-    means = np.mean([x for group in groups.values() for x in group], axis=0) if events else np.full((2, 3), np.nan)
+    means = (
+        np.mean([x for group in groups.values() for x in group], axis=0)
+        if events
+        else np.full((2, len(fields)), np.nan)
+    )
     differences = []
     if groups:
         sums = np.array([np.sum(g, axis=0) for g in groups.values()])

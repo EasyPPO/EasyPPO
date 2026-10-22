@@ -2037,6 +2037,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-host", type=str, default=None)
             parser.add_argument("--wandb-team", type=str, default=None)
             parser.add_argument("--wandb-group", type=str, default=None)
+            parser.add_argument(
+                "--wandb-run-name",
+                type=str,
+                default=None,
+                help="Run name inside --wandb-group. Defaults to the group name (plus the random suffix).",
+            )
             reset_arg(parser, "--wandb-project", type=str, default=None)
             parser.add_argument(
                 "--disable-wandb-random-suffix",

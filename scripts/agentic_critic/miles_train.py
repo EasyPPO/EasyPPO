@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shlex
+import time
 from pathlib import Path
 
 
@@ -20,7 +21,18 @@ def parse_args():
     parser.add_argument("--problems-per-batch", type=int, default=8)
     parser.add_argument("--episodes-per-problem", type=int, default=16)
     parser.add_argument("--mini-batches", type=int, default=4)
+    # Tracking names only; they never change paths, data or the objective.
+    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "agentic-critic"))
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
+    parser.add_argument("--wandb-group", default=os.environ.get("WANDB_GROUP", ""))
+    parser.add_argument("--wandb-run-name", default=os.environ.get("WANDB_RUN_NAME", ""))
     return parser.parse_args()
+
+
+def wandb_names(args):
+    """One group per comparison; one distinctly named run per trained critic."""
+    group = args.wandb_group or f"critic-{time.strftime('%Y%m%d-%H%M%S')}"
+    return group, args.wandb_run_name or f"{group}-train-{args.mode}"
 
 
 def main():
@@ -78,6 +90,7 @@ def main():
     if (args.output / "run.json").exists() or any(args.output.glob("checkpoint-*")):
         raise FileExistsError("Output contains checkpoints from another trainer; use a fresh OUTPUT")
     mode = "shared" if args.mode == "actor_summary" else args.mode
+    wandb_group, wandb_run_name = wandb_names(args)
     extra = (
         f"--load-debug-rollout-data {args.rollouts}/rollout_{{rollout_id}}.pt "
         "--debug-train-only --no-save-optim "
@@ -104,6 +117,10 @@ def main():
         critic_context_mode=mode,
         megatron_path=os.environ["MEGATRON_PATH"],
         extra_args=extra,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_group=wandb_group,
+        wandb_run_name=wandb_run_name,
     )
     recipe_args.create_backend().convert_checkpoint(
         model_name=model_name,
@@ -130,6 +147,9 @@ def main():
                 "checkpoints": str(output / "checkpoints_critic"),
                 "dump_dir": str(output / "dump"),
                 "optimizer_saved": False,
+                "wandb_project": args.wandb_project,
+                "wandb_group": wandb_group,
+                "wandb_run_name": wandb_run_name,
             },
             indent=2,
         )

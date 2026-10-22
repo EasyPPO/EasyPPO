@@ -35,5 +35,6 @@ done
 exec docker run --rm --gpus all --network host --ipc host --shm-size 32g \
   --ulimit memlock=-1 --ulimit stack=67108864 "${mounts[@]}" \
   --workdir "$MILES_DIR" --env PYTHONPATH --env MILES_DIR --env MEGATRON_PATH \
-  --env WANDB_MODE=disabled \
+  --env WANDB_API_KEY --env WANDB_MODE --env WANDB_PROJECT --env WANDB_ENTITY --env WANDB_BASE_URL \
+  --env WANDB_GROUP --env WANDB_RUN_NAME \
   "${MILES_IMAGE:-radixark/miles:latest}" "$@"

@@ -179,6 +179,14 @@ Each `<phase>-diagnostics.png` contains these eight panels:
 
 Head-gradient panels use the per-segment head gradients recorded automatically by held-out evaluation. The recorded gradient is `mean((V-G)*h)` for scalar-head weight parameters only. It is not a full-backbone gradient or a PPO minibatch gradient. Training-only dashboards may therefore have undefined head-gradient panels. Score-only references use only information visible at the prediction token; extracting a numeric score from a summary is a documented heuristic in the diagnostic report.
 
+### Weights & Biases report
+
+Set `WANDB_API_KEY` (and optionally `WANDB_PROJECT`, default `agentic-critic`, and `WANDB_ENTITY`) before `run_comparison.sh`. Each comparison is one wandb group, stored in `$OUTPUT_ROOT/wandb_group.txt` (override with `WANDB_GROUP`). It contains three runs: `<group>-train-full_history` and `<group>-train-actor_summary` (Miles training metrics) and `<group>-analysis`. The Docker runtime passes the `WANDB_*` variables through to the container.
+
+`visualize.sh` finishes with `python -m agentic_critic_pipeline.wandb_report`. The analysis run receives every scalar of each suite's `analysis.json`, `figures.json` and `diagnostics.json` as summary values under `<suite>/<module>/<json path>`. Every list of rows becomes a table under `tables/...`, every PNG goes under `images/...`, the per-batch EV curves go under `curve/...` against `curve/batch`, and the raw files are stored as one `critic-analysis` artifact. `headline/<split>/<comparison>/...` collects the values the experiments are read by: EV/MSE/MAE/bias per compaction bucket with full-minus-actor intervals, jump and true-error changes at compactions and midpoints, retention, variance share, residual-history, gradient and score-only diagnostics, and input-swap zero-compaction checks. `data/<split>/...` and `training/<mode>/...` hold dataset and run facts.
+
+After upload the dump reads the stored summary back (wandb API online, the `.wandb` transaction log offline) and compares every value with what it sent. `$OUTPUT_ROOT/wandb_dump/manifest.json` records the counts, the verification result and every issue (missing or invalid files, missing headline fields, tracking errors). `wandb_dump/summary.json` holds the exact values. Neither the dump nor wandb failures during training stop a run: without a key the dump writes an offline run (`wandb sync` it later), and a failed online init falls back to offline.
+
 ### Interpretation
 
 Use the last 30 logical batches for the primary training readout. Keep the independent test and same-problem validation results separate. Input-swap plots compare readings of a single fixed checkpoint and complement the main comparison of two separately trained critics. Zero-compaction input equality is an exact-input control only within a fixed checkpoint.

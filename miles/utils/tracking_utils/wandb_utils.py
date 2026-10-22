@@ -55,6 +55,8 @@ def init_wandb_primary(args):
     else:
         group = args.wandb_group
         run_name = args.wandb_group
+    if getattr(args, "wandb_run_name", None):
+        run_name = args.wandb_run_name
 
     # Prepare wandb init parameters
     init_kwargs = {

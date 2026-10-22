@@ -51,3 +51,14 @@ if [[ -n "${VALIDATION_DATA:-}" ]]; then
     done
   done
 fi
+# Report every analysis value to wandb. The dump records its own problems in
+# $OUTPUT_ROOT/wandb_dump/manifest.json and must never fail the pipeline.
+if [[ -z ${WANDB_GROUP:-} && -s "$OUTPUT_ROOT/wandb_group.txt" ]]; then
+  WANDB_GROUP=$(<"$OUTPUT_ROOT/wandb_group.txt")
+fi
+episode_args=(train="$TRAIN_DATA" test="$EVAL_DATA")
+[[ -n "${VALIDATION_DATA:-}" ]] && episode_args+=(validation="$VALIDATION_DATA")
+if ! WANDB_GROUP=${WANDB_GROUP:-} python -m agentic_critic_pipeline.wandb_report \
+  --output-root "$OUTPUT_ROOT" --episodes "${episode_args[@]}"; then
+  echo "warning: wandb report dump failed; analysis outputs are unaffected" >&2
+fi

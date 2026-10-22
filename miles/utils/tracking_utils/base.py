@@ -49,36 +49,78 @@ class TrackingBackend(ABC):
 class WandbBackend(TrackingBackend):
     # Delegates to the existing ``wandb_utils`` helpers.
 
+    # Experiment tracking must never stop a training run: every wandb failure is
+    # logged once per call site and then disables this backend instead of raising.
+
     def __init__(self) -> None:
         self._defined_step_key_groups: set[tuple[str, str]] = set()
+        self._enabled = True
+        self._warned: set[str] = set()
+
+    def _fail(self, where: str, error: BaseException, *, disable: bool = False) -> None:
+        if where not in self._warned:
+            self._warned.add(where)
+            logger.warning("wandb %s failed; training continues without it: %r", where, error)
+        if disable:
+            self._enabled = False
+
+    @staticmethod
+    def _has_run() -> bool:
+        try:
+            import wandb
+
+            return wandb.run is not None
+        except Exception:
+            return False
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
-        from . import wandb_utils
+        try:
+            from . import wandb_utils
 
-        if primary:
-            wandb_utils.init_wandb_primary(args, **kwargs)
-        else:
-            wandb_utils.init_wandb_secondary(args, **kwargs)
+            if primary:
+                wandb_utils.init_wandb_primary(args, **kwargs)
+            else:
+                wandb_utils.init_wandb_secondary(args, **kwargs)
+        except Exception as error:
+            if primary:
+                # Secondary writers attach to this id; without a primary run they must stay silent.
+                args.wandb_run_id = None
+            self._fail("init", error, disable=True)
 
     def log(self, metrics: dict[str, Any], step: int | None = None, **kwargs) -> None:
-        import wandb
+        if not self._enabled or not self._has_run():
+            return
+        try:
+            import wandb
 
-        wandb.log(metrics)
+            wandb.log(metrics)
+        except Exception as error:
+            self._fail("log", error)
 
     def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
         # Call from the primary tracking process: definitions from secondary shared-mode writers are lost.
         if (prefix, step_key) in self._defined_step_key_groups:
             return
-        import wandb
+        if not self._enabled or not self._has_run():
+            return
+        try:
+            import wandb
 
-        wandb.define_metric(step_key)
-        wandb.define_metric(f"{prefix}/*", step_metric=step_key)
-        self._defined_step_key_groups.add((prefix, step_key))
+            wandb.define_metric(step_key)
+            wandb.define_metric(f"{prefix}/*", step_metric=step_key)
+            self._defined_step_key_groups.add((prefix, step_key))
+        except Exception as error:
+            self._fail("define_metric", error)
 
     def finish(self) -> None:
-        import wandb
+        if not self._has_run():
+            return
+        try:
+            import wandb
 
-        wandb.finish()
+            wandb.finish()
+        except Exception as error:
+            self._fail("finish", error)
 
 
 class TensorboardBackend(TrackingBackend):

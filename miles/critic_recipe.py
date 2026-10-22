@@ -1,5 +1,7 @@
 """Qwen3.5 critic training configuration."""
 
+import os
+import shlex
 from dataclasses import dataclass
 
 from miles.utils.external_utils import command_utils
@@ -35,6 +37,12 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # importable (PYTHONPATH); it sets the reward itself, so --custom-rm-path is not used.
     agentic_generate_function_path: str = ""
     critic_context_mode: str = "shared"
+    # Explicit tracking names. With wandb_group set, runs of one comparison share the group and differ by name;
+    # without it the recipe keeps Miles' default naming.
+    wandb_project: str = ""
+    wandb_group: str = ""
+    wandb_run_name: str = ""
+    wandb_entity: str = ""
 
     @property
     def samples_per_rollout(self) -> int:
@@ -43,6 +51,29 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def critic_num_steps_per_rollout(self) -> int:
         return max(1, self.samples_per_rollout // self.critic_mini_batch_size)
+
+
+def _wandb_args(args: ScriptArgs) -> str:
+    if not args.wandb_group:
+        return command_utils.get_default_wandb_args(__file__, run_id=args.run_id)
+    mode = os.environ.get("WANDB_MODE", "")
+    key = os.environ.get("WANDB_API_KEY")
+    if mode == "disabled" or (not key and mode != "offline"):
+        return ""
+    parts = [
+        "--use-wandb",
+        f"--wandb-project {shlex.quote(args.wandb_project or 'agentic-critic')}",
+        f"--wandb-group {shlex.quote(args.wandb_group)}",
+        f"--wandb-run-name {shlex.quote(args.wandb_run_name or args.wandb_group)}",
+        "--disable-wandb-random-suffix",
+    ]
+    if args.wandb_entity:
+        parts.append(f"--wandb-team {shlex.quote(args.wandb_entity)}")
+    if mode == "offline":
+        parts.append("--wandb-mode offline")
+    if key:
+        parts.append(f"--wandb-key {shlex.quote(key)}")
+    return " ".join(parts) + " "
 
 
 def _require_frontier_cs_inputs(args: ScriptArgs) -> None:
@@ -178,7 +209,7 @@ def execute(args: ScriptArgs):
         f"{optimizer_args} "
         f"{ppo_args} "
         f"{easyppo_args} "
-        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{_wandb_args(args)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
