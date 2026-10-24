@@ -1,4 +1,5 @@
 import atexit
+import copy
 import logging
 import os
 import shutil
@@ -671,6 +672,36 @@ class MegatronTrainRayActor(TrainRayActor):
                 value_spec=CRITIC_VALUES_VALUE_SPEC,
             )
         return TrainStepOutput(outcome=train_step_outcome, values=values)
+
+    @with_logs
+    def evaluate_critic(
+        self, *, batch: int, rollout_data_ref: StoreObjectRef | list[StoreObjectRef], output: str
+    ) -> None:
+        """Forward-only validation; leave optimizer, scheduler and training args untouched."""
+        if self.role != "critic":
+            raise ValueError("Frozen critic validation requires the critic worker")
+        self._heartbeat.bump()
+        if self.args.offload_train and self._asleep:
+            self.wake_up()
+        eval_args = copy.copy(self.args)
+        eval_args.save_debug_train_data = output
+        rng = RandomState.capture()
+        training_modes = [(module, module.training) for chunk in self.model for module in chunk.modules()]
+        try:
+            rollout_data, store_result = get_rollout_data(eval_args, rollout_data_ref)
+            with store_result:
+                data_iterator, num_microbatches = get_data_iterator(eval_args, self.model, rollout_data)
+                rollout_data.update(
+                    forward_only(get_values, eval_args, self.model, data_iterator, num_microbatches, rollout_id=batch)
+                )
+                train_dump.save_validation_critic_values(eval_args, rollout_id=batch, rollout_data=rollout_data)
+        finally:
+            # Forward hooks may consume RNG; validation must not perturb the next update.
+            rng.restore()
+            for module, training in training_modes:
+                # Preserve mixed child-module modes, including after a failed forward.
+                module.training = training
+        self._heartbeat.bump()
 
     def _use_rollout_replay(self, m) -> bool:
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)

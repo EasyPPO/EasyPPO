@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.rollout.critic_validation import validation_pack
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
@@ -211,6 +212,14 @@ class RolloutExecutor:
                 self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
             )
         return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+
+    async def get_critic_validation(self, replay_path: str, group_size: int) -> RolloutDataPack:
+        return validation_pack(
+            self.args,
+            replay_path=replay_path,
+            group_size=group_size,
+            parallel=self._train_parallel_configs_of_model_id[None],
+        )
 
     async def eval(
         self,

@@ -380,6 +380,12 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
+    async def evaluate_critic(self, *, batch: int, rollout_data_pack: RolloutDataPack, output: str) -> None:
+        # The critic path uses one cell; every DP/TP worker participates in the forward.
+        await self._execute_first_alive(
+            "evaluate_critic", batch=batch, rollout_data_ref=rollout_data_pack.data_ref, output=output
+        )
+
     async def export_hf(self, rollout_id: int, path: str) -> None:
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
         await retry(

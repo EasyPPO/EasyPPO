@@ -13,14 +13,16 @@ def parse_args():
     for name in ("model", "rollouts", "output", "model-dir", "prompt-data"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--mode", choices=("full_history", "actor_summary", "shared"), required=True)
-    parser.add_argument("--steps", type=int, default=40)
+    parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--gpus", type=int, default=8)
     parser.add_argument("--tensor-parallel", type=int, default=1)
     parser.add_argument("--max-tokens", type=int, default=120000)
-    parser.add_argument("--save-interval", type=int, default=40)
-    parser.add_argument("--problems-per-batch", type=int, default=8)
+    parser.add_argument("--save-interval", type=int, default=50)
+    parser.add_argument("--problems-per-batch", type=int, default=32)
     parser.add_argument("--episodes-per-problem", type=int, default=16)
     parser.add_argument("--mini-batches", type=int, default=4)
+    parser.add_argument("--validation-plan", type=Path, required=True)
+    parser.add_argument("--validation-interval", type=int, default=5)
     # Tracking names only; they never change paths, data or the objective.
     parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "agentic-critic"))
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
@@ -37,7 +39,10 @@ def wandb_names(args):
 
 def main():
     args = parse_args()
-    if min(args.steps, args.gpus, args.tensor_parallel, args.save_interval, args.max_tokens) < 1:
+    if (
+        min(args.steps, args.gpus, args.tensor_parallel, args.save_interval, args.max_tokens, args.validation_interval)
+        < 1
+    ):
         raise ValueError("steps, GPUs, parallelism and save interval must be positive")
     batch_size = args.problems_per_batch * args.episodes_per_problem
     if min(args.problems_per_batch, args.episodes_per_problem, args.mini_batches) < 1:
@@ -48,7 +53,7 @@ def main():
         raise ValueError("GPUs must be divisible by tensor parallelism")
     # The launcher assembles shell strings. Refuse ambiguous paths instead
     # of silently interpreting shell metacharacters or splitting a path.
-    for path in (args.model, args.rollouts, args.output, args.model_dir, args.prompt_data):
+    for path in (args.model, args.rollouts, args.output, args.model_dir, args.prompt_data, args.validation_plan):
         if shlex.quote(str(path)) != str(path):
             raise ValueError(f"Miles recipe requires shell-safe paths: {path}")
     for batch in range(args.steps):
@@ -75,7 +80,13 @@ def main():
     if not args.prompt_data.is_file() or not (args.model / "config.json").is_file():
         raise FileNotFoundError("Prompt data or model config is missing")
 
+    from agentic_critic_pipeline.validation import load_plan, validate_training_replay
     from miles import critic_recipe as recipe
+
+    validation_plan = load_plan(args.validation_plan, verify_files=True)
+    validate_training_replay(validation_plan, args.rollouts)
+    if validation_plan["group_size"] % (args.gpus // args.tensor_parallel):
+        raise ValueError("Validation group size must divide across DP ranks")
 
     args.model_dir.mkdir(parents=True, exist_ok=True)
     model_name = "Qwen3.5-9B-FrontierCS-SFT-DSv3.1"
@@ -95,7 +106,9 @@ def main():
         f"--load-debug-rollout-data {args.rollouts}/rollout_{{rollout_id}}.pt "
         "--debug-train-only --no-save-optim "
         "--use-precision-aware-optimizer --exp-avg-dtype bf16 --exp-avg-sq-dtype bf16 "
-        f"--save-debug-train-data {output}/dump/{{rollout_id}}_{{rank}}.pt"
+        f"--critic-validation-plan {args.validation_plan} "
+        f"--critic-validation-output {args.output}/validation "
+        f"--critic-validation-interval {args.validation_interval}"
     )
     recipe_args = recipe.ScriptArgs(
         run_id="critic",
@@ -145,8 +158,11 @@ def main():
                 "mini_batches": args.mini_batches,
                 "optimizer_updates": args.steps * args.mini_batches,
                 "checkpoints": str(output / "checkpoints_critic"),
-                "dump_dir": str(output / "dump"),
+                "dump_dir": None,
                 "optimizer_saved": False,
+                "validation_interval": args.validation_interval,
+                "validation_plan_hash": validation_plan["plan_hash"],
+                "validation_output": str(args.output / "validation"),
                 "wandb_project": args.wandb_project,
                 "wandb_group": wandb_group,
                 "wandb_run_name": wandb_run_name,

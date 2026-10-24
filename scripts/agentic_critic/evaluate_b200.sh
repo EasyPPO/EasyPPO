@@ -17,5 +17,5 @@ exec torchrun --standalone --nproc-per-node "${NPROC_PER_NODE:-8}" \
   -m agentic_critic_pipeline.miles_analysis heldout \
   --episodes "$DATA" --base-model "$MODEL" --critic "$CHECKPOINT" --out "$OUTPUT" \
   --input-mode "$MODE" --trained-mode "$TRAINED_MODE" \
-  --checkpoint-run-id "$CHECKPOINT" --checkpoint-batch "${MAX_BATCHES:-40}" \
+  --checkpoint-run-id "$CHECKPOINT" --checkpoint-batch "${MAX_BATCHES:-50}" \
   --max-tokens "${MAX_SEQUENCE_LENGTH:-120000}" "$@"
