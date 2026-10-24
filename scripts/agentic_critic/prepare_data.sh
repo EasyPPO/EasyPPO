@@ -4,8 +4,8 @@ cd "$(dirname "$0")/../.."
 PYTHON=${PYTHON:-python}
 DATA_ROOT=${DATA_ROOT:-$PWD/artifacts/agentic_critic/sources}
 MANIFEST=${MANIFEST:-$PWD/artifacts/agentic_critic/manifest.json}
-# Pin the release/synthetic-200 dataset revision (short SHA 166c8be).
-SMITH_REVISION=${SMITH_REVISION:-166c8be14a62b013ef78e6868e4355421c8c6456}
+# Verified FrontierSmith main on 2026-10-24; includes checker and reference-answer repairs.
+SMITH_REVISION=${SMITH_REVISION:-ac3046cce7a270e3177cbb41376f36e03de1d518}
 FRONTIER_REVISION=${FRONTIER_REVISION:-aec2aff05f3ece1b150c7c40827b0cea449e0b28}
 mkdir -p "$DATA_ROOT"
 fetch() {
@@ -39,7 +39,7 @@ if [[ ! -f "$SMITH_QUALITY_REPORT" ]]; then
     --probe-memory-bytes "${CHECKER_MEMORY_BYTES:-268435456}" \
     --cache "$QUALITY_ROOT/checkers-smith" --output "$SMITH_QUALITY_REPORT"
 fi
-if [[ ! -f "$FRONTIER_QUALITY_REPORT" ]]; then
+if [[ ${TEST_PROBLEMS:-0} -gt 0 && ! -f "$FRONTIER_QUALITY_REPORT" ]]; then
   echo "Running required Frontier-CS checker-input preflight"
   "$PYTHON" -m agentic_critic_pipeline.validate_tasks \
     --root "$DATA_ROOT/Frontier-CS/algorithmic/problems" --dataset frontiercs \
@@ -52,4 +52,6 @@ fi
   --smith-root "$DATA_ROOT/FrontierSmith/Frontier-CS/algorithmic/problems" \
   --frontier-root "$DATA_ROOT/Frontier-CS/algorithmic/problems" \
   --smith-quality-report "$SMITH_QUALITY_REPORT" --frontier-quality-report "$FRONTIER_QUALITY_REPORT" \
-  --output "$MANIFEST" --train-count 120 --test-count "${TEST_PROBLEMS:-20}" --seed "${DATA_SEED:-20261021}" "$@"
+  --training-batches "${MAX_BATCHES:-50}" --prompts-per-batch "${PROBLEMS_PER_BATCH:-32}" \
+  --episodes-per-group "${EPISODES_PER_PROBLEM:-16}" --validation-group-size "${VALIDATION_GROUP_SIZE:-32}" \
+  --output "$MANIFEST" --train-count 128 --test-count "${TEST_PROBLEMS:-0}" --seed "${DATA_SEED:-20261021}" "$@"

@@ -13,7 +13,7 @@ export TRAIN_DATA ROLLOUT_DIR
 python -m agentic_critic_pipeline.cohort \
   --input "$TRAIN_DATA" --output "$ROLLOUT_DIR/cohort" --manifest "$MANIFEST" --split train \
   --max-full-tokens "${MAX_FULL_TOKENS:-120000}" --balance-training-batches \
-  --problems-per-batch "${PROBLEMS_PER_BATCH:-8}" --episodes-per-problem "${EPISODES_PER_PROBLEM:-16}" \
+  --problems-per-batch "${PROBLEMS_PER_BATCH:-32}" --episodes-per-problem "${EPISODES_PER_PROBLEM:-16}" \
   --seed "${SCHEDULE_SEED:-1234}"
 TRAIN_DATA="$ROLLOUT_DIR/cohort/train_ready.jsonl"
 export TRAIN_DATA
@@ -23,6 +23,6 @@ python -m agentic_critic_pipeline.miles_episodes --source "$TRAIN_DATA" --output
 exec bash "$ROOT/scripts/agentic_critic/miles_runtime.sh" python \
   "$ROOT/scripts/agentic_critic/episodes_to_rollouts.py" \
   --episodes "$ROLLOUT_DIR/episodes.jsonl" --out "$ROLLOUT_DIR" \
-  --steps "${MAX_BATCHES:-40}" --problems-per-step "${PROBLEMS_PER_BATCH:-8}" \
+  --steps "${MAX_BATCHES:-50}" --problems-per-step "${PROBLEMS_PER_BATCH:-32}" \
   --episodes-per-problem "${EPISODES_PER_PROBLEM:-16}" --heldout-problems 0 \
   --seed "${SCHEDULE_SEED:-1234}" --rounds --require-exhaustion "$@"

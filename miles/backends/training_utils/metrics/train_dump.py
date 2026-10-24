@@ -1,3 +1,4 @@
+import copy
 import logging
 from pathlib import Path
 
@@ -73,5 +74,35 @@ def save_debug_critic_values(args, *, rollout_id, rollout_data, rank=None):
             value = rollout_data[key]
             payload[key] = [v.detach().cpu() if isinstance(v, torch.Tensor) else v for v in value] if isinstance(value, list) else value
     logger.info(f"Save critic values to {path}")
+    torch.save(payload, path)
+    return path
+
+
+def save_validation_critic_values(args, *, rollout_id, rollout_data):
+    """Keep compact results with metrics and full predictions beside rollout replay."""
+    # The application reducer is needed only for this optional validation path.
+    from agentic_critic_pipeline.validation_storage import compact_rollout
+
+    parallel_state = get_parallel_state()
+    if parallel_state.tp.rank != 0 or not parallel_state.is_pp_last_stage:
+        return None
+    rank = torch.distributed.get_rank()
+    path = Path(args.save_debug_train_data.format(rollout_id=rollout_id, rank=rank)).with_suffix(".critic.pt")
+    payload = dict(
+        schema_version=2,
+        value_bin_size=100,
+        rollout_id=rollout_id,
+        rank=rank,
+        full_history="value_slices" in rollout_data,
+        episodes=compact_rollout(rollout_data),
+    )
+    mode = "full_history" if "value_slices" in rollout_data else "actor_summary"
+    token_directory = Path(args.load_debug_rollout_data).resolve().parent / "validation_values" / mode
+    token_args = copy.copy(args)
+    token_args.save_debug_train_data = str(
+        token_directory / f"batch_{rollout_id:04d}" / path.parent.name / path.name
+    )
+    save_debug_critic_values(token_args, rollout_id=rollout_id, rollout_data=rollout_data, rank=rank)
+    path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
     return path

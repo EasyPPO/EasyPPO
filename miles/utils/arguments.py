@@ -1586,6 +1586,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument(
+                "--critic-validation-plan",
+                type=str,
+                default=None,
+                help="Frozen FrontierSmith validation replay/trace-selection manifest (synchronous Megatron only).",
+            )
+            parser.add_argument(
+                "--critic-validation-output",
+                type=str,
+                default=None,
+                help="Directory for per-checkpoint raw validation predictions and metrics.",
+            )
+            parser.add_argument(
+                "--critic-validation-interval",
+                type=int,
+                default=5,
+                help="Evaluate the frozen critic validation cohort after this many completed logical batches.",
+            )
+            parser.add_argument(
                 "--critic-save",
                 type=str,
                 default=None,
@@ -3987,6 +4005,14 @@ def miles_validate_args(args):
         validate_skip_actor_forward_only(args)
 
     validate_score_centering_args(args)
+
+    if args.critic_validation_plan:
+        # Defer experiment-specific dependencies for runs without frozen critic validation.
+        from agentic_critic_pipeline.validation import validate_launch
+
+        validate_launch(args)
+    elif args.critic_validation_output:
+        raise ValueError("--critic-validation-output requires --critic-validation-plan")
 
     _maybe_apply_dumper_overrides(args)
 

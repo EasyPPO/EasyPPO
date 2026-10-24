@@ -14,7 +14,7 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def training_quotas(problems, seed, batches=40, prompts_per_batch=8, trajectories_per_prompt=16):
+def training_quotas(problems, seed, batches=50, prompts_per_batch=32, trajectories_per_prompt=16):
     """Allocate exactly the episode groups consumed by the fixed training run."""
     identifiers = sorted(problem["problem_id"] for problem in problems)
     groups = batches * prompts_per_batch
@@ -127,21 +127,33 @@ def qualify_inventory(rows, root, dataset, report_path):
 def prepare(
     smith_root,
     frontier_root,
-    train_count=120,
-    test_count=20,
+    train_count=128,
+    test_count=0,
     seed=20261021,
     smith_quality_report=None,
     frontier_quality_report=None,
+    training_batches=50,
+    prompts_per_batch=32,
+    episodes_per_group=16,
+    validation_group_size=32,
 ):
+    if min(training_batches, prompts_per_batch, episodes_per_group, validation_group_size) < 1:
+        raise ValueError("Sampling dimensions must be positive")
+    if train_count < prompts_per_batch or train_count % prompts_per_batch:
+        raise ValueError("Training problem count must be a positive multiple of prompts_per_batch")
+    if test_count < 0:
+        raise ValueError("Test problem count cannot be negative")
     train = inventory(smith_root, "frontiersmith")
-    test = inventory(frontier_root, "frontiercs")
+    test = inventory(frontier_root, "frontiercs") if test_count else []
     rng = random.Random(seed)
     rng.shuffle(train)
     rng.shuffle(test)
     # Preserve the complete seeded order, then take the first qualifying tasks.
     # Report verdicts were frozen before any actor trajectory is collected.
     train, smith_quality = qualify_inventory(train, smith_root, "frontiersmith", smith_quality_report)
-    test, frontier_quality = qualify_inventory(test, frontier_root, "frontiercs", frontier_quality_report)
+    frontier_quality = None
+    if test_count:
+        test, frontier_quality = qualify_inventory(test, frontier_root, "frontiercs", frontier_quality_report)
     if len(train) < train_count or len(test) < test_count:
         raise ValueError(f"Not enough default tasks: train={len(train)}, test={len(test)}")
     train = train[:train_count]
@@ -168,17 +180,17 @@ def prepare(
         },
         "sampling": {
             "train": {
-                "quota_by_problem": training_quotas(train, seed),
-                "total_episodes": 5120,
-                "episodes_per_group": 16,
-                "training_batches": 40,
-                "prompts_per_batch": 8,
+                "quota_by_problem": training_quotas(train, seed, training_batches, prompts_per_batch, episodes_per_group),
+                "total_episodes": training_batches * prompts_per_batch * episodes_per_group,
+                "episodes_per_group": episodes_per_group,
+                "training_batches": training_batches,
+                "prompts_per_batch": prompts_per_batch,
                 "sample_start": 0,
             },
-            "validation": {"samples_per_problem": 8, "sample_start": 64},
+            "validation": {"samples_per_problem": validation_group_size, "sample_start": 0},
             "test": {"samples_per_problem": 8, "sample_start": 0},
         },
-        "validation_note": "Held-out rollout seeds on the 120 training problems; test uses a separate dataset.",
+        "validation_note": "Held-out rollout seeds on the selected training problems; test uses a separate dataset.",
     }
     manifest["manifest_hash"] = digest(manifest)
     return manifest
@@ -190,10 +202,14 @@ def main():
     parser.add_argument("--frontier-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--smith-quality-report", required=True)
-    parser.add_argument("--frontier-quality-report", required=True)
-    parser.add_argument("--train-count", type=int, default=120)
-    parser.add_argument("--test-count", type=int, default=20)
+    parser.add_argument("--frontier-quality-report")
+    parser.add_argument("--train-count", type=int, default=128)
+    parser.add_argument("--test-count", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20261021)
+    parser.add_argument("--training-batches", type=int, default=50)
+    parser.add_argument("--prompts-per-batch", type=int, default=32)
+    parser.add_argument("--episodes-per-group", type=int, default=16)
+    parser.add_argument("--validation-group-size", type=int, default=32)
     args = parser.parse_args()
     output = Path(args.output)
     manifest = prepare(
@@ -204,6 +220,10 @@ def main():
         args.seed,
         args.smith_quality_report,
         args.frontier_quality_report,
+        training_batches=args.training_batches,
+        prompts_per_batch=args.prompts_per_batch,
+        episodes_per_group=args.episodes_per_group,
+        validation_group_size=args.validation_group_size,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() and json.loads(output.read_text()) != manifest:

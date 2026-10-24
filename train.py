@@ -118,6 +118,11 @@ async def train(args, *, disposer: Disposer):
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_pack.for_critic())
+            if args.critic_validation_plan and (rollout_id + 1) % args.critic_validation_interval == 0:
+                # Read the updated, resident critic without invoking an optimizer or actor rollout.
+                from agentic_critic_pipeline.validation_driver import evaluate
+
+                await evaluate(args, critic_model, rollout_executor, rollout_id)
             if args.offload_train:
                 await critic_model.offload()
             if rollout_id >= args.num_critic_only_steps:

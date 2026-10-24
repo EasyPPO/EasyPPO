@@ -17,7 +17,11 @@ exec bash "$ROOT/scripts/agentic_critic/miles_runtime.sh" python \
   "$ROOT/scripts/agentic_critic/miles_train.py" \
   --model "$MODEL" --rollouts "$ROLLOUT_DIR" --output "$OUTPUT" \
   --model-dir "$MILES_MODEL_DIR" --prompt-data "$PROMPT_DATA" \
-  --mode "${MODE:-full_history}" --steps "${MAX_BATCHES:-${MAX_STEPS:-40}}" \
+  --mode "${MODE:-full_history}" --steps "${MAX_BATCHES:-${MAX_STEPS:-50}}" \
   --gpus "${NPROC_PER_NODE:-8}" --tensor-parallel "${TENSOR_MODEL_PARALLEL_SIZE:-1}" \
   --max-tokens "${MAX_SEQUENCE_LENGTH:-120000}" \
-  --save-interval "${SAVE_INTERVAL:-40}" "$@"
+  --save-interval "${SAVE_INTERVAL:-50}" \
+  --problems-per-batch "${PROBLEMS_PER_BATCH:-32}" --episodes-per-problem "${EPISODES_PER_PROBLEM:-16}" \
+  --mini-batches "${MINI_BATCHES:-4}" \
+  --validation-plan "${VALIDATION_PLAN:?Prepare frozen validation replay first}" \
+  --validation-interval "${VALIDATION_INTERVAL:-5}" "$@"

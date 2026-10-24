@@ -19,7 +19,7 @@ mounts+=(--mount "type=bind,src=$scratch/tmp,dst=/tmp"
   --mount "type=bind,src=$scratch/cache,dst=/root/.cache"
   --mount "type=bind,src=$scratch/triton,dst=/root/.triton"
   --mount "type=bind,src=$scratch/cupy,dst=/root/.cupy")
-for name in MODEL ROLLOUT_DIR OUTPUT OUTPUT_ROOT TRAIN_DATA DATA PROMPT_DATA MILES_MODEL_DIR; do
+for name in MODEL ROLLOUT_DIR OUTPUT OUTPUT_ROOT TRAIN_DATA VALIDATION_DATA VALIDATION_PLAN MANIFEST DATA PROMPT_DATA MILES_MODEL_DIR; do
   path=${!name:-}
   [[ -n "$path" ]] || continue
   if [[ ! -e "$path" ]]; then
