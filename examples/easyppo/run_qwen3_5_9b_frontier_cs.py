@@ -50,7 +50,8 @@ Args:
       --custom-rm-path my_frontier_cs.reward.judge_score
 """
 
-from dataclasses import dataclass
+import shlex
+from dataclasses import dataclass, field
 
 import typer
 
@@ -64,7 +65,7 @@ _CRITIC_MINI_BATCH_SIZE = 128
 
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
-    run_id: str = command_utils.create_run_id()
+    run_id: str = field(default_factory=command_utils.create_run_id)
     prompt_data: str = ""
     custom_rm_path: str = ""
     model_name: str = "Qwen3.5-9B-FrontierCS-SFT-DSv3.1"
@@ -101,8 +102,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U = args.create_backend()
-    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command_cpu(f"hf download {args.hf_repo} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(shlex.join(["mkdir", "-p", args.model_dir, args.data_dir]))
+    U.exec_command_cpu(
+        shlex.join(["hf", "download", args.hf_repo, "--local-dir", f"{args.model_dir}/{args.model_name}"])
+    )
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -133,10 +136,10 @@ def execute(args: ScriptArgs):
     # The critic starts from the same SFT init as the actor: --critic-load falls back to --load,
     # and --critic-save to --save with a '_critic' suffix.
     ckpt_args = (
-        f"--hf-checkpoint {args.model_dir}/{args.model_name}/ "
-        f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
+        f"--hf-checkpoint {shlex.quote(args.model_dir + '/' + args.model_name + '/')} "
+        f"--ref-load {shlex.quote(args.model_dir + '/' + args.model_name + '_torch_dist')} "
+        f"--load {shlex.quote(load_save_path)} "
+        f"--save {shlex.quote(load_save_path)} "
         f"--save-interval {args.save_interval} "
     )
 
@@ -159,7 +162,7 @@ def execute(args: ScriptArgs):
         )
 
     rollout_args = (
-        f"--prompt-data {args.prompt_data} "
+        f"--prompt-data {shlex.quote(args.prompt_data)} "
         f"{task_args}"
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "

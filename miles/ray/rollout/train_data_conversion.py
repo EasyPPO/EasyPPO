@@ -6,6 +6,7 @@ import torch
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -424,6 +425,101 @@ def split_train_data_by_dp_shards(args, data: dict[str, Any], train_parallel_con
     return split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
 
 
+def split_full_history_shards(
+    args,
+    data: dict[str, Any],
+    critic_data: dict[str, Any],
+    spans: list[tuple[int, int, int]],
+    parallel: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Keep each complete critic episode and all its actor segments on the same DP rank.
+
+    Adapted from EasyPPO/EasyPPO's actor-summary-compact branch (72fa1ce).
+    Unlike that branch, this never changes the shared-context split or critic
+    mini-batch scheduler. One episode per forward micro-batch keeps collective
+    counts equal even when ranks receive different numbers of actor segments.
+    """
+    if getattr(args, "critic_context_mode", "shared") != "full_history":
+        raise ValueError("Episode-aligned actor/critic sharding requires --critic-context-mode full_history")
+    if not args.use_dynamic_batch_size:
+        raise ValueError("full_history episode packing requires --use-dynamic-batch-size")
+    if parallel.get("cp_size", 1) != 1:
+        # value_slices indexes full response positions, not CP-local value shards.
+        raise ValueError("full_history value slicing currently requires context parallel size 1")
+    if (parallel.get("vpp_size") or 1) != 1:
+        raise ValueError("full_history episode packing currently requires virtual pipeline size 1")
+    if "adapter_slots" in data or "multimodal_train_inputs" in data:
+        raise ValueError("full_history episode packing does not support multi-LoRA or multimodal inputs")
+    dp_size = parallel["dp_size"]
+    batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    actor_lengths = [len(tokens) for tokens in data["tokens"]]
+    critic_lengths = [len(tokens) for tokens in critic_data["tokens"]]
+    num_episodes = len(critic_lengths)
+    if dp_size <= 0 or batch_size <= 0 or batch_size % dp_size:
+        raise ValueError("full_history global batch size must be positive and divisible by the data-parallel size")
+    if not num_episodes or num_episodes % batch_size:
+        raise ValueError("full_history requires complete logical batches of episodes; partial batches are unsupported")
+    critic_steps = getattr(args, "critic_num_steps_per_rollout", None)
+    critic_steps = 1 if critic_steps is None else critic_steps
+    if critic_steps <= 0 or num_episodes % (dp_size * critic_steps):
+        raise ValueError("full_history episode count must be divisible by DP size times critic mini-batch steps")
+    if len(spans) != len(actor_lengths):
+        raise ValueError("full_history requires exactly one critic span for each actor sample")
+    siblings: list[list[int]] = [[] for _ in critic_lengths]
+    for index, (episode, start, length) in enumerate(spans):
+        if not 0 <= episode < num_episodes or start < 0 or length != data["response_lengths"][index]:
+            raise ValueError(f"Invalid full_history critic span for actor sample {index}")
+        if start + length > critic_data["response_lengths"][episode]:
+            raise ValueError(f"full_history critic span for actor sample {index} exceeds its episode")
+        siblings[episode].append(index)
+    budget = args.max_tokens_per_gpu
+    if budget is None or budget <= 0:
+        raise ValueError("full_history requires a positive --max-tokens-per-gpu")
+    for episode, indices in enumerate(siblings):
+        if not indices:
+            raise ValueError(f"full_history critic episode {episode} has no actor samples")
+        if max(critic_lengths[episode], sum(actor_lengths[i] for i in indices)) > budget:
+            raise ValueError(f"full_history episode {episode} exceeds --max-tokens-per-gpu; increase the token budget")
+
+    # The critic's episode ownership wins over independent actor length balancing:
+    # all sibling values must be available locally for the existing value_slices.
+    partitions = _full_history_episode_partitions(args, critic_lengths, batch_size=batch_size, dp_size=dp_size)
+    actor_partitions = [[i for episode in part for i in siblings[episode]] for part in partitions]
+    shards = _package_shards(args, {**data, "total_lengths": actor_lengths}, actor_partitions)
+    critic_shards = _package_shards(args, {**critic_data, "total_lengths": critic_lengths}, partitions)
+    num_rollouts = [batch_size] * (num_episodes // batch_size)
+    for actor, critic, episodes in zip(shards, critic_shards, partitions, strict=True):
+        offset = 0
+        micro_batches = []
+        for episode in episodes:
+            count = len(siblings[episode])
+            micro_batches.append(list(range(offset, offset + count)))
+            offset += count
+        for shard, indices in ((actor, micro_batches), (critic, [[i] for i in range(len(episodes))])):
+            shard["micro_batch_indices"] = indices
+            shard["num_microbatches"] = [batch_size // dp_size] * len(num_rollouts)
+            shard["num_rollouts"] = list(num_rollouts)
+    attach_value_slices(shards, critic_shards, spans)
+    return shards, critic_shards
+
+
+def _full_history_episode_partitions(args, lengths: list[int], *, batch_size: int, dp_size: int) -> list[list[int]]:
+    partitions: list[list[int]] = [[] for _ in range(dp_size)]
+    for start in range(0, len(lengths), batch_size):
+        if getattr(args, "balance_by_flops", False):
+            # Use the same workload estimator as the standard rollout scheduler.
+            costs = [calculate_fwd_flops([length], args) for length in lengths[start : start + batch_size]]
+        else:
+            costs = lengths[start : start + batch_size]
+        if args.balance_data or getattr(args, "balance_by_flops", False):
+            step = get_seqlen_balanced_partitions(costs, dp_size, equal_size=True)
+        else:
+            step = [list(range(rank, batch_size, dp_size)) for rank in range(dp_size)]
+        for partition, indices in zip(partitions, step, strict=True):
+            partition.extend(start + index for index in indices)
+    return partitions
+
+
 def build_critic_samples(samples) -> tuple[list[Sample], list[tuple[int, int, int]]]:
     """The critic's own samples under --critic-context-mode full_history, and where each actor sample's values sit.
 
@@ -488,7 +584,7 @@ def attach_value_slices(
             episode, start, length = spans[k]
             assert episode in local, (
                 "--critic-context-mode full_history: a sample and its episode-level critic sample landed on "
-                "different data-parallel ranks; this is only supported with a data-parallel size of 1 for now"
+                "different data-parallel ranks; use the joint full-history actor/critic shard planner"
             )
             slices.append((local[episode], start, length))
         critic["value_slices"] = slices

@@ -14,11 +14,10 @@ from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
-    convert_samples_to_train_data,
-    attach_value_slices,
     build_critic_samples,
+    convert_samples_to_train_data,
+    split_full_history_shards,
     split_train_data_by_dp,
-    split_train_data_by_dp_shards,
 )
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -173,12 +172,12 @@ class RolloutExecutor:
         full_history = getattr(self.args, "critic_context_mode", "shared") == "full_history"
         if full_history:
             # The critic gets its own samples (one per rollout: the whole episode) and its own shards.
-            assert not self.args.delay_split_train_data_by_dp, (
-                "--critic-context-mode full_history needs the rollout-side DP split"
-            )
-            assert self.custom_convert_samples_to_train_data_func is None, (
-                "--critic-context-mode full_history does not support a custom sample conversion"
-            )
+            assert (
+                not self.args.delay_split_train_data_by_dp
+            ), "--critic-context-mode full_history needs the rollout-side DP split"
+            assert (
+                self.custom_convert_samples_to_train_data_func is None
+            ), "--critic-context-mode full_history does not support a custom sample conversion"
             critic_samples, spans = build_critic_samples(data)
         data = convert_samples_to_train_data(
             self.args,
@@ -201,9 +200,7 @@ class RolloutExecutor:
             )
             store = object_store.get_instance()
             parallel = self._train_parallel_configs_of_model_id[trainer_model_id]
-            shards = split_train_data_by_dp_shards(self.args, data, parallel)
-            critic_shards = split_train_data_by_dp_shards(self.args, critic_data, parallel)
-            attach_value_slices(shards, critic_shards, spans)
+            shards, critic_shards = split_full_history_shards(self.args, data, critic_data, spans, parallel)
             data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             critic_data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in critic_shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref, critic_data_ref=critic_data_ref)
