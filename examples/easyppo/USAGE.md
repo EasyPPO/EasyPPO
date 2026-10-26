@@ -1,7 +1,6 @@
 # EasyPPO on Miles
 
-This branch is a standalone Miles implementation. The root README is preserved
-verbatim from EasyPPO; its verl launch commands apply to the `main` branch. Use
+This branch is a standalone Miles implementation. The root README's verl launch commands apply to the `main` branch. Use
 the commands below for this branch.
 
 ## Included functionality
@@ -36,6 +35,12 @@ python -m pip install -e '.[agentic]'
 The KV algorithm dependency is pinned as a Git submodule. An existing checkout
 can instead be selected with `KV_COMPACTION_REPO=/path/to/compaction`.
 
+## Terminal training
+
+Use the [terminal training guide](TERMINAL.md) for full TMAX training with the
+mini-swe-agent harness, thinking enabled, and official TB2.1 validation.
+The launcher reuses the EasyPPO settings below.
+
 ## Frontier-CS training
 
 Run the Frontier-CS HTTP judge separately, with the problem IDs used by your
@@ -67,10 +72,12 @@ Miles. `--num-critic-only-steps` controls warmup. To train only the critic, set 
 equal to `--num-rollout`. Single-turn training is also available by passing
 `--custom-rm-path your_module.reward` instead of the agentic wrapper.
 
-`full_history` currently requires data-parallel size 1 and colocated actor/episode
-samples; custom train-data conversion and delayed DP splitting are unsupported.
-Choose GPU count and tensor parallelism accordingly. Full-history sequence
-lengths can be substantially larger than actor contexts.
+`full_history` keeps each critic episode and its actor segments on the same
+data-parallel rank. It requires dynamic batching, context parallel size 1,
+virtual pipeline size 1, and complete episode batches divisible by the
+parallel/critic-step configuration. Custom train-data conversion and delayed DP
+splitting are unsupported. The token budget must fit the full critic episode
+and its actor segments; full-history inputs can exceed actor context lengths.
 
 ## Standalone critic training with memory
 

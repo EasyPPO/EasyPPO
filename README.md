@@ -12,6 +12,11 @@ EasyPPO improves PPO training stability by addressing how the critic learns from
 truncated rollouts and noisy returns. It retains token-level GAE, the clipped PPO
 policy objective, and KL regularization.
 
+## Terminal training
+
+See the [terminal training guide](examples/easyppo/TERMINAL.md) for TMAX training
+with automatic Terminal-Bench 2.1 validation on the `miles` branch.
+
 ## Method
 
 EasyPPO combines three changes:

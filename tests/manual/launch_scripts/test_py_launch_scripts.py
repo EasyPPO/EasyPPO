@@ -55,6 +55,12 @@ def _nemotron_checkpoint(sandbox: Path) -> dict[str, object]:
 
 
 _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, object]]] = {
+    "examples/easyppo/run_qwen3_5_9b_terminal.py": lambda sandbox: {
+        "model_dir": str(sandbox / "models"),
+        "data_dir": str(sandbox / "data"),
+        "prompt_data": str(sandbox / "tmax.train.jsonl"),
+        "tasks_dir": str(sandbox / "harbor"),
+    },
     "examples/easyppo/run_qwen3_5_9b_frontier_cs.py": lambda sandbox: {
         "model_dir": str(sandbox / "models"),
         "prompt_data": str(sandbox / "problems.jsonl"),
