@@ -12,6 +12,10 @@ EasyPPO improves PPO training stability by addressing how the critic learns from
 truncated rollouts and noisy returns. It retains token-level GAE, the clipped PPO
 policy objective, and KL regularization.
 
+For the `actor-summary-compact` experiment, see the
+[frozen-model compact-token gradient probe](docs/examples/compact-token-grad-norm.md)
+to compare the first 64 generated tokens after compaction with random 64-token windows.
+
 ## Method
 
 EasyPPO combines three changes:

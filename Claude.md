@@ -1,3 +1,13 @@
+# Compact-token gradient experiment
+
+See [the complete operating guide](docs/examples/compact-token-grad-norm.md) for the
+frozen-model gradient probe. The production configuration randomly selects exactly
+100 post-compaction segments with at least 1,024 generated actor tokens and uses
+eight independent GPU workers for critic caching and actor measurements. Compare
+the first 64 generated tokens with random 64-token windows; direction diagnostics
+use `g_rest = g_all - g_window` for each window. Actor and critic weights never
+update.
+
 # Full-history versus actor-summary critic comparison
 
 The production recipe trains each critic for **50 logical batches of 512 trajectories**:
