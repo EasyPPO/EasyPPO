@@ -237,6 +237,7 @@ def head_keeps(model, total: int, keep) -> dict:
 def compact_cache(
     model, cache, queries: dict, keep, method: str = "am", max_queries: int = 5000, seed: int = 0, causal: bool = False,
     ridge: float = 1e-4, start: int = 0, prev_biases: dict | None = None, end: int | None = None,
+    source_biases: dict | None = None,
 ):  # fmt: skip
     """Compact every full-attention layer of `cache` in place.
 
@@ -262,6 +263,9 @@ def compact_cache(
             compacted memory, with its biases `prev_biases`) as they are. The fit then sees the new keys alone:
             attention is treated as if it were restricted to them. Needs an int `keep`.
     end: stop the compacted range here; preserve all suffix K/V with zero bias (the actor summary).
+    source_biases: existing biases on the range being recompressed, [kv_heads, end-start].
+            These participate in key selection, mass fitting and value targets, unlike prev_biases
+            which describe an untouched prefix. Summary-based AM recompresses from start=0.
     Returns {layer index: bias [kv_heads, t_layer]}, t_layer being the longest head of that layer (plus `start`).
     """
     assert start == 0 or isinstance(keep, int)
@@ -274,10 +278,10 @@ def compact_cache(
     cuda = sorted({layer.keys.device.index for layer in cache.layers if getattr(layer, "keys", None) is not None and layer.keys.is_cuda})
     with torch.random.fork_rng(devices=cuda):
         torch.manual_seed(seed)
-        return _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed, end)
+        return _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed, end, source_biases)
 
 
-def _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed, end):
+def _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed, end, source_biases):
     biases = {}
     for idx, attn in _attention_layers(model):
         layer = cache.layers[idx]
@@ -289,13 +293,18 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
         suffix_keys, suffix_values = layer.keys[:, :, stop:], layer.values[:, :, stop:]
         suffix_bias = keys.new_zeros(keys.shape[1], suffix_keys.shape[-2], dtype=torch.float32)
         kv_heads, total = keys.shape[1], keys.shape[2]
+        source_bias = keys.new_zeros(kv_heads, total, dtype=torch.float32)
+        if source_biases is not None:
+            source_bias = source_biases[idx].to(device=keys.device, dtype=torch.float32)
+            if source_bias.shape != (kv_heads, total):
+                raise ValueError("source biases must cover exactly the range being compacted")
         old_bias = torch.zeros(kv_heads, start, dtype=torch.float32, device=keys.device)
         if prev_biases and idx in prev_biases:
             old_bias = prev_biases[idx].to(keys.device)
             assert old_bias.shape == (kv_heads, start)
         keeps = head_keeps(model, total, keep)
         if method == "none":
-            biases[idx] = torch.cat([old_bias, torch.zeros(kv_heads, total, dtype=torch.float32, device=keys.device), suffix_bias], dim=1)
+            biases[idx] = torch.cat([old_bias, source_bias, suffix_bias], dim=1)
             continue
         group = attn.num_key_value_groups
         new_k, new_v, beta = [], [], []
@@ -304,14 +313,14 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
                 # Exact identity even for rank-deficient or undersampled fits at ratio=1.
                 new_k.append(keys[0, g])
                 new_v.append(values[0, g])
-                beta.append(torch.zeros(total, device=keys.device))
+                beta.append(source_bias[g])
                 continue
             if method in ("recent", "random"):
                 t = min(keeps[(idx, g)], total)
                 sel = torch.arange(total - t, total) if method == "recent" else torch.randperm(total, generator=gen)[:t].sort().values
                 new_k.append(keys[0, g, sel])
                 new_v.append(values[0, g, sel])
-                beta.append(torch.zeros(t, device=keys.device))
+                beta.append(source_bias[g, sel])
                 continue
             qg = queries[idx][g * group : (g + 1) * group]  # [group, n_tokens, d]
             q = qg.reshape(-1, keys.shape[-1])
@@ -319,10 +328,10 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
             if q.shape[0] > max_queries:
                 pick = torch.randperm(q.shape[0], generator=gen)[:max_queries]
                 q, pos = q[pick], pos[pick]
-            bias = None
+            bias = source_bias[g].unsqueeze(0) if source_biases is not None else None
             if causal:
                 assert qg.shape[1] == total, "causal=True expects the prefix's own queries"
-                bias = torch.zeros(q.shape[0], total, device=q.device)
+                bias = source_bias[g].expand(q.shape[0], -1).clone()
                 bias[(torch.arange(total)[None, :] > pos[:, None]).to(q.device)] = float("-inf")
             t = keeps[(idx, g)]
             if method == "evict":
@@ -332,8 +341,13 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
                 new_v.append(values[0, g, sel_sorted])
                 beta.append(torch.zeros(t, device=keys.device))
                 continue
-            if method in ("am_cv", "am_ridge"):
+            if method in ("am_cv", "am_ridge") or source_biases is not None:
                 c1, b, sel = alg._select_keys_highest_attention(keys[0, g].float(), q.float(), t, bias)
+                # Upstream NNLS uses exp(qK + source_bias) as its design matrix.
+                # Its fitted bias is an increment; stored keys need the absolute bias.
+                b = b + source_bias[g, sel]
+                if method not in ("am_cv", "am_ridge"):
+                    c2 = alg._compute_C2(c1, b, keys[0, g].float(), values[0, g].float(), q.float(), attention_bias=bias)
             else:
                 c1, b, c2, sel = alg.compute_compacted_cache(keys[0, g].float(), values[0, g].float(), q.float(), t, bias)
             if method in ("am_cv", "am_ridge"):
@@ -383,9 +397,17 @@ def compact_segment(model, cache, next_tokens, *, seen, segment_length, memory_l
     """Advance detached memory identically in the reference and checkpointed episode readers."""
     device = cache.layers[_attention_layers(model)[0][0]].keys.device
     compact_length, end = segment_length, None
+    start, previous, source_biases = memory_length, biases, None
     if config["queries"] == "summary":
-        compact_length = summary_span[0]
-        end = memory_length + compact_length
+        # Recompact all physical history, including earlier fitted blocks and summaries.
+        # Only this segment's summary suffix remains protected. The harness owns triggers.
+        compact_length = memory_length + summary_span[0]
+        start, end, previous = 0, compact_length, {}
+        source_biases = {}
+        for idx, _ in _attention_layers(model):
+            keys = cache.layers[idx].keys
+            prior = biases.get(idx, keys.new_zeros(keys.shape[1], 0, dtype=torch.float32))
+            source_biases[idx] = torch.cat([prior, prior.new_zeros(keys.shape[1], summary_span[0])], dim=1)
         queries = own_queries
         max_queries = max(q.shape[0] * q.shape[1] for q in queries.values())
     elif config["queries"] == "hindsight":
@@ -400,6 +422,7 @@ def compact_segment(model, cache, next_tokens, *, seen, segment_length, memory_l
     with torch.autocast(device_type=device.type, enabled=False):
         result = compact_cache(
             model, cache, queries, keep, method=config["method"], max_queries=max_queries,
-            causal=config["queries"] == "causal", ridge=config["ridge"], start=memory_length, prev_biases=biases, end=end,
+            causal=config["queries"] == "causal", ridge=config["ridge"], start=start, prev_biases=previous, end=end,
+            source_biases=source_biases,
         )
     return result, memory_length + keep + segment_length - compact_length

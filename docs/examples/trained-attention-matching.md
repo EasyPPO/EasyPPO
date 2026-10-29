@@ -89,7 +89,15 @@ from ranks with unequal token counts, before clipping and updating.
 Each replay batch first receives a no-gradient value pass; its predictions stay
 fixed as the clipping reference for all mini-batches. Training updates the entire
 critic backbone and value head. AM memory uses every original actor summary token
-and 0.1 pre-summary KV retention. Actor summary generation is unchanged. KV fits
+and 0.1 retention of the entire physical KV prefix before the current summary.
+Every compaction recompresses earlier compressed memory and earlier summaries
+together with the new prefix. Only the current summary suffix is protected;
+its trailing template tokens are retained as well. Existing attention biases
+participate in key selection, mass fitting and value fitting. The harness owns
+trigger timing; the compactor does not impose a new cache-size threshold.
+This follows the whole-cache recompression mechanism in
+[Appendix F.3](https://arxiv.org/html/2602.16284v2#A6.SS3), with the actor summary
+replacing the protected recent 20 tokens. Actor summary generation is unchanged. KV fits
 are detached and rebuilt at current weights. Summary probing has no additional
 model pass; the checkpointed training reader retains its existing no-grad cache
 reconstruction pass on nonfinal segments. This work is included in training time.

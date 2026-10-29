@@ -10,7 +10,8 @@ segments of an episode, and in whether the loss can back-propagate into them:
                (hybrid models only)
   full_detach  earlier segments fully visible, but as constants: no gradient into them
   full         the whole append-only log in one differentiable forward pass
-  attention_matching  fitted pre-summary KV memory, using all original actor summary query positions
+  attention_matching  recompact all pre-summary KV (including old fitted memory), protecting the current
+                      summary suffix and probing with all original actor summary query positions
   kv           earlier segments reach the critic as a compacted attention KV (plus the recurrent states), as
                constants. After each segment its keys are compacted to a fraction; the memory is recomputed
                with the current weights in every forward pass (fully synchronous). With every key kept this

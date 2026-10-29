@@ -265,6 +265,12 @@ gradient equivalence with unequal trajectory lengths, unchanged offline inputs,
 checkpoint exports, validation and figures. They use tiny random models and
 synthetic trajectories; production AM training remains TODO.
 
+The whole-prefix recompression update passed 97 targeted regression tests.
+Coverage includes six consecutive compactions in the reference, value and training
+readers; current-summary preservation; unchanged logical positions and detached
+memory; BF16 forward/backward; and repeated biased-cache mass/output matching
+against an uncompressed reference. These remain development checks, not production results.
+
 ### Existing compact-token gradient probe
 
 See [the complete operating guide](docs/examples/compact-token-grad-norm.md) for the
@@ -340,6 +346,10 @@ phase timings and peak CUDA memory. Render `training_report/` with the same
 validation and compaction metrics plus AM training and cost curves. This is actual
 AM critic optimization, not a frozen input swap. Summary queries still use all
 original summary tokens; retention remains 0.1 and cross-segment KV is detached.
+Each compaction refits the entire physical prefix before the current summary,
+including earlier compressed KV and earlier summaries. Only the current summary
+suffix is protected. The harness owns compaction triggers; this code adds no
+cache-size threshold. Existing attention biases enter selection and both fits.
 
 TODO acceptance criteria: before marking this experiment complete, verify unchanged input file hashes,
 all replay batches and mini-batch updates, paired validation cohorts/checkpoints,
@@ -410,9 +420,16 @@ directory must contain `critic.safetensors`, `value_head.pt` and `meta.json`.
 
 AM uses **every original actor summary token**, with no 400/N query budget and no
 decode/re-tokenize cycle. During the critic's ordinary segment forward, it
-extracts the summary queries and fits only the preceding segment KV. The default
-retention is 0.1 for that pre-summary block; summary KV and previous memory blocks
-remain intact. Cross-segment memory is detached. Frozen evaluation adds no second
+extracts the summary queries and recompresses all KV before the current summary,
+including previously compressed memory and earlier summaries. The default
+retention is 0.1 of this entire physical prefix; only the current summary suffix
+remains intact. This follows the repeated whole-cache mechanism in
+[the AM paper, Appendix F.3](https://arxiv.org/html/2602.16284v2#A6.SS3), replacing
+its protected recent 20 tokens with the current actor summary. Trigger timing is
+owned by the harness, with no new threshold here. Existing biases are used in
+key selection, mass fitting and value fitting; fitted bias increments are added
+to the selected keys' old biases before the value fit and cache read.
+Cross-segment memory is detached. Frozen evaluation adds no second
 model forward for probing and no training cache-rebuild pass. The optional
 standalone training reader still rebuilds detached memory with its existing
 no-grad forward on nonfinal segments; do not describe evaluation timing as

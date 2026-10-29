@@ -217,7 +217,7 @@ def test_attention_context_restores_model_on_exception(model):  # noqa: F811
 
 
 def test_bfloat16_autocast_training_matches_value_pass(model, head):  # noqa: F811
-    segments = make_segments(8, 3)
+    segments = make_segments(8, 7)
     config = {}
     with torch.autocast("cpu", dtype=torch.bfloat16):
         predicted, _ = collect(model, head, segments, "attention_matching", config, train=False)
@@ -227,26 +227,117 @@ def test_bfloat16_autocast_training_matches_value_pass(model, head):  # noqa: F8
     assert grads and all(torch.isfinite(g).all() for g in grads.values())
 
 
-@torch.no_grad()
-def test_compression_keeps_earlier_memory_blocks_and_biases(model, head, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("reader", ["reference", "value", "train"])
+def test_repeated_compaction_recompresses_history_and_protects_current_summary(
+    model, head, monkeypatch, reader  # noqa: F811
+):
     compact = kv_compact.compact_cache
-    checked = []
+    segments = make_segments(11, 7)
+    checked, previous = [], {}
+    expected_positions, seen = {}, 0
+    for segment in segments:
+        expected_positions[tuple(segment.tokens)] = seen
+        seen += len(segment.tokens)
+
+    def positions(module, args, kwargs):
+        ids = kwargs["input_ids"]
+        start = expected_positions[tuple(ids[0].tolist())]
+        actual = kwargs.get("position_ids")
+        if start:
+            assert torch.equal(actual, torch.arange(start, start + ids.shape[1])[None])
+        else:
+            assert actual is None
 
     def check(*args, **kwargs):
-        cache, start = args[1], kwargs["start"]
-        old = {
-            i: (cache.layers[i].keys[:, :, :start].clone(), cache.layers[i].values[:, :, :start].clone())
-            for i, _ in kv_compact._attention_layers(model)
-        }
+        cache, keep = args[1], args[3]
+        segment = segments[len(checked)]
+        summary_start, summary_end = segment.summary_span
+        old_length = next(iter(previous.values())).shape[-1] if previous else 0
+        assert kwargs["start"] == 0 and not kwargs["prev_biases"]
+        assert kwargs["end"] == old_length + summary_start
+        assert keep == max(1, round(0.1 * (old_length + summary_start)))
+        before = copy.deepcopy(cache)
+        for idx, query in args[2].items():
+            assert query.shape[1] == summary_end - summary_start
+            source = kwargs["source_biases"][idx]
+            assert source.shape[-1] == old_length + summary_start
+            if previous:
+                assert torch.equal(source[:, :old_length], previous[idx])
+            assert not source[:, old_length:].any()
         result = compact(*args, **kwargs)
-        for i, (keys, values) in old.items():
-            assert torch.equal(cache.layers[i].keys[:, :, :start], keys)
-            assert torch.equal(cache.layers[i].values[:, :, :start], values)
-            if start:
-                assert torch.equal(result[i][:, :start], kwargs["prev_biases"][i])
-        checked.append(start)
+        expected_length = keep + len(segment.tokens) - summary_start
+        for idx, beta in result.items():
+            layer, original = cache.layers[idx], before.layers[idx]
+            assert layer.keys.shape[-2] == beta.shape[-1] == expected_length
+            assert torch.equal(layer.keys[:, :, keep:], original.keys[:, :, kwargs["end"] :])
+            assert torch.equal(layer.values[:, :, keep:], original.values[:, :, kwargs["end"] :])
+            assert not beta[:, keep:].any()
+            assert torch.isfinite(beta).all() and torch.isfinite(layer.values).all()
+            for tensor in (layer.keys, layer.values, beta):
+                assert not tensor.requires_grad and tensor.grad_fn is None
+        for old, new in zip(before.layers, cache.layers, strict=True):
+            for attr in ("conv_states", "recurrent_states"):
+                if (tensor := getattr(old, attr, None)) is not None:
+                    assert torch.equal(tensor, getattr(new, attr))
+        previous.update({i: b.clone() for i, b in result.items()})
+        checked.append(expected_length)
         return result
 
     monkeypatch.setattr(kv_compact, "compact_cache", check)
-    episode_values(model, head, make_segments(11, 3), "attention_matching", "cpu")
-    assert len(checked) == 2 and checked[0] == 0 and checked[1] > 0
+    handle = model.model.register_forward_pre_hook(positions, with_kwargs=True)
+    try:
+        if reader == "reference":
+            with torch.no_grad():
+                values = episode_values(model, head, segments, "attention_matching", "cpu")
+        else:
+            values, grads = collect(model, head, segments, "attention_matching", None, train=reader == "train")
+            if reader == "train":
+                assert grads and all(torch.isfinite(g).all() for g in grads.values())
+    finally:
+        handle.remove()
+    assert len(checked) == 6
+    assert len(values) == len(segments) and all(torch.isfinite(v).all() for v in values)
+
+
+@torch.no_grad()
+def test_recompression_preserves_biased_attention_mass_and_output(model):  # noqa: F811
+    cache, _ = kv_compact.prefill_with_queries(model, torch.tensor([make_segments(4, 1)[0].tokens]))
+    queries, biases = {}, {}
+    for idx, attn in kv_compact._attention_layers(model):
+        layer = cache.layers[idx]
+        layer.keys = layer.keys[:, :, :1].expand(-1, -1, 16, -1).clone()
+        layer.values = torch.randn_like(layer.keys)
+        biases[idx] = torch.linspace(0.5, 1.5, 16).log().expand(layer.keys.shape[1], -1).clone()
+        queries[idx] = torch.randn(attn.config.num_attention_heads, 5, attn.head_dim)
+    original, original_biases = copy.deepcopy(cache), copy.deepcopy(biases)
+    # Keeping everything must preserve nonzero source biases exactly as well.
+    unchanged = kv_compact.compact_cache(model, cache, queries, 16, method="am_ridge", source_biases=biases)
+    for idx in biases:
+        assert torch.equal(unchanged[idx], biases[idx])
+        assert torch.equal(cache.layers[idx].values, original.layers[idx].values)
+    # One retained identical key gives an exactly solvable mass fit, avoiding a
+    # rank-deficient NNLS oracle. Append fresh zero-bias KV between compactions.
+    for step in range(2):
+        biases = kv_compact.compact_cache(model, cache, queries, 1, method="am_ridge", source_biases=biases)
+        for idx, attn in kv_compact._attention_layers(model):
+            layer, full, group = cache.layers[idx], original.layers[idx], attn.num_key_value_groups
+            for h in range(layer.keys.shape[1]):
+                q = queries[idx][h * group : (h + 1) * group].flatten(0, 1)
+                logits = q @ layer.keys[0, h].T / attn.head_dim**0.5 + biases[idx][h]
+                raw = q @ full.keys[0, h].T / attn.head_dim**0.5 + original_biases[idx][h]
+                torch.testing.assert_close(logits.logsumexp(-1), raw.logsumexp(-1), atol=1e-3, rtol=1e-3)
+                torch.testing.assert_close(
+                    logits.softmax(-1) @ layer.values[0, h],
+                    raw.softmax(-1) @ full.values[0, h],
+                    atol=2e-3,
+                    rtol=2e-3,
+                )
+            if step == 0:
+                new_keys = full.keys[:, :, :3].clone()
+                new_values = torch.randn_like(new_keys)
+                for target in (layer, full):
+                    target.keys = torch.cat([target.keys, new_keys], dim=2)
+                    target.values = torch.cat([target.values, new_values], dim=2)
+                zeros = biases[idx].new_zeros(biases[idx].shape[0], 3)
+                biases[idx] = torch.cat([biases[idx], zeros], dim=1)
+                original_biases[idx] = torch.cat([original_biases[idx], zeros], dim=1)
