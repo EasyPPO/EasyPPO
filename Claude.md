@@ -1,3 +1,110 @@
+# Pending execution: frozen full-history checkpoints with attention matching
+
+The implementation is ready for deployment validation. **Production validation
+has not been run in the development environment.** The user explicitly requested
+that deployment paths remain blank here and that Claude fill them in on the
+machine holding the existing checkpoints and validation data. Do not substitute
+an untrained model, synthetic episodes, training data, or newly collected data
+and present that as the requested validation result. All documentation, reports,
+figure titles and captions must be in English.
+
+Fill in these values before running:
+
+```bash
+export MODEL=""
+export FULL_HISTORY_TRAINING_OUTPUT=""
+export VALIDATION_PLAN=""
+export VALIDATION_JSONL=""
+export FROZEN_AM_OUTPUT=""
+```
+
+- `MODEL`: the exact local HF base used by the previous full-history training.
+- `FULL_HISTORY_TRAINING_OUTPUT`: the existing `full_history/train` directory,
+  containing `miles_run.json`. Its `checkpoints` field must locate the native
+  `checkpoints_critic` directory and its completed-iteration tracker.
+- `VALIDATION_PLAN`: the original `validation_replay/validation_plan.json`.
+- `VALIDATION_JSONL`: the original validation trajectory JSONL, including exact
+  segment tokens and original actor events. A relocated copy is allowed only
+  when its SHA-256 matches the plan. Prediction dumps cannot replace these inputs.
+- `FROZEN_AM_OUTPUT`: a new output directory, outside the existing training results.
+
+Use the pinned repository environment (`transformers==5.12.1`, compatible PyTorch,
+CUDA/FLA for GPU inference, and Matplotlib). Initialize the pinned upstream code:
+
+```bash
+git submodule update --init third_party/compaction
+: "${MODEL:?Fill MODEL}"
+: "${FULL_HISTORY_TRAINING_OUTPUT:?Fill FULL_HISTORY_TRAINING_OUTPUT}"
+: "${VALIDATION_PLAN:?Fill VALIDATION_PLAN}"
+: "${VALIDATION_JSONL:?Fill VALIDATION_JSONL}"
+: "${FROZEN_AM_OUTPUT:?Fill FROZEN_AM_OUTPUT}"
+python -m agentic_critic_pipeline.frozen_am_validation \
+  --base-model "$MODEL" --training-output "$FULL_HISTORY_TRAINING_OUTPUT" \
+  --plan "$VALIDATION_PLAN" --episodes "$VALIDATION_JSONL" \
+  --out "$FROZEN_AM_OUTPUT" --workers 8 --dtype bfloat16 \
+  --kv-ratio 0.1 --max-tokens 120000
+```
+
+The runner converts each available completed full-history checkpoint, evaluates
+the **same frozen weights** using `full_history`, `actor_summary` and
+`attention_matching` inputs, and renders the report. It does not train an AM
+critic or update any weights. Native checkpoint iteration is the zero-based
+rollout ID: `iter_0000004` is completed training batch 5. The runner uses every
+available checkpoint up to the completed tracker, without inventing missing
+training checkpoints. Each GPU worker loads one complete critic; there is no
+tensor parallelism in this offline phase.
+
+If native checkpoints were already converted, use repeated `--checkpoint BATCH=DIR`
+instead of `--training-output`, for example `--checkpoint "5=$CRITIC_BATCH_5"`.
+Verify that every supplied export came from the full-history-trained run. Each
+directory must contain `critic.safetensors`, `value_head.pt` and `meta.json`.
+
+AM uses **every original actor summary token**, with no 400/N query budget and no
+decode/re-tokenize cycle. During the critic's ordinary segment forward, it
+extracts the summary queries and fits only the preceding segment KV. The default
+retention is 0.1 for that pre-summary block; summary KV and previous memory blocks
+remain intact. Cross-segment memory is detached. Frozen evaluation adds no second
+model forward for probing and no training cache-rebuild pass. The optional
+standalone training reader still rebuilds detached memory with its existing
+no-grad forward on nonfinal segments; do not describe evaluation timing as
+training overhead. Q extraction repeats the summary Q projection, and AM fitting
+and biased-cache reads remain additional work.
+
+Before declaring the production experiment complete, verify:
+
+1. The full original frozen cohort and the same preselected trace IDs are present
+   for all three inputs at each checkpoint. No token truncation or text fallback.
+2. `frozen_run.json` reports `complete`; checkpoint hashes and the plan hash agree
+   across all conditions. Keep the existing training outputs untouched.
+3. `validation_report/` contains EV curves, exact compaction-count panels,
+   compaction L1 profiles, jump distributions, the selected trajectory curves,
+   `evaluation_cost.png/.pdf`, and `plot_data.json`. Inspect the figures.
+4. Report real validation EV/MSE/MAE and measured inference time/memory. Timing
+   excludes checkpoint loading, conversion and plotting; it does not measure
+   full critic-training overhead. Explain undefined EV or ineligible boundaries.
+5. Record the filled paths, checkpoint batches, hardware, software versions and
+   result location here after the run. Do not mark synthetic smoke tests as
+   production results or claim an AM quality improvement without measurements.
+
+Re-render existing results without running inference:
+
+```bash
+python -m agentic_critic_pipeline.frozen_am_figures --output-root "$FROZEN_AM_OUTPUT"
+```
+
+For new experiments, `scripts/agentic_critic/run_comparison.sh` now invokes this
+frozen AM comparison automatically **after both existing critic training runs**.
+For previously trained checkpoints, use the command above; do not rerun training.
+
+Development verification passed 117 targeted tests covering synthetic tiny Qwen3.5 checkpoints, exact
+summary-token reconstruction, two independent CPU evaluation workers, checkpoint
+immutability, paired cohort checks, AM cache/gradient contracts, and PNG/PDF
+rendering for both the new and original reports. It does not establish production
+accuracy, eight-GPU throughput, or native checkpoint-conversion success. The
+broader Miles/launcher integration tests could not complete locally: the CPU
+environment lacks Ray, and the separate Miles environment has an SGLang build
+without `encoding_dsv4`. Run those checks in the pinned deployment environment.
+
 # Compact-token gradient experiment
 
 See [the complete operating guide](docs/examples/compact-token-grad-norm.md) for the
@@ -119,7 +226,9 @@ Do not count incomplete attempts toward the quota or change sharding on resume.
 Stop actor servers sharing the training GPUs. Launch once to train the critics
 sequentially on identical replay with validation every five batches. The launcher
 retains native checkpoints, all per-rank validation prediction dumps and raw validation
-statistics. HF export and figure rendering are separate, manually invoked steps.
+statistics. After both training runs, the launcher exports the saved full-history
+checkpoints and runs the separate frozen AM comparison described above. Rendering
+the original two-trained-critic report remains a separate, manually invoked step.
 
 ```bash
 export TRAIN_DATA="$PWD/artifacts/critic_512/cohort/train/train_ready.jsonl"

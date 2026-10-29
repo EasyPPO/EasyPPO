@@ -12,8 +12,8 @@ from agentic_critic_pipeline.validation_metrics import ValidationMetrics
 from agentic_critic_pipeline.validation_storage import validate_compact_episode
 
 MODES = ("full_history", "actor_summary")
-COLORS = {"full_history": "#0072B2", "actor_summary": "#D55E00"}
-LABELS = {"full_history": "Full history", "actor_summary": "Actor summary"}
+COLORS = {"full_history": "#0072B2", "actor_summary": "#D55E00", "attention_matching": "#009E73"}
+LABELS = {"full_history": "Full history", "actor_summary": "Actor summary", "attention_matching": "Attention matching"}
 
 
 def _load(root):
@@ -53,11 +53,11 @@ def _load(root):
     return plan, results
 
 
-def _rebuild_profiles(root, plan, *, mode, metrics):
+def _rebuild_profiles(root, plan, *, mode, metrics, validation_dir="train/validation"):
     batch = metrics["batch"]
     stats = ValidationMetrics(plan, mode=mode, batch=batch)
     seen = set()
-    path = root / mode / f"train/validation/batch_{batch:04d}/values.jsonl.gz"
+    path = root / mode / validation_dir / f"batch_{batch:04d}/values.jsonl.gz"
     with gzip.open(path, "rt") as stream:
         for episode in map(json.loads, stream):
             identity = episode["episode_id"]
@@ -229,11 +229,12 @@ def _profile_figures(plt, results, output):
     _finish(fig, axes, output, "compaction_jump_by_count")
 
 
-def _trace_figures(plt, root, plan, results, output):
-    batch = results[MODES[0]][-1]["batch"]
+def _trace_figures(plt, root, plan, results, output, *, validation_dir="train/validation"):
+    modes = tuple(results)
+    batch = results[modes[0]][-1]["batch"]
     traces = {}
-    for mode in MODES:
-        path = root / mode / f"train/validation/batch_{batch:04d}/selected_trajectories.jsonl.gz"
+    for mode in modes:
+        path = root / mode / validation_dir / f"batch_{batch:04d}/selected_trajectories.jsonl.gz"
         with gzip.open(path, "rt") as stream:
             traces[mode] = {row["episode_id"]: row for row in map(json.loads, stream)}
         if traces[mode].keys() != set(plan["selected_episode_ids"]):
@@ -242,7 +243,7 @@ def _trace_figures(plt, root, plan, results, output):
     trace_output.mkdir(exist_ok=True)
     for number, identity in enumerate(plan["selected_episode_ids"], 1):
         fig, ax = plt.subplots(figsize=(14, 5), layout="constrained")
-        for mode in MODES:
+        for mode in modes:
             row = traces[mode][identity]
             ax.stairs(
                 row["value_prediction"],
@@ -254,14 +255,11 @@ def _trace_figures(plt, root, plan, results, output):
                 alpha=0.85,
                 rasterized=True,
             )
-        row = traces[MODES[0]][identity]
-        other = traces[MODES[1]][identity]
-        if (
-            row["value_target"] != other["value_target"]
-            or row["compaction_boundaries"] != other["compaction_boundaries"]
-            or row["actor_token_ranges"] != other["actor_token_ranges"]
-        ):
-            raise ValueError("Unpaired trajectory targets/boundaries")
+        row = traces[modes[0]][identity]
+        for mode in modes[1:]:
+            other = traces[mode][identity]
+            if any(row[key] != other[key] for key in ("value_target", "compaction_boundaries", "actor_token_ranges")):
+                raise ValueError("Unpaired trajectory targets/boundaries")
         ax.plot(
             [row["actor_token_ranges"][0][0], row["actor_token_ranges"][-1][1]],
             [row["value_target"][0], row["value_target"][-1]],

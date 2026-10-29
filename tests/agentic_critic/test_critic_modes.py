@@ -55,7 +55,7 @@ def make_segments(seed: int, n: int) -> list[Segment]:
             a, o = rng.randint(2, 5), rng.randint(1, 3)
             resp += [rng.randrange(VOCAB) for _ in range(a + o)]
             mask += [1] * a + [0] * o
-        out.append(Segment(prompt + resp, len(resp), mask))
+        out.append(Segment(prompt + resp, len(resp), mask, (len(prompt) + len(resp) - o - a, len(prompt) + len(resp) - o)))
     return out
 
 
@@ -83,7 +83,7 @@ def test_first_segment_is_the_same_in_every_setting(model, head, seed):
 @pytest.mark.parametrize("seed", range(3))
 def test_full_detach_predicts_exactly_what_full_predicts(model, head, seed):
     segments = make_segments(seed, 3)
-    for a, b in zip(values(model, head, segments, "full"), values(model, head, segments, "full_detach")):
+    for a, b in zip(values(model, head, segments, "full"), values(model, head, segments, "full_detach"), strict=True):
         assert torch.allclose(a, b, atol=1e-4)
 
 
@@ -97,7 +97,7 @@ def test_what_each_setting_can_see_of_an_earlier_segment(model, head, seed):
         mode: not torch.allclose(values(model, head, segments, mode)[1], values(model, head, changed, mode)[1], atol=1e-5)
         for mode in MODES
     }
-    assert moved == {"shared": False, "state": True, "full_detach": True, "full": True, "kv": True}
+    assert moved == {"shared": False, "state": True, "full_detach": True, "full": True, "kv": True, "attention_matching": True}
 
 
 def test_state_differs_from_full_because_attention_is_segment_local(model, head):
@@ -135,7 +135,7 @@ def test_only_full_backpropagates_into_earlier_segments(model, head):
     segments = make_segments(0, 2)
     grads = {mode: grad_into_first_segment(model, head, segments, mode) for mode in MODES}
     assert grads["full"] > 1e-6
-    assert all(grads[m] == 0.0 for m in ("shared", "state", "full_detach", "kv"))
+    assert all(grads[m] == 0.0 for m in ("shared", "state", "full_detach", "kv", "attention_matching"))
 
 
 def test_value_loss_counts_only_actor_tokens(model, head):
@@ -143,7 +143,7 @@ def test_value_loss_counts_only_actor_tokens(model, head):
     vals = values(model, head, segments, "shared")
     total, count = value_loss(vals, segments, target=0.5)
     assert count == sum(sum(s.loss_mask) for s in segments)
-    manual = sum(float(((v[torch.tensor(s.loss_mask, dtype=torch.bool)] - 0.5) ** 2).sum()) for v, s in zip(vals, segments))
+    manual = sum(float(((v[torch.tensor(s.loss_mask, dtype=torch.bool)] - 0.5) ** 2).sum()) for v, s in zip(vals, segments, strict=True))
     assert abs(float(total) - manual) < 1e-5 * max(1.0, abs(manual))
 
 

@@ -43,3 +43,9 @@ for trained in full_history actor_summary; do
   OUTPUT="$train_output" MODE="$trained" WANDB_RUN_NAME="$WANDB_GROUP-train-$trained" \
     bash "$ROOT/scripts/agentic_critic/train_b200.sh" "$@"
 done
+# Final frozen-weight ablation: reuse every saved full-history checkpoint and
+# the original validation cohort. This stage performs no additional training.
+bash "$ROOT/scripts/agentic_critic/miles_runtime.sh" python -m agentic_critic_pipeline.frozen_am_validation \
+  --base-model "$MODEL" --plan "$VALIDATION_PLAN" \
+  --training-output "$OUTPUT_ROOT/full_history/train" --out "$OUTPUT_ROOT/frozen_am" \
+  --workers "$NPROC_PER_NODE" --max-tokens "$MAX_SEQUENCE_LENGTH"

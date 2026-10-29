@@ -40,6 +40,14 @@ def test_one_sample_per_segment_with_aligned_fields():
     # every actor token appears in exactly one sample
     marked = "".join(fmt.decode([t for t, m in zip(s["tokens"][-s["response_length"] :], s["loss_mask"]) if m]) for s in samples)
     assert marked == "".join(fmt.decode(e.tokens) for e in ep.events if e.actor)
+    for sample in samples:
+        summary_events = [e for e in ep.events if e.segment == sample["segment"] and e.kind == "summary"]
+        span = sample["metadata"]["summary_span"]
+        if summary_events:
+            start, end = span
+            assert sample["tokens"][start:end] == summary_events[0].tokens
+        else:
+            assert span is None
 
 
 def test_no_compaction_gives_one_sample_whose_critic_tokens_equal_its_tokens():

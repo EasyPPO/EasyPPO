@@ -3,9 +3,10 @@
 Only the full-attention layers are compacted. The linear-attention layers keep their recurrent and
 conv states, which are fixed-size.
 
-The per-head algorithm (which keys to keep, the bias beta, the new values) is the upstream one from
-"Fast KV Compaction via Attention Matching" (github.com/adamzweiger/compaction), imported unchanged.
-This module is the glue the upstream repo does not have for this model family:
+Key selection and mass fitting reuse the pinned upstream implementation from
+"Fast KV Compaction via Attention Matching" (github.com/adamzweiger/compaction).
+The am_ridge variant fits values locally with regularization towards retained values.
+This module adapts the algorithm to this model family:
 
   prefill_with_queries   run a prefix, return its cache and the attention queries of every full-attention layer
   compact_cache          replace each layer's keys/values by the compacted ones, return the biases
@@ -15,12 +16,17 @@ This module is the glue the upstream repo does not have for this model family:
 Everything here is inference-side and gradient-free with respect to the compacted prefix.
 """
 
+import copy
+import math
 import os
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch
+
+from agentic_critic.memory_attention import biased_attention
+from agentic_critic.memory_config import DEFAULT_QUERY_COUNT
 
 UPSTREAM = os.environ.get("KV_COMPACTION_REPO", str(Path(__file__).resolve().parents[1] / "third_party/compaction"))
 
@@ -43,15 +49,46 @@ def _queries(attn, hidden_states, position_embeddings) -> torch.Tensor:
     return q
 
 
+def evenly_spaced_positions(length: int, count: int, *, device=None) -> torch.Tensor:
+    """Distinct positions spanning the segment, including both ends when N > 1."""
+    if length < 1 or count < 1:
+        raise ValueError("query segment length and sample count must be positive")
+    count = min(length, count)
+    if count == 1:
+        return torch.tensor([length // 2], device=device)
+    return torch.div(torch.arange(count, device=device) * (length - 1), count - 1, rounding_mode="floor")
+
+
+def validate_model(model):
+    """This adapter reconstructs Qwen3.5's gated, normalized, post-RoPE queries."""
+    if model.config.model_type != "qwen3_5_text" or not _attention_layers(model):
+        raise ValueError("KV compaction currently supports Qwen3.5 text backbones with full-attention layers")
+    if model.config._attn_implementation not in ("eager", "sdpa"):
+        raise ValueError("KV compaction requires eager or sdpa attention to apply per-head mass biases")
+
+
 @contextmanager
-def capture_queries(model):
+def capture_queries(model, query_count: int | None = None, *, query_span=None):
     """Yield a dict that each forward pass inside the block fills with {layer index: queries [heads, T, d]}, detached."""
     queries, hooks = {}, []
     for idx, attn in _attention_layers(model):
 
         def pre(module, args, kwargs, idx=idx):
             hidden = kwargs.get("hidden_states", args[0] if args else None)
-            queries[idx] = _queries(module, hidden, kwargs["position_embeddings"])[0].detach()
+            embeddings = kwargs["position_embeddings"]
+            if query_span is not None:
+                start, end = query_span
+                end = min(end, start + query_count) if query_count else end
+                hidden = hidden[:, start:end]
+                embeddings = tuple(e[..., start:end, :] for e in embeddings)
+            elif query_count is not None:
+                # N counts token positions: all GQA query heads contribute at each position.
+                count = query_count or math.ceil(5000 / module.num_key_value_groups)
+                positions = evenly_spaced_positions(hidden.shape[1], count, device=hidden.device)
+                hidden = hidden.index_select(1, positions)
+                embeddings = tuple(e.index_select(-2, positions) for e in embeddings)
+            with torch.no_grad():
+                queries[idx] = _queries(module, hidden, embeddings)[0].detach()
 
         hooks.append(attn.register_forward_pre_hook(pre, with_kwargs=True))
     try:
@@ -59,6 +96,27 @@ def capture_queries(model):
     finally:
         for h in hooks:
             h.remove()
+
+
+def validate_summary_segments(segments, config):
+    if config["queries"] == "summary":
+        for idx, segment in enumerate(segments[:-1]):
+            if segment.summary_span is None or segment.summary_span[0] <= 0:
+                raise ValueError(
+                    f"segment {idx} has no actor summary_span; re-export rollouts with summary metadata "
+                    "or use mode=kv with queries=hindsight/causal explicitly"
+                )
+
+
+def segment_queries(model, segment, config):
+    """Capture critic queries from its existing segment pass, never from the actor model."""
+    if config is None:
+        return nullcontext({})
+    if config["queries"] == "summary" and segment.summary_span is not None:
+        return capture_queries(model, query_span=segment.summary_span)
+    if config["queries"] == "causal":
+        return capture_queries(model)
+    return nullcontext({})
 
 
 @torch.no_grad()
@@ -84,32 +142,25 @@ def prefill_with_queries(model, input_ids: torch.Tensor, chunk: int | None = Non
 
 
 @torch.no_grad()
-def probe_queries(model, cache, probe_ids: torch.Tensor, logical_prefix_len: int) -> dict:
-    """Attention queries of tokens that come AFTER the prefix, as {layer index: [heads, n, d]}.
+def probe_queries(model, cache, probe_ids: torch.Tensor, logical_prefix_len: int, *, biases=None, query_count=DEFAULT_QUERY_COUNT) -> dict:
+    """Probe only the first N tokens of the next segment for the hindsight ablation.
 
-    These are the queries that will actually read the compacted keys: they sit at later positions and
-    attend backwards. Queries taken from the prefix's own tokens see the keys at different relative
-    positions (including future ones), which makes them poor stand-ins. In an RL rollout the natural
-    probe is the continuation of the same trajectory. The cache is not modified.
+    The private cache includes earlier compacted memory and its biases. Probe tokens never enter
+    persistent memory. Explicit query_count=0 retains the legacy full-segment, uniform-sampling path.
     """
-    import copy
-
-    queries, hooks = {}, []
-    for idx, attn in _attention_layers(model):
-
-        def pre(module, args, kwargs, idx=idx):
-            hidden = kwargs.get("hidden_states", args[0] if args else None)
-            queries[idx] = _queries(module, hidden, kwargs["position_embeddings"])[0].detach()
-
-        hooks.append(attn.register_forward_pre_hook(pre, with_kwargs=True))
-    try:
-        n = probe_ids.shape[1]
-        positions = torch.arange(logical_prefix_len, logical_prefix_len + n, device=probe_ids.device).unsqueeze(0)
-        model(input_ids=probe_ids, past_key_values=copy.deepcopy(cache), position_ids=positions, use_cache=True)
-    finally:
-        for h in hooks:
-            h.remove()
-    return queries
+    backbone = getattr(model, "model", model)
+    if query_count > 0:
+        probe_ids = probe_ids[:, :query_count]
+    # Even the first probe has a prefix. Use the chunked read path for zero-bias memory too,
+    # rather than letting transformers allocate a full next-segment-by-history mask.
+    if not biases:
+        biases = {
+            idx: cache.layers[idx].keys.new_zeros(cache.layers[idx].keys.shape[1:3], dtype=torch.float32)
+            for idx, _ in _attention_layers(backbone)
+        }
+    with capture_queries(backbone, query_count=0 if query_count == 0 else None) as queries:
+        continue_from(backbone, copy.deepcopy(cache), biases, probe_ids, logical_prefix_len)
+    return dict(queries)
 
 
 def _algorithm(select_only: bool = False):
@@ -150,10 +201,18 @@ def _ridge_value_fit(k, v, q, c1, beta, sel, bias, mask_compact: bool, ridge: fl
         logits, y = logits[rows], y[rows]
     x = torch.softmax(logits, dim=1)
     v0 = v[sel]
+    if x.shape[0] == 0:
+        return v0
+    # The dual solve covers N*G < K (short next segments) without a K-by-K allocation.
+    lam = (ridge * x.square().sum() / x.shape[1]).clamp_min(torch.finfo(x.dtype).eps)
+    residual = y - x @ v0
+    if x.shape[0] < x.shape[1]:
+        gram = x @ x.T
+        gram.diagonal().add_(lam)
+        return v0 + x.T @ torch.linalg.solve(gram, residual)
     gram = x.T @ x
-    lam = ridge * gram.diagonal().mean()
-    eye = torch.eye(gram.shape[0], device=gram.device, dtype=gram.dtype)
-    return v0 + torch.linalg.solve(gram + lam * eye, x.T @ (y - x @ v0))
+    gram.diagonal().add_(lam)
+    return v0 + torch.linalg.solve(gram, x.T @ residual)
 
 
 PAD_BIAS = -1e9  # bias on padding slots: they receive no attention
@@ -177,7 +236,7 @@ def head_keeps(model, total: int, keep) -> dict:
 @torch.no_grad()
 def compact_cache(
     model, cache, queries: dict, keep, method: str = "am", max_queries: int = 5000, seed: int = 0, causal: bool = False,
-    ridge: float = 1e-4, start: int = 0, prev_biases: dict | None = None,
+    ridge: float = 1e-4, start: int = 0, prev_biases: dict | None = None, end: int | None = None,
 ):  # fmt: skip
     """Compact every full-attention layer of `cache` in place.
 
@@ -202,6 +261,7 @@ def compact_cache(
     start, prev_biases: compact only the keys from index `start` on and leave the first `start` (an already
             compacted memory, with its biases `prev_biases`) as they are. The fit then sees the new keys alone:
             attention is treated as if it were restricted to them. Needs an int `keep`.
+    end: stop the compacted range here; preserve all suffix K/V with zero bias (the actor summary).
     Returns {layer index: bias [kv_heads, t_layer]}, t_layer being the longest head of that layer (plus `start`).
     """
     assert start == 0 or isinstance(keep, int)
@@ -214,15 +274,20 @@ def compact_cache(
     cuda = sorted({layer.keys.device.index for layer in cache.layers if getattr(layer, "keys", None) is not None and layer.keys.is_cuda})
     with torch.random.fork_rng(devices=cuda):
         torch.manual_seed(seed)
-        return _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed)
+        return _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed, end)
 
 
-def _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed):
+def _compact_cache(model, cache, queries, keep, method, max_queries, causal, ridge, start, prev_biases, alg, gen, seed, end):
     biases = {}
     for idx, attn in _attention_layers(model):
         layer = cache.layers[idx]
         old_keys, old_values = layer.keys[:, :, :start], layer.values[:, :, :start]
-        keys, values = layer.keys[:, :, start:], layer.values[:, :, start:]  # [1, kv_heads, T, d]
+        stop = layer.keys.shape[-2] if end is None else end
+        if not start < stop <= layer.keys.shape[-2]:
+            raise ValueError("compaction requires a nonempty cache range [start, end)")
+        keys, values = layer.keys[:, :, start:stop], layer.values[:, :, start:stop]  # [1, kv_heads, T, d]
+        suffix_keys, suffix_values = layer.keys[:, :, stop:], layer.values[:, :, stop:]
+        suffix_bias = keys.new_zeros(keys.shape[1], suffix_keys.shape[-2], dtype=torch.float32)
         kv_heads, total = keys.shape[1], keys.shape[2]
         old_bias = torch.zeros(kv_heads, start, dtype=torch.float32, device=keys.device)
         if prev_biases and idx in prev_biases:
@@ -230,11 +295,17 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
             assert old_bias.shape == (kv_heads, start)
         keeps = head_keeps(model, total, keep)
         if method == "none":
-            biases[idx] = torch.cat([old_bias, torch.zeros(kv_heads, total, dtype=torch.float32, device=keys.device)], dim=1)
+            biases[idx] = torch.cat([old_bias, torch.zeros(kv_heads, total, dtype=torch.float32, device=keys.device), suffix_bias], dim=1)
             continue
         group = attn.num_key_value_groups
         new_k, new_v, beta = [], [], []
         for g in range(kv_heads):
+            if keeps[(idx, g)] == total:
+                # Exact identity even for rank-deficient or undersampled fits at ratio=1.
+                new_k.append(keys[0, g])
+                new_v.append(values[0, g])
+                beta.append(torch.zeros(total, device=keys.device))
+                continue
             if method in ("recent", "random"):
                 t = min(keeps[(idx, g)], total)
                 sel = torch.arange(total - t, total) if method == "recent" else torch.randperm(total, generator=gen)[:t].sort().values
@@ -261,7 +332,10 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
                 new_v.append(values[0, g, sel_sorted])
                 beta.append(torch.zeros(t, device=keys.device))
                 continue
-            c1, b, c2, sel = alg.compute_compacted_cache(keys[0, g].float(), values[0, g].float(), q.float(), t, bias)
+            if method in ("am_cv", "am_ridge"):
+                c1, b, sel = alg._select_keys_highest_attention(keys[0, g].float(), q.float(), t, bias)
+            else:
+                c1, b, c2, sel = alg.compute_compacted_cache(keys[0, g].float(), values[0, g].float(), q.float(), t, bias)
             if method in ("am_cv", "am_ridge"):
                 kv = (keys[0, g].float(), values[0, g].float(), q.float(), c1.float(), b.float(), sel)
                 c2 = _ridge_value_fit(*kv, bias, mask_compact=method == "am_cv", ridge=ridge)
@@ -277,45 +351,20 @@ def _compact_cache(model, cache, queries, keep, method, max_queries, causal, rid
                 beta.append(b[order].float())
         longest = max(k.shape[0] for k in new_k)
 
-        def pad(x, fill=0.0):
-            return torch.cat([x, x.new_full((longest - x.shape[0], *x.shape[1:]), fill)])
+        def pad(x, fill=0.0, length=longest):
+            return torch.cat([x, x.new_full((length - x.shape[0], *x.shape[1:]), fill)])
 
-        layer.keys = torch.cat([old_keys, torch.stack([pad(k) for k in new_k]).unsqueeze(0)], dim=2)
-        layer.values = torch.cat([old_values, torch.stack([pad(v) for v in new_v]).unsqueeze(0)], dim=2)
-        biases[idx] = torch.cat([old_bias, torch.stack([pad(b, PAD_BIAS) for b in beta]).to(keys.device)], dim=1)
+        layer.keys = torch.cat([old_keys, torch.stack([pad(k) for k in new_k]).unsqueeze(0), suffix_keys], dim=2)
+        layer.values = torch.cat([old_values, torch.stack([pad(v) for v in new_v]).unsqueeze(0), suffix_values], dim=2)
+        biases[idx] = torch.cat([old_bias, torch.stack([pad(b, PAD_BIAS) for b in beta]).to(keys.device), suffix_bias], dim=1)
     return biases
 
 
 @contextmanager
 def attention_bias(model, biases: dict):
-    """Add `biases[layer]` ([kv_heads, t]) to the attention logits of the first t (compacted) key positions."""
-    hooks = []
-    for idx, attn in _attention_layers(model):
-        if idx not in biases:
-            continue
-
-        def pre(module, args, kwargs, idx=idx):
-            hidden = kwargs.get("hidden_states", args[0] if args else None)
-            bias = biases[idx]
-            t, new = bias.shape[1], hidden.shape[1]
-            per_head = bias.repeat_interleave(module.num_key_value_groups, dim=0)  # [heads, t]
-            # Build this layer's own causal mask. The one transformers passes is sized from a single layer's
-            # cache, which is wrong for the others once layers keep different numbers of keys; it is also
-            # boolean, and a bias needs the additive form. Assumes one unpadded sequence per call.
-            mask = torch.zeros(1, 1, new, t + new, dtype=hidden.dtype, device=hidden.device)
-            future = torch.triu(torch.ones(new, new, dtype=torch.bool, device=hidden.device), diagonal=1)
-            mask[0, 0, :, t:].masked_fill_(future, torch.finfo(hidden.dtype).min)
-            mask = mask.expand(-1, per_head.shape[0], -1, -1).clone()
-            mask[:, :, :, :t] += per_head.to(mask.dtype)[None, :, None, :]
-            kwargs["attention_mask"] = mask
-            return args, kwargs
-
-        hooks.append(attn.register_forward_pre_hook(pre, with_kwargs=True))
-    try:
+    """Read biased memory through chunked SDPA; one unpadded sequence per call."""
+    with biased_attention(model, _attention_layers(model), biases):
         yield
-    finally:
-        for h in hooks:
-            h.remove()
 
 
 def continue_from(model, cache, biases: dict, input_ids: torch.Tensor, logical_prefix_len: int, **kwargs):
@@ -327,3 +376,30 @@ def continue_from(model, cache, biases: dict, input_ids: torch.Tensor, logical_p
     positions = torch.arange(logical_prefix_len, logical_prefix_len + n, device=input_ids.device).unsqueeze(0)
     with attention_bias(model, biases):
         return model(input_ids=input_ids, past_key_values=cache, position_ids=positions, use_cache=True, **kwargs)
+
+
+@torch.no_grad()
+def compact_segment(model, cache, next_tokens, *, seen, segment_length, memory_length, biases, own_queries, config, summary_span=None):
+    """Advance detached memory identically in the reference and checkpointed episode readers."""
+    device = cache.layers[_attention_layers(model)[0][0]].keys.device
+    compact_length, end = segment_length, None
+    if config["queries"] == "summary":
+        compact_length = summary_span[0]
+        end = memory_length + compact_length
+        queries = own_queries
+        max_queries = max(q.shape[0] * q.shape[1] for q in queries.values())
+    elif config["queries"] == "hindsight":
+        extended = {i: torch.cat([b, b.new_zeros(b.shape[0], segment_length)], dim=1) for i, b in biases.items()}
+        ids = torch.tensor([next_tokens], device=device)
+        queries = probe_queries(model, cache, ids, seen, biases=extended, query_count=config["query_count"])
+        # Sampling already happened in token space; retain every GQA head at those positions.
+        max_queries = max(q.shape[0] * q.shape[1] for q in queries.values())
+    else:
+        queries, max_queries = own_queries, 5000
+    keep = max(1, round(config["ratio"] * compact_length))
+    with torch.autocast(device_type=device.type, enabled=False):
+        result = compact_cache(
+            model, cache, queries, keep, method=config["method"], max_queries=max_queries,
+            causal=config["queries"] == "causal", ridge=config["ridge"], start=memory_length, prev_biases=biases, end=end,
+        )
+    return result, memory_length + keep + segment_length - compact_length

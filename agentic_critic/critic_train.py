@@ -15,7 +15,6 @@ as the segment has been read (`on_values` is called inside the contexts that the
 one segment's activations are alive at a time. Full is one pass over the whole log.
 """
 
-import copy
 from contextlib import contextmanager, nullcontext
 from functools import partial
 
@@ -25,6 +24,7 @@ from torch.utils.checkpoint import checkpoint
 from agentic_critic import kv_compact
 from agentic_critic.critic_input import Segment
 from agentic_critic.critic_modes import MODES, _detach_cache, assigning_cache_updates
+from agentic_critic.memory_config import resolve_memory_config
 
 
 @contextmanager
@@ -119,6 +119,11 @@ def read_episode(model, head, segments: list[Segment], mode: str, device, on_val
     Calls come in episode order: one segment at a time, or all segments at once in the Full setting.
     """
     assert mode in MODES
+    kv = resolve_memory_config(mode, kv)
+    if kv is not None:
+        kv_compact.validate_model(model)
+        kv_compact.validate_summary_segments(segments, kv)
+        mode = "kv"
     lm = model
     model = getattr(lm, "model", lm)  # the backbone: the wrapper would also compute vocabulary logits at every position
     grad_ctx = (lambda: checkpointed_layers(model)) if (train and use_checkpoint) else nullcontext
@@ -151,9 +156,9 @@ def read_episode(model, head, segments: list[Segment], mode: str, device, on_val
         # every bias is zero (eviction keeping the same number of keys in every head).
         plain = mode == "full_detach" or (mode == "kv" and all(bool((b == 0).all()) for b in biases.values()))
         if mode == "kv" and biases and not plain:
-            bias_ctx = lambda: kv_compact.attention_bias(model, biases)  # noqa: E731
+            bias_ctx = partial(kv_compact.attention_bias, model, biases)
         elif plain and cache is not None:
-            bias_ctx = lambda: fast_memory_attention(model)  # noqa: E731
+            bias_ctx = partial(fast_memory_attention, model)
         else:
             bias_ctx = nullcontext
         last = s == len(segments) - 1
@@ -165,7 +170,8 @@ def read_episode(model, head, segments: list[Segment], mode: str, device, on_val
             if last or mode == "shared":
                 continue
         # Move the memory forward (and, without gradients, this pass is also where the values come from).
-        with torch.no_grad(), assigning_cache_updates(), bias_ctx(), kv_compact.capture_queries(model) as own_queries:
+        query_ctx = kv_compact.segment_queries(model, seg, kv)
+        with torch.no_grad(), assigning_cache_updates(), bias_ctx(), query_ctx as own_queries:
             res = model(input_ids=ids, use_cache=mode != "shared", **kwargs)
         if not train:
             on_values([(s, _values(res.last_hidden_state[0], head, seg, 0))])
@@ -175,28 +181,10 @@ def read_episode(model, head, segments: list[Segment], mode: str, device, on_val
         seen += n
         if mode != "kv":
             continue
-        with torch.no_grad():
-            if kv["queries"] == "hindsight":
-                # The tokens that will read this memory are known: run them once on the uncompacted keys.
-                uncompacted = {i: torch.cat([b, b.new_zeros(b.shape[0], n)], dim=1) for i, b in biases.items()}
-                nxt = torch.tensor([segments[s + 1].tokens], device=device)
-                positions = torch.arange(seen, seen + nxt.shape[1], device=device).unsqueeze(0)
-                if plain:
-                    bias_next = lambda: fast_memory_attention(model)  # noqa: E731
-                else:
-                    bias_next = (lambda: kv_compact.attention_bias(model, uncompacted)) if uncompacted else nullcontext
-                with kv_compact.capture_queries(model) as queries, bias_next():
-                    model(input_ids=nxt, past_key_values=copy.deepcopy(cache), position_ids=positions, use_cache=True)
-                queries = dict(queries)
-            else:
-                queries = dict(own_queries)
-            keep = max(1, round(kv["ratio"] * n))
-            # the fits are done in float32: no autocast inside (a caller may have it on)
-            with torch.autocast(device_type=torch.device(device).type, enabled=False):
-                biases = kv_compact.compact_cache(
-                    model, cache, queries, keep, method=kv["method"], causal=kv["queries"] == "causal", start=memory, prev_biases=biases
-                )  # fmt: skip
-            memory += keep
+        biases, memory = kv_compact.compact_segment(
+            model, cache, segments[s + 1].tokens, seen=seen, segment_length=n, memory_length=memory,
+            biases=biases, own_queries=own_queries, config=kv, summary_span=seg.summary_span,
+        )
 
 
 # ---- EasyPPO's critic update (as ported to Miles: miles/backends/training_utils/loss/hub/losses.py) ----
