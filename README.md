@@ -15,6 +15,10 @@ policy objective, and KL regularization.
 For the `actor-summary-compact` experiment, see the
 [frozen-model compact-token gradient probe](docs/examples/compact-token-grad-norm.md)
 to compare the first 64 generated tokens after compaction with random 64-token windows.
+The final [frozen attention-matching comparison](Claude.md#pending-execution-frozen-full-history-checkpoints-with-attention-matching)
+reuses full-history checkpoints on the original validation set and compares full,
+actor-summary and AM inputs with the same weights. Deployment paths remain to be
+filled in `Claude.md`; production results have not yet been generated.
 
 ## Method
 

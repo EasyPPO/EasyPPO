@@ -38,13 +38,13 @@ def workdir(tmp_path_factory):
                 resp = [rng.randrange(VOCAB) for _ in range(rng.randint(4, 8))]
                 mask = [1] * (len(resp) - 1) + [0]
                 samples.append({"index": index, "rollout_id": step * 100 + ep, "tokens": prompt + resp, "response_length": len(resp), "loss_mask": mask,
-                                "reward": reward, "metadata": {"problem": f"p{step}_{ep // 4}", "sample": ep % 4, "segment": k}})  # fmt: skip
+                                "reward": reward, "metadata": {"problem": f"p{step}_{ep // 4}", "sample": ep % 4, "segment": k, "summary_span": (len(prompt) + len(resp) - 4, len(prompt) + len(resp) - 1)}})  # fmt: skip
                 index += 1
         torch.save({"rollout_id": step, "samples": samples}, d / "rollouts" / f"rollout_{step}.pt")
     return d
 
 
-@pytest.mark.parametrize("mode", ["shared", "full", "full_detach", "kv"])
+@pytest.mark.parametrize("mode", ["shared", "full", "full_detach", "kv", "attention_matching"])
 def test_engine_trains_and_stores_values(workdir, mode):
     out = workdir / f"out_{mode}"
     r = subprocess.run([sys.executable, str(REPO / "scripts/critic_engine.py"), "--model", str(workdir / "model"), "--rollouts", str(workdir / "rollouts"),
@@ -58,7 +58,7 @@ def test_engine_trains_and_stores_values(workdir, mode):
     assert all(u["grad_norm"] > 0 and u["value_loss"] > 0 for s in log["steps"] for u in s["updates"])
     check = log["self_check"]
     assert check["episodes"] >= 1 and check["first_segment"] < 1e-4 and check["train_forward"] < 1e-4
-    assert (check["later_segments"] is None) == (mode == "shared") and (check["kv_keep_all"] is not None) == (mode == "kv")
+    assert (check["later_segments"] is None) == (mode == "shared") and (check["kv_keep_all"] is not None) == (mode in ("kv", "attention_matching"))
     samples = torch.load(workdir / "rollouts" / "rollout_1.pt", weights_only=False)["samples"]
     dump = torch.load(out / "dump" / "1_0.critic.pt", weights_only=False)
     assert sorted(dump["sample_indices"]) == sorted(s["index"] for s in samples)

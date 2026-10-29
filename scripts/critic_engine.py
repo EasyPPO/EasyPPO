@@ -1,6 +1,6 @@
 """Train a Hugging Face critic on stored Miles rollouts.
 
-Supports shared, full, full_detach, state and compressed-KV context modes.
+Supports shared, full, full_detach, state, kv and attention_matching context modes.
 Each rollout receives a value pass followed by noise-normalized, clipped value
 regression on episode mini-batches, with gradient clipping and AdamW updates.
 Values are saved before updates in Miles' critic debug-dump format.
@@ -23,6 +23,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agentic_critic.critic_input import Segment  # noqa: E402
 from agentic_critic.critic_modes import MODES  # noqa: E402
+from agentic_critic.memory_config import resolve_memory_config  # noqa: E402
 from agentic_critic.critic_train import AdamWHalfMoments, clipped_value_loss, problem_weights, read_episode  # noqa: E402
 
 
@@ -38,7 +39,7 @@ def load_step(path: Path) -> list[dict]:
         episodes.append({
             "rollout_id": rid, "problem": samples[0]["metadata"]["problem"], "reward": float(samples[0]["reward"]),
             "indices": [s["index"] for s in samples],
-            "segments": [Segment(list(s["tokens"]), s["response_length"], list(s["loss_mask"])) for s in samples],
+            "segments": [Segment(list(s["tokens"]), s["response_length"], list(s["loss_mask"]), s["metadata"].get("summary_span")) for s in samples],
         })  # fmt: skip
     return episodes
 
@@ -59,7 +60,7 @@ def self_check(model, head, episodes: list[dict], mode: str, kv: dict | None, de
       kv_keep_all     in the kv setting, keeping every key reproduces full_detach.
     Returns the largest differences; raises if a check fails.
     """
-    def values(m, train=False, kv_cfg=None):
+    def values(ep, m, train=False, kv_cfg=None):
         got = {}
 
         def keep(pairs):
@@ -79,7 +80,7 @@ def self_check(model, head, episodes: list[dict], mode: str, kv: dict | None, de
 
     report = {"episodes": 0, "first_segment": 0.0, "later_segments": None, "train_forward": 0.0, "kv_keep_all": None}
     for ep in [e for e in episodes if len(e["segments"]) >= 2][:n]:
-        own, actor = values(mode, kv_cfg=kv), values("shared")
+        own, actor = values(ep, mode, kv_cfg=kv), values(ep, "shared")
         tol = 2e-2 * max(scale(own), 1.0)  # bfloat16 autocast: two passes of the same computation agree to about 1e-2 relative
         report["episodes"] += 1
         report["first_segment"] = max(report["first_segment"], diff(own[:1], actor[:1]))
@@ -88,11 +89,11 @@ def self_check(model, head, episodes: list[dict], mode: str, kv: dict | None, de
             later = diff(own[1:], actor[1:])
             report["later_segments"] = later if report["later_segments"] is None else min(report["later_segments"], later)
             assert later > tol, "the values after a compaction equal the actor-context ones: the memory is not being read"
-        trained = values(mode, train=True, kv_cfg=kv)
+        trained = values(ep, mode, train=True, kv_cfg=kv)
         report["train_forward"] = max(report["train_forward"], diff(own, trained))
         assert diff(own, trained) <= tol, f"training forward differs from the value pass by {diff(own, trained)}"
-        if mode == "kv":
-            keep_all, detach = values("kv", kv_cfg={**kv, "ratio": 1.0, "method": "evict"}), values("full_detach")
+        if mode in ("kv", "attention_matching"):
+            keep_all, detach = values(ep, mode, kv_cfg={**kv, "ratio": 1.0}), values(ep, "full_detach")
             report["kv_keep_all"] = max(report["kv_keep_all"] or 0.0, diff(keep_all, detach))
             assert diff(keep_all, detach) <= tol, f"kv with every key kept differs from full_detach by {diff(keep_all, detach)}"
     return report
@@ -105,9 +106,13 @@ def main() -> None:
     ap.add_argument("--mode", required=True, choices=MODES)
     ap.add_argument("--out", required=True)
     ap.add_argument("--steps", type=int, default=None, help="default: every rollout file")
-    ap.add_argument("--kv-ratio", type=float, default=0.25)
-    ap.add_argument("--kv-method", default="evict", choices=["evict", "am", "am_cv"])
-    ap.add_argument("--kv-queries", default="hindsight", choices=["hindsight", "causal"])
+    ap.add_argument("--kv-ratio", type=float, default=None, help="fraction retained (default: 0.1); summary probes compact only the pre-summary block")
+    ap.add_argument("--kv-method", default=None, choices=["evict", "am", "am_cv", "am_ridge"],
+                    help="default: evict for kv; am_ridge for attention_matching")
+    ap.add_argument("--kv-queries", default=None, choices=["summary", "hindsight", "causal"])
+    ap.add_argument("--kv-query-count", type=int, default=None,
+                    help="kv/hindsight only: first N next-segment tokens (default: 400); 0 uses legacy uniform sampling; summary probes always use all tokens")
+    ap.add_argument("--kv-ridge", type=float, default=None, help="positive relative ridge for am_ridge/am_cv (default: 1e-4)")
     ap.add_argument("--lr", type=float, default=2e-6)
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--clip-grad", type=float, default=1.0)
@@ -124,12 +129,22 @@ def main() -> None:
     ap.add_argument("--self-check", type=int, default=2, help="episodes to run the correctness checks on before training (0: skip)")
     ap.add_argument("--save-model", action="store_true", help="store the trained backbone (bfloat16, about 18 GB for 9B) next to the value head")
     args = ap.parse_args()
-    kv = {"ratio": args.kv_ratio, "method": args.kv_method, "queries": args.kv_queries} if args.mode == "kv" else None
+    # Preserve the legacy CLI's eviction default; the named AM mode fixes its algorithm and query source.
+    supplied = dict(ratio=args.kv_ratio, method=args.kv_method or ("evict" if args.mode == "kv" else None),
+                    queries=args.kv_queries, query_count=args.kv_query_count, ridge=args.kv_ridge)
+    try:
+        kv = resolve_memory_config(args.mode, {k: v for k, v in supplied.items() if v is not None})
+    except ValueError as exc:
+        ap.error(str(exc))
 
     from transformers import AutoModelForCausalLM
 
     torch.manual_seed(args.seed)
     model = AutoModelForCausalLM.from_pretrained(args.model).to(device=args.device, dtype=torch.float32)
+    if kv is not None:
+        from agentic_critic.kv_compact import validate_model
+
+        validate_model(model)
     model.train()
     linear = torch.nn.Linear(model.config.hidden_size, 1).to(args.device)
     torch.nn.init.normal_(linear.weight, std=args.head_init_std)
@@ -159,7 +174,7 @@ def main() -> None:
     first = Path(args.rollouts) / "rollout_0.pt"
     out = Path(args.out)
     (out / "dump").mkdir(parents=True, exist_ok=True)
-    log = {"args": vars(args), "steps": []}
+    log = {"args": vars(args), "memory_config": kv, "steps": []}
     if args.self_check:
         log["self_check"] = self_check(model, head, load_step(first), args.mode, kv, args.device, autocast, args.self_check)
         print("self-check passed:", json.dumps(log["self_check"]), flush=True)
@@ -172,7 +187,7 @@ def main() -> None:
         old, critic_tokens = {}, 0
         with torch.no_grad(), autocast():
             for ep in episodes:
-                def keep(pairs, ep=ep):
+                def keep(pairs, ep=ep, old=old):
                     for i, v in pairs:
                         old[(ep["rollout_id"], i)] = v.float()
                 read_episode(model, head, ep["segments"], args.mode, args.device, keep, train=False, kv=kv)
@@ -200,7 +215,7 @@ def main() -> None:
             stats = {"loss": 0.0, "clipped": 0.0}
             opt.zero_grad(set_to_none=True)
             for ep in batch:
-                def backward(pairs, ep=ep):
+                def backward(pairs, ep=ep, masks=masks, old=old, weights=weights, stats=stats, n_tokens=n_tokens):
                     total = 0.0
                     for i, v in pairs:
                         key = (ep["rollout_id"], i)

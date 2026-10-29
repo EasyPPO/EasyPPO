@@ -10,6 +10,7 @@ segments of an episode, and in whether the loss can back-propagate into them:
                (hybrid models only)
   full_detach  earlier segments fully visible, but as constants: no gradient into them
   full         the whole append-only log in one differentiable forward pass
+  attention_matching  fitted pre-summary KV memory, using all original actor summary query positions
   kv           earlier segments reach the critic as a compacted attention KV (plus the recurrent states), as
                constants. After each segment its keys are compacted to a fraction; the memory is recomputed
                with the current weights in every forward pass (fully synchronous). With every key kept this
@@ -25,11 +26,11 @@ import torch
 from torch import nn
 
 from agentic_critic.critic_input import Segment
+from agentic_critic.memory_config import KV_DEFAULT, resolve_memory_config  # noqa: F401 (public compatibility)
 
-MODES = ("shared", "state", "full_detach", "full", "kv")
+MODES = ("shared", "state", "full_detach", "full", "kv", "attention_matching")
 # kv settings: fraction of each segment's keys kept; evict | am | am_cv (agentic_critic/kv_compact.py);
 # queries from the next segment's tokens ("hindsight", known at training time) or from the segment itself ("causal").
-KV_DEFAULT = {"ratio": 0.25, "method": "am", "queries": "hindsight"}
 
 
 class ValueHead(nn.Module):
@@ -116,23 +117,24 @@ def episode_values(
     without a backward pass: d(0.5 (V - G)^2)/dW = (V - G) h.
     """
     assert mode in MODES
+    config = resolve_memory_config(mode, kv)
     with assigning_cache_updates():
-        if mode == "kv":
-            return _episode_values_kv(model, head, segments, device, features, {**KV_DEFAULT, **(kv or {})})
+        if config is not None:
+            return _episode_values_kv(model, head, segments, device, features, config)
         return _episode_values(model, head, segments, mode, device, features)
 
 
 def _episode_values_kv(model, head, segments, device, features, kv) -> list[torch.Tensor]:
-    import copy
-
     from agentic_critic import kv_compact
 
-    assert kv["queries"] in ("hindsight", "causal") and (kv["method"] != "am_cv" or kv["queries"] == "causal")
+    kv_compact.validate_model(model)
+    kv_compact.validate_summary_segments(segments, kv)
     out, cache, biases, seen, memory = [], None, {}, 0, 0
     for s, seg in enumerate(segments):
         ids = torch.tensor([seg.tokens], device=device)
         n = len(seg.tokens)
-        with kv_compact.capture_queries(model) as own_queries:
+        query_ctx = kv_compact.segment_queries(model, seg, kv)
+        with query_ctx as own_queries:
             if cache is None:
                 res = model(input_ids=ids, output_hidden_states=True, use_cache=True)
             else:
@@ -142,25 +144,10 @@ def _episode_values_kv(model, head, segments, device, features, kv) -> list[torc
         if s == len(segments) - 1:
             break
         cache = _detach_cache(res.past_key_values, keep_kv=True)
-        with torch.no_grad():
-            if kv["queries"] == "hindsight":
-                # The tokens that will read this memory are known: run them once on the uncompacted keys.
-                uncompacted = {i: torch.cat([b, b.new_zeros(b.shape[0], n)], dim=1) for i, b in biases.items()}
-                nxt = torch.tensor([segments[s + 1].tokens], device=device)
-                with kv_compact.capture_queries(model) as queries:
-                    if uncompacted:
-                        kv_compact.continue_from(model, copy.deepcopy(cache), uncompacted, nxt, seen)
-                    else:
-                        positions = torch.arange(seen, seen + nxt.shape[1], device=device).unsqueeze(0)
-                        model(input_ids=nxt, past_key_values=copy.deepcopy(cache), position_ids=positions, use_cache=True)
-                queries = dict(queries)
-            else:
-                queries = dict(own_queries)
-            keep = max(1, round(kv["ratio"] * n))
-            biases = kv_compact.compact_cache(
-                model, cache, queries, keep, method=kv["method"], causal=kv["queries"] == "causal", start=memory, prev_biases=biases
-            )  # fmt: skip
-            memory += keep
+        biases, memory = kv_compact.compact_segment(
+            model, cache, segments[s + 1].tokens, seen=seen, segment_length=n, memory_length=memory,
+            biases=biases, own_queries=own_queries, config=kv, summary_span=seg.summary_span,
+        )
     return out
 
 

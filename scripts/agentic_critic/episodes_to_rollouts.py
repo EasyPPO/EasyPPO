@@ -117,7 +117,7 @@ def samples_of(record: dict, group_index: int, rollout_id: int, first_index: int
             index=first_index + k, group_index=group_index, rollout_id=rollout_id, prompt="", tokens=f["tokens"],
             response_length=f["response_length"], loss_mask=f["loss_mask"], reward=ep.reward,
             status=Sample.Status.TRUNCATED if f["truncated"] else Sample.Status.COMPLETED,
-            metadata={"problem": record["problem"], "sample": record["sample"], "segment": f["segment"], "n_compactions": ep.n_compactions},
+            metadata={"problem": record["problem"], "sample": record["sample"], "segment": f["segment"], "n_compactions": ep.n_compactions, **f["metadata"]},
         )  # fmt: skip
         # log-probabilities of the stored rollouts were not recorded; the critic does not use them
         s.rollout_log_probs = None

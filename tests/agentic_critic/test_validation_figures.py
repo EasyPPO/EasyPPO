@@ -3,6 +3,7 @@
 import gzip
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -92,7 +93,10 @@ def test_manual_report_renders_only_focused_figures_and_preserves_raw_data(repor
     before = _raw_hashes(root)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "python").symlink_to(sys.executable)
+    # A symlink outside a venv can lose pyvenv.cfg and import system packages.
+    python = bin_dir / "python"
+    python.write_text(f'#!/usr/bin/env bash\nexec {shlex.quote(sys.executable)} "$@"\n')
+    python.chmod(0o755)
     # Fail even if a future change only imports W&B without uploading anything.
     (tmp_path / "wandb.py").write_text("raise RuntimeError('Visualization must not import wandb')\n")
     result = subprocess.run(

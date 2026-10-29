@@ -28,8 +28,8 @@ The model, the judge and the tokenizer are injected so the loop can be tested wi
 
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from agentic_critic.critic_input import Segment
 
@@ -137,7 +137,14 @@ class Episode:
             prompt = [t for e in events[:first] for t in e.tokens]
             response = [t for e in events[first:] for t in e.tokens]
             mask = [int(e.actor) for e in events[first:] for _ in e.tokens]
-            out.append(Segment(tokens=prompt + response, response_length=len(response), loss_mask=mask))
+            offset, summary_span = 0, None
+            for event in events:
+                if event.kind == "summary" and event.actor and event.tokens:
+                    if summary_span is not None:
+                        raise ValueError("multiple summary completions in one segment")
+                    summary_span = (offset, offset + len(event.tokens))
+                offset += len(event.tokens)
+            out.append(Segment(tokens=prompt + response, response_length=len(response), loss_mask=mask, summary_span=summary_span))
         return out
 
 

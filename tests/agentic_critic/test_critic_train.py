@@ -8,7 +8,7 @@ from agentic_critic.critic_train import read_episode
 from tests.agentic_critic.test_critic_modes import KV_UPSTREAM, make_segments
 from tests.agentic_critic.test_critic_modes import head, model  # noqa: F401  (fixtures)
 
-SETTINGS = [("shared", None), ("state", None), ("full_detach", None), ("full", None)]
+SETTINGS = [("shared", None), ("state", None), ("full_detach", None), ("full", None), ("attention_matching", None)]
 KV_SETTINGS = [("kv", {"ratio": 0.5, "method": "evict", "queries": "hindsight"}), ("kv", {"ratio": 0.5, "method": "am", "queries": "hindsight"}),
                ("kv", {"ratio": 0.5, "method": "am_cv", "queries": "causal"})]  # fmt: skip
 
