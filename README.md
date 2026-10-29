@@ -15,10 +15,15 @@ policy objective, and KL regularization.
 For the `actor-summary-compact` experiment, see the
 [frozen-model compact-token gradient probe](docs/examples/compact-token-grad-norm.md)
 to compare the first 64 generated tokens after compaction with random 64-token windows.
-The final [frozen attention-matching comparison](Claude.md#pending-execution-frozen-full-history-checkpoints-with-attention-matching)
+The final [frozen attention-matching comparison](Claude.md#6-todo--frozen-full-history-checkpoints-with-am-inputs)
 reuses full-history checkpoints on the original validation set and compares full,
 actor-summary and AM inputs with the same weights. Deployment paths remain to be
 filled in `Claude.md`; production results have not yet been generated.
+An additional [AM training workflow](docs/examples/trained-attention-matching.md)
+reuses the existing offline trajectories and saves training statistics, periodic
+validation and figures. It defaults to AM only because full/shared training is
+already complete; an explicit three-mode HF comparison remains available.
+Both AM workflows remain available.
 
 ## Method
 
