@@ -13,6 +13,7 @@ work, not instructions to repeat completed experiments.
 | 4 | Development checks and compact-token gradient probe | Checks completed; probe execution unconfirmed | TODO: locate the probe report and establish whether any probe run remains |
 | 5 | Train an AM critic using the same offline replay | TODO — production run not performed here | Change the memory algorithm and rerun the existing trajectories; AM only |
 | 6 | Evaluate existing full-history checkpoints with full/shared/AM inputs | TODO — production run not performed here | Frozen weights; no training |
+| 7 | Actor gradient norms/directions versus compaction count under independently pretrained full/shared critics | NEW — implementation ready; production run pending | Reuse completed critic checkpoints and frozen trajectories; see section 7 |
 
 Keep both AM workflows. Do not overwrite the completed experiments, generate new
 trajectories, or retokenize the stored data. Deployment paths remain blank for
@@ -461,3 +462,83 @@ python -m agentic_critic_pipeline.frozen_am_figures --output-root "$FROZEN_AM_OU
 For new experiments only, `scripts/agentic_critic/run_comparison.sh` invokes this
 frozen AM comparison automatically **after both existing critic training runs**.
 For previously trained checkpoints, use the command above; do not rerun training.
+
+## 7. NEW — trajectory actor gradients under independently pretrained critics
+
+This is the current additional experiment. Full-history and actor-summary critic
+training remain DONE. Reuse their separate pretrained checkpoints at the same
+completed batch and the original rollout-generating actor. Do not rerun either
+critic's training or regenerate trajectories. This experiment compares the two
+independently trained critics, each on its native input mode.
+
+See [the operating guide](docs/examples/trajectory-actor-gradients.md) for the
+deployment command, blank artifact paths, exact definitions, resource estimates,
+saved data, figures and interpretation. The new entrypoint is:
+
+```bash
+python -m agentic_critic_pipeline.trajectory_grad_comparison run --help
+```
+
+Measure all supplied frozen validation trajectories and every segment (including
+segment zero), or explicitly select a seeded complete-trajectory sample with
+`--trajectories`. The two critics use identical actor weights and token/mask
+identities. For each condition, retain whole-trajectory actor grad norm, each
+segment's grad norm, cosine with its complete trajectory gradient, and the norm
+ratio. Save both trajectory-normalized segment contributions and segment
+token-mean norms/ratios to distinguish contribution size from segment length.
+Record both prior compactions at a segment and total trajectory compactions.
+Also measure the actor-gradient cosine between **adjacent original segments**:
+compaction ordinal `k` compares segment `k-1` with segment `k`, starting at `k=1`.
+Retain both segment identities, norms and token counts for each boundary. A
+zero-norm segment makes its adjacent pairs undefined (`null`); never bridge
+across it. Zero-compaction trajectories have no adjacent pairs.
+
+The default advantage is raw terminal `R - V`; optional cohort whitening uses
+one merged statistic per critic condition. Two actor forward/backward passes per
+nonempty segment accumulate and compare the full-parameter trajectory gradient.
+No actor/critic weights or optimizer state change. Eight independent GPU workers
+are supported, with separate critic-cache and actor-measurement phases.
+
+Retain token-aligned critic caches, JSONL and CSV measurements, paired critic
+differences, selection/checkpoint/data hashes, six PNG/PDF analysis figures,
+summary statistics and every plotted numeric value. Figures show segment
+metrics by prior/total compactions, whole-trajectory norm by total compactions,
+and paired critic differences, with problem-cluster bootstrap intervals and
+per-count sample sizes in the saved plot data.
+The added `adjacent_segment_cosine_by_compaction` figure plots one line per
+critic against the compaction ordinal, with problem-bootstrap intervals and a
+valid-pair coverage panel. Save raw pairs in `gradient_report/adjacent_segments.jsonl`
+and grouped values in `plot_data.json`. This uses the existing two model passes
+per segment, with an additional native-dtype previous-gradient vector on CPU;
+a 9B BF16 worker now needs about 54 GB of host gradient storage, plus buffers.
+
+Production execution is TODO: deployment artifact paths and GPUs are not present
+in this development environment. Local tiny-model tests verify gradient algebra,
+empty-loss segments, zero gradients, checkpoint immutability, paired worker
+coverage, global whitening, serial/parallel agreement, saved data and rendering.
+They are not production results. After the real run, record the actual paths,
+checkpoint batches, hardware, normalization, counts, measured trends and output
+location here; require a final `manifest.json` with `status: complete` and inspect
+the figures before marking the experiment complete.
+
+Development verification on 2026-11-01: **63 targeted tests passed**, including
+Qwen3.5 hybrid-attention FP32/BF16 comparisons against ordinary HF backward,
+negative-cosine/cancellation cases, and the existing compact-token probe
+regressions. Ruff, import-order and Black checks passed. The focused command
+avoids the unrelated repository-wide conftest's unavailable Ray dependency:
+
+```bash
+OMP_NUM_THREADS=1 python -m pytest --confcutdir=tests/agentic_critic \
+  tests/agentic_critic/test_trajectory_grad.py \
+  tests/agentic_critic/test_gradient_probe.py \
+  tests/agentic_critic/test_compact_grad_cli.py \
+  tests/agentic_critic/test_compact_grad_parallel.py
+```
+
+Adjacent-segment addition: **25 focused tests passed** in
+`tests/agentic_critic/test_trajectory_grad.py`, including exact adjacent dot
+products, orthogonal/negative directions, zero/empty segments without bridging,
+ordinal aggregation, zero-compaction cohorts, Qwen3.5 FP32/BF16 gradients,
+serial/parallel agreement, raw boundary output and the sixth PNG/PDF figure.
+Ruff, import-order, Black and diff-whitespace checks passed. These remain
+development checks; production measurement is still pending.
