@@ -10,24 +10,31 @@ from agentic_critic_pipeline.gradient_probe import probe_mode
 
 def gradient_products(gradient, reference=None):
     """FP64 reductions in bounded chunks; missing gradients represent zeros."""
+    norm2, dots = _gradient_products(gradient, (reference,))
+    return norm2, dots[0]
+
+
+def _gradient_products(gradient, references):
+    """Read each gradient chunk once for products with multiple host references."""
     device = next((value.device for value in gradient if value is not None), torch.device("cpu"))
     norm2 = torch.zeros((), dtype=torch.float64, device=device)
-    dot = torch.zeros_like(norm2)
+    dots = [torch.zeros_like(norm2) for _ in references]
     for index, value in enumerate(gradient):
         if value is None:
             continue
         flat = value.detach().reshape(-1)
-        other = None if reference is None else reference[index]
         for start in range(0, flat.numel(), 1 << 20):
             chunk = flat[start : start + (1 << 20)].double()
             norm2 += chunk.square().sum()
-            if other is not None:
-                ref = other.reshape(-1)[start : start + (1 << 20)].to(chunk)
-                dot += (chunk * ref).sum()
-    norm2, dot = float(norm2), float(dot)
-    if not math.isfinite(norm2) or not math.isfinite(dot):
+            for i, reference in enumerate(references):
+                other = None if reference is None else reference[index]
+                if other is not None:
+                    ref = other.reshape(-1)[start : start + (1 << 20)].to(chunk)
+                    dots[i] += (chunk * ref).sum()
+    norm2, dots = float(norm2), tuple(float(dot) for dot in dots)
+    if not all(math.isfinite(value) for value in (norm2, *dots)):
         raise ValueError("Nonfinite actor gradients; inspect the checkpoint or use float32")
-    return norm2, dot
+    return norm2, dots
 
 
 def measure_trajectory(model, episode, values, *, moments, normalization="none", head_chunk_size=128, checkpoint=True):
@@ -36,7 +43,8 @@ def measure_trajectory(model, episode, values, *, moments, normalization="none",
     The actor always sees its original segment context, for either critic.
     Every segment contribution uses the trajectory's generated-token denominator.
     No optimizer, parameter .grad mutation, concatenated actor context, or retained
-    multi-segment computation graph. Tied parameters are counted once.
+    multi-segment computation graph. A previous-segment host vector also supports
+    adjacent cosine without extra forwards/backwards. Tied parameters count once.
     """
     segments = episode["segments"]
     counts = [sum(segment["loss_mask"]) for segment in segments]
@@ -72,9 +80,16 @@ def measure_trajectory(model, episode, values, *, moments, normalization="none",
         total_norm2, _ = gradient_products(reference)
         total_norm = math.sqrt(total_norm2)
         rows = []
+        previous, previous_norm2 = None, 0.0
         for index, count in enumerate(counts):
             gradient = differentiate(index)
-            norm2, dot = gradient_products(gradient, reference)
+            norm2, (dot, adjacent_dot) = _gradient_products(gradient, (reference, previous))
+            adjacent_cosine = adjacent_dot / math.sqrt(norm2 * previous_norm2) if norm2 and previous_norm2 else None
+            # Release the old host vector before copying the new one. Preserve
+            # native gradient precision; no need for another FP32 accumulator.
+            previous = None
+            if index + 1 < len(segments):
+                previous = tuple(None if g is None else g.detach().to("cpu", copy=True) for g in gradient)
             del gradient
             norm = math.sqrt(norm2)
             cosine = dot / math.sqrt(norm2 * total_norm2) if norm2 and total_norm2 else None
@@ -82,6 +97,12 @@ def measure_trajectory(model, episode, values, *, moments, normalization="none",
                 dict(
                     segment_index=index,
                     prior_compactions=index,
+                    compaction_ordinal=index if index else None,
+                    previous_segment_index=index - 1 if index else None,
+                    previous_segment_grad_norm=math.sqrt(previous_norm2) if index else None,
+                    cosine_with_previous_segment=(
+                        max(-1.0, min(1.0, adjacent_cosine)) if adjacent_cosine is not None else None
+                    ),
                     total_compactions=len(segments) - 1,
                     context_tokens=len(segments[index]["input_ids"]),
                     loss_tokens=count,
@@ -99,6 +120,7 @@ def measure_trajectory(model, episode, values, *, moments, normalization="none",
                     ),
                 )
             )
+            previous_norm2 = norm2
     trajectory = dict(
         total_compactions=len(segments) - 1,
         segments=len(segments),

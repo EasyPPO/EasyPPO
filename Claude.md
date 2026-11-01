@@ -487,6 +487,11 @@ segment's grad norm, cosine with its complete trajectory gradient, and the norm
 ratio. Save both trajectory-normalized segment contributions and segment
 token-mean norms/ratios to distinguish contribution size from segment length.
 Record both prior compactions at a segment and total trajectory compactions.
+Also measure the actor-gradient cosine between **adjacent original segments**:
+compaction ordinal `k` compares segment `k-1` with segment `k`, starting at `k=1`.
+Retain both segment identities, norms and token counts for each boundary. A
+zero-norm segment makes its adjacent pairs undefined (`null`); never bridge
+across it. Zero-compaction trajectories have no adjacent pairs.
 
 The default advantage is raw terminal `R - V`; optional cohort whitening uses
 one merged statistic per critic condition. Two actor forward/backward passes per
@@ -495,11 +500,17 @@ No actor/critic weights or optimizer state change. Eight independent GPU workers
 are supported, with separate critic-cache and actor-measurement phases.
 
 Retain token-aligned critic caches, JSONL and CSV measurements, paired critic
-differences, selection/checkpoint/data hashes, five PNG/PDF analysis figures,
+differences, selection/checkpoint/data hashes, six PNG/PDF analysis figures,
 summary statistics and every plotted numeric value. Figures show segment
 metrics by prior/total compactions, whole-trajectory norm by total compactions,
 and paired critic differences, with problem-cluster bootstrap intervals and
 per-count sample sizes in the saved plot data.
+The added `adjacent_segment_cosine_by_compaction` figure plots one line per
+critic against the compaction ordinal, with problem-bootstrap intervals and a
+valid-pair coverage panel. Save raw pairs in `gradient_report/adjacent_segments.jsonl`
+and grouped values in `plot_data.json`. This uses the existing two model passes
+per segment, with an additional native-dtype previous-gradient vector on CPU;
+a 9B BF16 worker now needs about 54 GB of host gradient storage, plus buffers.
 
 Production execution is TODO: deployment artifact paths and GPUs are not present
 in this development environment. Local tiny-model tests verify gradient algebra,
@@ -523,3 +534,11 @@ OMP_NUM_THREADS=1 python -m pytest --confcutdir=tests/agentic_critic \
   tests/agentic_critic/test_compact_grad_cli.py \
   tests/agentic_critic/test_compact_grad_parallel.py
 ```
+
+Adjacent-segment addition: **25 focused tests passed** in
+`tests/agentic_critic/test_trajectory_grad.py`, including exact adjacent dot
+products, orthogonal/negative directions, zero/empty segments without bridging,
+ordinal aggregation, zero-compaction cohorts, Qwen3.5 FP32/BF16 gradients,
+serial/parallel agreement, raw boundary output and the sixth PNG/PDF figure.
+Ruff, import-order, Black and diff-whitespace checks passed. These remain
+development checks; production measurement is still pending.

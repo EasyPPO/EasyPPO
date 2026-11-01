@@ -14,7 +14,7 @@ from agentic_critic_pipeline.gradient_models import actor_loss_function
 from agentic_critic_pipeline.records import data_sha256
 from agentic_critic_pipeline.trajectory_grad import measure_trajectory
 from agentic_critic_pipeline.trajectory_grad_comparison import main, merge_results, prepare
-from agentic_critic_pipeline.trajectory_grad_figures import render, summarize
+from agentic_critic_pipeline.trajectory_grad_figures import _adjacent_analysis, render, summarize
 
 
 @pytest.fixture
@@ -75,9 +75,10 @@ def experiment(tmp_path):
 
 @pytest.mark.parametrize("normalization", ["none", "cohort"])
 @pytest.mark.parametrize("checkpoint", [True, False])
-def test_two_pass_matches_direct_whole_trajectory_gradient(experiment, normalization, checkpoint):
+@pytest.mark.parametrize("episode_index", [1, 2])
+def test_two_pass_matches_direct_whole_trajectory_gradient(experiment, normalization, checkpoint, episode_index):
     model, _, _, _, episodes = experiment
-    episode = episodes[2]
+    episode = episodes[episode_index]
     values = [[0.02 * i for i in range(sum(s["loss_mask"]))] for s in episode["segments"]]
     moments = dict(mean=0.13, variance=0.23)
     parameters = tuple(model.parameters())
@@ -113,11 +114,16 @@ def test_two_pass_matches_direct_whole_trajectory_gradient(experiment, normaliza
     flat = torch.cat([g.flatten() for g in full]).double()
     assert trajectory["trajectory_grad_norm"] == pytest.approx(float(flat.norm()), rel=2e-6)
     assert trajectory["projection_sum"] == pytest.approx(1, abs=2e-6)
+    previous_g = None
     for i, (loss, row) in enumerate(zip(losses, rows, strict=True)):
-        assert row["prior_compactions"] == i and row["total_compactions"] == 2
+        assert row["prior_compactions"] == i and row["total_compactions"] == episode_index
+        assert row["compaction_ordinal"] == (i if i else None)
+        assert row["previous_segment_index"] == (i - 1 if i else None)
         if loss is None:
             assert row["segment_grad_norm"] == 0 and row["cosine_with_trajectory"] is None
             assert row["segment_mean_grad_norm"] is None
+            assert row["cosine_with_previous_segment"] is None
+            previous_g = None
             continue
         grad = torch.autograd.grad(loss, parameters, retain_graph=True)
         g = torch.cat([x.flatten() for x in grad]).double()
@@ -127,15 +133,23 @@ def test_two_pass_matches_direct_whole_trajectory_gradient(experiment, normaliza
         )
         assert row["norm_ratio"] == pytest.approx(float(g.norm() / flat.norm()), rel=2e-6)
         assert row["segment_mean_norm_ratio"] == pytest.approx(row["norm_ratio"] / row["token_fraction"])
+        if previous_g is None:
+            assert row["cosine_with_previous_segment"] is None
+        else:
+            expected = float(torch.dot(g, previous_g) / (g.norm() * previous_g.norm()))
+            assert row["cosine_with_previous_segment"] == pytest.approx(expected, abs=2e-6)
+            assert row["previous_segment_grad_norm"] == pytest.approx(float(previous_g.norm()), rel=2e-6)
+        previous_g = g
 
 
 def test_zero_gradients_remain_null_instead_of_nan(experiment):
     model, _, _, _, episodes = experiment
-    episode = episodes[0]
-    values = [[episode["reward"]] * sum(episode["segments"][0]["loss_mask"])]
+    episode = episodes[1]
+    values = [[episode["reward"]] * sum(s["loss_mask"]) for s in episode["segments"]]
     trajectory, rows = measure_trajectory(model, episode, values, moments={})
     assert trajectory["trajectory_grad_norm"] == rows[0]["segment_grad_norm"] == 0
     assert rows[0]["norm_ratio"] is None and rows[0]["cosine_with_trajectory"] is None
+    assert all(row["cosine_with_previous_segment"] is None for row in rows)
     json.dumps([trajectory, rows], allow_nan=False)
 
 
@@ -153,8 +167,25 @@ def test_cancelling_segments_have_negative_cosine_and_ratio_above_one(monkeypatc
     assert trajectory["projection_sum"] == 1
     assert [row["norm_ratio"] for row in rows] == [2, 1]
     assert [row["cosine_with_trajectory"] for row in rows] == [1, -1]
+    assert [row["cosine_with_previous_segment"] for row in rows] == [None, -1]
     # The unused bias is represented by zero, without changing .grad.
     assert model.bias.grad is None
+
+
+@pytest.mark.parametrize("middle", [(0, 1), (0, 0)])
+def test_adjacent_directions_are_orthogonal_or_undefined_without_skipping_a_segment(monkeypatch, middle):
+    model = torch.nn.Linear(2, 1)
+
+    def vector_losses(model, segment, advantages, **kwargs):
+        return lambda: (model.weight.flatten() * torch.tensor(segment["direction"])).sum().reshape(1)
+
+    monkeypatch.setattr("agentic_critic_pipeline.trajectory_grad.actor_loss_function", vector_losses)
+    segments = [
+        dict(input_ids=[1, 2], response_start=1, loss_mask=[1], direction=d) for d in [(1, 0), middle, (0, -1)]
+    ]
+    _, rows = measure_trajectory(model, dict(reward=1, segments=segments), [[0]] * 3, moments={}, checkpoint=False)
+    expected = [None, 0, -1] if middle == (0, 1) else [None, None, None]
+    assert [row["cosine_with_previous_segment"] for row in rows] == expected
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
@@ -195,6 +226,21 @@ def test_qwen35_hybrid_actor_matches_ordinary_hf_trajectory_backward(dtype):
     assert trajectory["trajectory_grad_norm"] == pytest.approx(norm, rel=0.02 if dtype == torch.bfloat16 else 3e-6)
     assert trajectory["projection_sum"] == pytest.approx(1, abs=3e-6)
     assert all(row["cosine_with_trajectory"] is not None for row in rows)
+    segment_gradients = []
+    for segment, v in zip(segments, values, strict=True):
+        callback = actor_loss_function(model, segment, torch.tensor([0.7 - x for x in v]))
+        gradient = torch.autograd.grad(callback().sum() / 5, model.parameters(), allow_unused=True)
+        segment_gradients.append(
+            torch.cat(
+                [
+                    (torch.zeros_like(p) if g is None else g).flatten().double()
+                    for p, g in zip(model.parameters(), gradient, strict=True)
+                ]
+            )
+        )
+    left, right = segment_gradients
+    expected_cosine = float(torch.dot(left, right) / (left.norm() * right.norm()))
+    assert rows[1]["cosine_with_previous_segment"] == pytest.approx(expected_cosine, abs=3e-6)
 
 
 def test_sampling_keeps_complete_histories_and_fails_on_overlength(experiment, tmp_path):
@@ -251,14 +297,28 @@ def test_two_worker_experiment_pairs_all_segments_and_saves_reproducible_figures
     manifest = json.loads((root / "manifest.json").read_text())
     assert manifest["status"] == "complete" and manifest["selection"]["trajectories"] == 3
     report = root / "gradient_report"
-    assert len(list(report.glob("*.png"))) == len(list(report.glob("*.pdf"))) == 5
+    assert len(list(report.glob("*.png"))) == len(list(report.glob("*.pdf"))) == 6
+    assert (report / "adjacent_segment_cosine_by_compaction.png").exists()
     plot_path = report / "plot_data.json"
     plot_hash = data_sha256(plot_path)
     summary = render(root, bootstrap=20)
     assert data_sha256(plot_path) == plot_hash
+    adjacent_rows = [json.loads(line) for line in (report / "adjacent_segments.jsonl").read_text().splitlines()]
+    assert len(adjacent_rows) == 6
+    assert all(
+        row["compaction_ordinal"] == row["right_segment_index"] == row["left_segment_index"] + 1
+        for row in adjacent_rows
+    )
+    plot_data = json.loads(plot_path.read_text())
     for mode in ("actor_summary", "full_history"):
         assert summary[mode]["trajectories"] == 3 and summary[mode]["segments"] == 6
         assert summary[mode]["metrics"]["cosine_with_trajectory"]["undefined"] == 1
+        assert summary[mode]["adjacent_segment_cosine"]["records"] == 3
+        assert summary[mode]["adjacent_segment_cosine"]["valid"] == 1
+        assert summary[mode]["adjacent_segment_cosine"]["undefined"] == 2
+        adjacent_groups = plot_data["groups"]["adjacent_by_compaction_ordinal"][mode]
+        assert [row["count"] for row in adjacent_groups] == [1, 2]
+        assert adjacent_groups[1]["metrics"]["cosine_similarity"]["valid"] == 0
         rows = [json.loads(line) for line in (root / mode / "trajectories.jsonl").read_text().splitlines()]
         assert all(row["projection_sum"] == pytest.approx(1, abs=3e-6) for row in rows)
         segment_rows = [json.loads(line) for line in (root / mode / "segments.jsonl").read_text().splitlines()]
@@ -276,7 +336,13 @@ def test_two_worker_experiment_pairs_all_segments_and_saves_reproducible_figures
         a = [json.loads(s) for s in (root / mode / "segments.jsonl").read_text().splitlines()]
         b = [json.loads(s) for s in (serial / mode / "segments.jsonl").read_text().splitlines()]
         for left, right in zip(a, b, strict=True):
-            for metric in ("segment_grad_norm", "trajectory_grad_norm", "norm_ratio", "cosine_with_trajectory"):
+            for metric in (
+                "segment_grad_norm",
+                "trajectory_grad_norm",
+                "norm_ratio",
+                "cosine_with_trajectory",
+                "cosine_with_previous_segment",
+            ):
                 assert left[metric] == pytest.approx(right[metric], rel=3e-6, abs=3e-7)
     with pytest.raises(FileExistsError):
         main(_args(base, critics, source, root, 1))
@@ -315,6 +381,47 @@ def test_summary_balances_episodes_then_problems_and_excludes_only_undefined():
     result = summarize(rows, "x", seed=1, bootstrap=20)
     assert result["mean"] == 12.5 and result["undefined"] == 1 and result["problems"] == 2
     assert result["trajectories"] == 3 and result["ci95"] is not None
+
+
+@pytest.mark.parametrize("with_boundaries", [False, True])
+def test_adjacent_plot_groups_by_boundary_ordinal_and_counts_missing_pairs(tmp_path, with_boundaries):
+    rows = []
+    episodes = (
+        [("e0", "p0", [None, 1, None]), ("e1", "p1", [None, -1, 0.5]), ("e2", "p2", [None, 0])]
+        if with_boundaries
+        else [("e0", "p0", [None])]
+    )
+    for eid, pid, cosines in episodes:
+        for index, cosine in enumerate(cosines):
+            rows.append(
+                dict(
+                    episode_id=eid,
+                    problem_id=pid,
+                    segment_index=index,
+                    compaction_ordinal=index if index else None,
+                    previous_segment_index=index - 1 if index else None,
+                    cosine_with_previous_segment=cosine,
+                    total_compactions=len(cosines) - 1,
+                    loss_tokens=1,
+                    segment_grad_norm=1,
+                )
+            )
+    data = {mode: rows for mode in ("actor_summary", "full_history")}
+    groups, summary = _adjacent_analysis(data, tmp_path, seed=1, bootstrap=20)
+    for mode in data:
+        if with_boundaries:
+            first, second = groups[mode]
+            assert first["count"] == 1 and first["metrics"]["cosine_similarity"]["mean"] == 0
+            assert first["metrics"]["cosine_similarity"]["problems"] == 3
+            assert second["count"] == 2 and second["metrics"]["cosine_similarity"]["undefined"] == 1
+            assert second["metrics"]["cosine_similarity"]["mean"] == 0.5
+            assert summary[mode]["negative_cosines"] == 1
+        else:
+            assert groups[mode] == [] and summary[mode]["records"] == 0
+    # Legacy scalar-only output cannot reconstruct adjacent directions.
+    del rows[0]["cosine_with_previous_segment"]
+    with pytest.raises(ValueError, match="rerun actor measurements"):
+        _adjacent_analysis(data, tmp_path, seed=1, bootstrap=20)
 
 
 @pytest.mark.parametrize("flag", ["--workers", "--trajectories", "--bootstrap", "--max-tokens", "--head-chunk-size"])

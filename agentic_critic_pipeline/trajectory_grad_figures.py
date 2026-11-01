@@ -132,6 +132,93 @@ def _read(root, mode, name):
         return [json.loads(line) for line in stream]
 
 
+def _adjacent_analysis(segments, report, *, seed, bootstrap):
+    """One observation at boundary k compares original segments k-1 and k."""
+    boundaries = {}
+    for mode, rows in segments.items():
+        lookup = {(row["episode_id"], row["segment_index"]): row for row in rows}
+        boundaries[mode] = []
+        for row in rows:
+            if "cosine_with_previous_segment" not in row:
+                raise ValueError("Adjacent gradients are missing; rerun actor measurements with the updated code")
+            index = row["segment_index"]
+            if index == 0:
+                continue
+            previous = lookup[(row["episode_id"], index - 1)]
+            if row["compaction_ordinal"] != index or row["previous_segment_index"] != index - 1:
+                raise ValueError("Adjacent segment identities do not match the compaction ordinal")
+            boundaries[mode].append(
+                dict(
+                    episode_id=row["episode_id"],
+                    problem_id=row["problem_id"],
+                    critic_mode=mode,
+                    compaction_ordinal=index,
+                    total_compactions=row["total_compactions"],
+                    left_segment_index=index - 1,
+                    right_segment_index=index,
+                    left_loss_tokens=previous["loss_tokens"],
+                    right_loss_tokens=row["loss_tokens"],
+                    left_grad_norm=previous["segment_grad_norm"],
+                    right_grad_norm=row["segment_grad_norm"],
+                    cosine_similarity=row["cosine_with_previous_segment"],
+                )
+            )
+    metric = "cosine_similarity"
+    groups = {mode: _group(rows, "compaction_ordinal", [metric], seed, bootstrap) for mode, rows in boundaries.items()}
+    fig, (ax, coverage) = plt.subplots(2, 1, figsize=(9, 7), sharex=True, height_ratios=[3, 1])
+    for mode in MODES:
+        _draw(ax, groups[mode], metric, LABELS[mode])
+        # An isolated ordinal has no shaded area; draw its CI explicitly too.
+        intervals = [row for row in groups[mode] if row["metrics"][metric]["ci95"] is not None]
+        ax.vlines(
+            [row["count"] for row in intervals],
+            [row["metrics"][metric]["ci95"][0] for row in intervals],
+            [row["metrics"][metric]["ci95"][1] for row in intervals],
+            color=ax.lines[-1].get_color(),
+            alpha=0.4,
+            linewidth=1,
+        )
+        coverage.plot(
+            [row["count"] for row in groups[mode]],
+            [row["metrics"][metric]["valid"] for row in groups[mode]],
+            "o-",
+            label=LABELS[mode],
+        )
+    ax.set(ylabel="Cosine of adjacent segment actor gradients", ylim=(-1.05, 1.05))
+    ax.axhline(0, color="gray", linewidth=0.8)
+    ax.legend(fontsize=9)
+    if groups[MODES[0]]:
+        coverage.plot(
+            [row["count"] for row in groups[MODES[0]]],
+            [row["metrics"][metric]["records"] for row in groups[MODES[0]]],
+            "k:",
+            label="Available boundaries",
+        )
+        coverage.set_xticks([row["count"] for row in groups[MODES[0]]])
+    else:
+        ax.text(0.5, 0.5, "No compaction boundaries in cohort", transform=ax.transAxes, ha="center")
+        coverage.set_xticks([])
+    maximum = max([row["metrics"][metric]["records"] for row in groups[MODES[0]]] + [1])
+    coverage.set(xlabel="Compaction ordinal k (segments k-1 and k)", ylabel="Valid pairs", ylim=(0, maximum * 1.1))
+    coverage.yaxis.get_major_locator().set_params(integer=True)
+    coverage.grid(alpha=0.2)
+    coverage.legend(fontsize=8)
+    fig.suptitle("Adjacent segment alignment | problem-balanced means and 95% problem bootstrap CI")
+    _save(fig, report, "adjacent_segment_cosine_by_compaction")
+    with (report / "adjacent_segments.jsonl").open("w") as stream:
+        for rows in boundaries.values():
+            for row in rows:
+                stream.write(json.dumps(row, allow_nan=False) + "\n")
+    summary = {
+        mode: dict(
+            summarize(rows, metric, seed=seed, bootstrap=bootstrap),
+            negative_cosines=sum(row[metric] is not None and row[metric] < 0 for row in rows),
+        )
+        for mode, rows in boundaries.items()
+    }
+    return groups, summary
+
+
 def render(root, *, seed=1234, bootstrap=2000):
     if bootstrap < 1:
         raise ValueError("Bootstrap repetitions must be positive")
@@ -157,6 +244,8 @@ def render(root, *, seed=1234, bootstrap=2000):
         groups={},
         paired={},
     )
+    adjacent_groups, adjacent_summary = _adjacent_analysis(segments, report, seed=seed, bootstrap=bootstrap)
+    plot_data["groups"]["adjacent_by_compaction_ordinal"] = adjacent_groups
     for count in ("prior_compactions", "total_compactions"):
         groups = {mode: _group(segments[mode], count, METRICS, seed, bootstrap) for mode in MODES}
         plot_data["groups"][count] = groups
@@ -243,6 +332,7 @@ def render(root, *, seed=1234, bootstrap=2000):
             ),
             metrics={metric: summarize(segments[mode], metric, seed=seed, bootstrap=bootstrap) for metric in METRICS},
             trajectory_norm=summarize(trajectories[mode], "trajectory_grad_norm", seed=seed, bootstrap=bootstrap),
+            adjacent_segment_cosine=adjacent_summary[mode],
         )
         for mode in MODES
     }
@@ -251,6 +341,7 @@ def render(root, *, seed=1234, bootstrap=2000):
     }
     summary["interpretation"] = [
         "Negative cosine indicates a segment opposing its own trajectory gradient; self-contribution is included.",
+        "Adjacent cosine at compaction k compares segments k-1 and k; zero-norm pairs are null, without bridging gaps.",
         "Norm ratios may exceed one when segment gradients cancel; they are not additive percentages.",
         "Compare token-mean norms and token fractions to assess segment-length effects.",
         "Prior-count curves condition on trajectories reaching that segment; total-count curves are observational.",

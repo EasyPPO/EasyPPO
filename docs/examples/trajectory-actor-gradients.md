@@ -91,6 +91,7 @@ norm_ratio               = norm(g_s) / norm(g_e)
 segment_mean_grad_norm   = norm(g_s) * N / n_s
 segment_mean_norm_ratio  = norm_ratio * N / n_s
 projection_on_trajectory = dot(g_s, g_e) / norm(g_e)^2
+adjacent_cosine_k        = dot(g_(k-1), g_k) / (norm(g_(k-1)) * norm(g_k)), k >= 1
 ```
 
 The primary segment gradient uses the **same trajectory denominator** as `g_e`.
@@ -99,6 +100,14 @@ scales. The additional token-mean norm and ratio answer the alternative question
 using each segment's own `n_s` denominator. Both definitions are retained rather
 than silently conflating them. The trajectory loss is a token mean across all
 segments, not an unweighted mean of segment means.
+
+For adjacent alignment, **compaction ordinal k** compares the actor gradients of
+original segments `k-1` and `k`, within the same trajectory and critic condition.
+The first compaction compares segment 0 with segment 1. This cosine is invariant
+to choosing contribution or segment token-mean scaling, since their scale factors
+are positive. If either gradient has zero norm (including empty-loss segments),
+retain a `null` pair; do not skip that segment and compare more distant segments.
+Trajectories with no compactions contribute no adjacent observations.
 
 The actor always reads its original segment input independently, including its
 summary context. Only the critic's checkpoint and input mode change. Even for
@@ -123,15 +132,22 @@ validation-cohort whitening is not training-batch whitening.
 The implementation makes two forward/backward passes per nonempty segment.
 First it accumulates `g_e` in FP32 host memory; then it recomputes each `g_s` to
 measure products with `g_e` in bounded FP64 chunks. Only one segment graph and
-one full reference vector are retained. Parameter-gradient precision still
-depends on `--dtype`; FP64 reductions do not make BF16 gradients exact FP64
+one full trajectory reference vector are retained, together with the preceding
+segment's gradient on CPU in its native dtype. The same second pass measures
+adjacent products, with no additional model forward/backward passes.
+Parameter-gradient precision still depends on `--dtype`; FP64 reductions do not
+make BF16 gradients exact FP64
 derivatives. Evaluation mode disables dropout; no `.grad` buffers or weights
 are updated. Layer checkpointing and chunked LM-head loss are enabled by default.
 
 A 9B BF16 actor requires roughly 18 GB for weights and 18 GB for gradients
 before activations and workspaces; the FP32 trajectory reference requires
-roughly **36 GB of host memory per worker**. Allow additional checkpoint-loading
-and transfer buffers, and multiply host requirements by the worker count.
+roughly 36 GB of host memory per worker. The previous-segment BF16 reference
+adds about 18 GB, for roughly **54 GB of host gradient storage per worker**
+(about 432 GB for eight workers), before checkpoint-loading and transfer buffers.
+FP32 models need about 72 GB of host gradient storage per 9B worker. Choose the
+worker count to fit the available memory. Only the immediately previous segment
+vector is retained, regardless of the trajectory's compaction count.
 Full-history critic inference must fit its complete concatenated context.
 
 ## Saved data and analysis
@@ -142,15 +158,16 @@ Full-history critic inference must fit its complete concatenated context.
 | `<mode>/cache/values.jsonl` | Every generated token's critic prediction, grouped by original segment |
 | `<mode>/cache/manifest.json` | Critic/base hashes, common advantage moments and worker provenance |
 | `<mode>/trajectories.jsonl` | One trajectory norm, length/count, parameter count, projection check, timing and GPU memory per trajectory |
-| `<mode>/segments.jsonl` | All segment norms, cosines, ratios, token fractions, counts and advantage RMS |
+| `<mode>/segments.jsonl` | All segment norms, trajectory/adjacent cosines, ratios, token fractions, counts and advantage RMS; adjacent fields include `compaction_ordinal`, `previous_segment_index`, `previous_segment_grad_norm` and `cosine_with_previous_segment` |
 | `<mode>/cache_*.log`, `<mode>/measure_*.log` | Worker logs; original worker results/manifests also remain available |
 | `gradient_report/*.csv` | Flat copies of both conditions' segment and trajectory measurements |
 | `gradient_report/paired_*.jsonl` | Matched actor-summary minus full-history differences |
+| `gradient_report/adjacent_segments.jsonl` | One row per critic condition and original compaction boundary, with left/right segment identities, token counts, norms and cosine |
 | `gradient_report/summary.json` | Aggregate metrics, zero/undefined counts and interpretation notes |
 | `gradient_report/plot_data.json` | All plotted means, confidence intervals, valid/undefined counts and a prior-count × total-count conditional table |
 | `manifest.json` | Written last on complete success; checkpoint identities, software versions, source/selection hashes, worker manifests and result checksums |
 
-Five figures are produced as PNG (220 dpi) and PDF:
+Six figures are produced as PNG (220 dpi) and PDF:
 
 - `segments_by_prior_compactions`: norms, cosine and ratios as segments encounter
   zero, one, two, … preceding compactions, plus token-mean norms and token fractions.
@@ -160,6 +177,10 @@ Five figures are produced as PNG (220 dpi) and PDF:
   token count versus total compactions; each trajectory appears once.
 - `paired_by_prior_compactions` and `paired_by_total_compactions`: paired critic
   differences in contribution norm, cosine and norm ratio, with a zero reference.
+- `adjacent_segment_cosine_by_compaction`: two lines for the two critic
+  conditions, showing `cosine(g_(k-1), g_k)` versus compaction ordinal `k=1,2,...`.
+  Shading shows problem-bootstrap 95% intervals; a lower panel shows valid-pair
+  counts and the number of available boundaries at each ordinal.
 
 Each cell averages records within a trajectory, then trajectories within a
 problem, then problems equally. Shading is a 95% bootstrap interval resampling
@@ -168,6 +189,10 @@ It is absent for single-problem cells. Exact per-cell counts and all raw metrics
 remain available. Empty-loss segments have zero contribution norm and undefined
 cosine/token-mean norm; zero denominator metrics are `null`, never fabricated
 zeros. Undefined values are excluded only from the relevant metric's aggregate.
+For the adjacent plot, each trajectory supplies at most one pair per ordinal.
+Per-ordinal means, confidence intervals and valid/undefined pair counts are in
+`plot_data.json` under `groups.adjacent_by_compaction_ordinal`; overall adjacent
+statistics and negative-cosine counts are in `summary.json` for each critic.
 
 Interpretation should consider direction and magnitude together. Negative
 cosine indicates opposition to the trajectory update; cosine here includes the
@@ -193,3 +218,8 @@ python -m agentic_critic_pipeline.trajectory_grad_figures \
 
 The renderer verifies the completed measurement checksums. It writes local files
 only and does not upload artifacts or require a W&B account.
+
+Runs from before the adjacent-gradient addition require new actor measurements.
+The previous scalar norms and segment-to-trajectory cosines cannot reconstruct
+adjacent parameter-gradient dot products. The renderer reports missing adjacent
+fields rather than inventing these values; existing original outputs stay intact.
