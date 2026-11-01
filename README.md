@@ -25,6 +25,12 @@ validation and figures. It defaults to AM only because full/shared training is
 already complete; an explicit three-mode HF comparison remains available.
 Both AM workflows remain available.
 
+The [trajectory actor-gradient experiment](docs/examples/trajectory-actor-gradients.md)
+reuses the independently pretrained full-history and actor-summary critics to
+measure actor gradient norms, segment-to-trajectory cosine similarities and norm
+ratios across compaction counts. It retains paired measurements, token-aligned
+critic values and local analysis figures; production execution remains pending.
+
 ## Method
 
 EasyPPO combines three changes:
