@@ -28,7 +28,10 @@ class CriticMemoryAttention(TEDotProductAttention):
             # causal pattern is represented by TE, not an explicit Python mask.
             beta = q.new_zeros(q.shape[0], k.shape[1])
             beta[:, :fixed_bias.shape[1]] = fixed_bias.repeat_interleave(groups, 0).to(q.dtype)
-            bias = beta[None, :, None].expand(1, q.shape[0], q.shape[1], k.shape[1])
+            # TE's fused C++ entry takes raw data/shape, not PyTorch strides.
+            # Describe a real contiguous singleton query axis; cuDNN broadcasts
+            # that axis. An expanded [1,H,Lq,Lk] view is unsafe at this boundary.
+            bias = beta[None, :, None]
         output = super().forward(
             q.transpose(0, 1)[None], k.transpose(0, 1)[None], v.transpose(0, 1)[None],
             None, mask_type, attention_bias=bias, packed_seq_params=self._memory_seq_params,

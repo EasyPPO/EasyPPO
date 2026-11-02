@@ -109,3 +109,12 @@ boundary allows collection, but the broad suite has **66 failures and 52 errors*
 has exactly the same failing/error test identities: 455 pass on the prior tree,
 456 pass on the updated tree. No new launcher failure/error was observed. This is
 not a clean launcher-suite pass.
+
+## Post-alignment bias-layout correction
+
+TE fused C++ forwards raw bias data and shape without PyTorch strides; its
+cuDNN descriptor computes dense strides from the actual shape. Replaced the
+expanded zero-stride [1,H,Lq,Lk] bias view by a real contiguous [1,H,1,Lk] tensor.
+The wrapper test now checks this native boundary contract as well as outputs and
+gradients. The selected context suite: 22 passed; CUDA smoke: 1 skipped. This is
+source/CPU evidence, not a completed native CUDA compatibility or throughput test.
