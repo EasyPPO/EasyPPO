@@ -108,7 +108,7 @@ class PackedSeqParamsWithHostCuSeqlens(PackedSeqParams):
     cu_seqlens_host: tuple[int, ...] = field(kw_only=True)
 
 
-def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> PackedSeqParams:
+def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace, *, critic_context=False) -> PackedSeqParams:
     if args.qkv_format == "thd":
         packed_seq_params = PackedSeqParamsWithHostCuSeqlens(
             cu_seqlens_q=batch["cu_seqlens"],
@@ -119,6 +119,18 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
             cu_seqlens_host=batch["cu_seqlens_host"],
         )
         batch["packed_seq_params"] = packed_seq_params
+        if critic_context and getattr(args, "critic_context_mode", "shared") == "attention_matching":
+            # Context is immutable forward metadata, including during checkpoint
+            # recomputation. Actor forwards must never receive this side channel.
+            from agentic_critic.context_layout import validate_packed_layout
+
+            metadata = batch.get("metadata")
+            if not metadata or any("critic_context" not in row for row in metadata):
+                raise ValueError("AM critic batch is missing original episode context layouts")
+            layouts = validate_packed_layout(
+                [row["critic_context"] for row in metadata], [len(t) for t in batch["unconcat_tokens"]]
+            )
+            packed_seq_params.critic_context = {"layouts": tuple(layouts), "ratio": args.critic_am_ratio}
         return packed_seq_params
     else:
         return None

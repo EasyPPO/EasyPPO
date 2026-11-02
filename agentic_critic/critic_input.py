@@ -23,10 +23,21 @@ class Segment:
     tokens: list[int]
     response_length: int
     loss_mask: list[int]
+    # Half-open offsets into tokens of the actor's summary completion, without retokenization.
+    summary_span: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         assert 0 <= self.response_length <= len(self.tokens)
         assert len(self.loss_mask) == self.response_length
+        if self.summary_span is not None:
+            if len(self.summary_span) != 2:
+                raise ValueError("summary_span must contain [start, end] offsets")
+            start, end = self.summary_span
+            if not all(isinstance(x, int) for x in (start, end)) or not self.response_start <= start < end <= len(self.tokens):
+                raise ValueError("summary_span must be a nonempty range inside the response")
+            if not all(self.loss_mask[start - self.response_start : end - self.response_start]):
+                raise ValueError("summary_span must contain only actor-generated tokens")
+            self.summary_span = (start, end)
 
     @property
     def response_start(self) -> int:

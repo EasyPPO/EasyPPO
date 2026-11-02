@@ -1,7 +1,7 @@
 """Critic forward passes with independent context and memory on a Hugging Face causal LM.
 
-All settings predict a value for every actor-generated token and are trained on the same
-trajectories with the same targets. They differ only in what the critic can see of the earlier
+All settings predict a value for every actor-generated token with the same targets.
+AM is frozen-reference only here and trains in native Miles. Settings differ in what the critic sees of earlier
 segments of an episode, and in whether the loss can back-propagate into them:
 
   shared       each segment alone: what the actor saw after its own compaction
@@ -10,6 +10,8 @@ segments of an episode, and in whether the loss can back-propagate into them:
                (hybrid models only)
   full_detach  earlier segments fully visible, but as constants: no gradient into them
   full         the whole append-only log in one differentiable forward pass
+  attention_matching  frozen reference for native Miles problem / AM memory / resume inputs;
+                      linear states reset per actor segment; HF training is refused
   kv           earlier segments reach the critic as a compacted attention KV (plus the recurrent states), as
                constants. After each segment its keys are compacted to a fraction; the memory is recomputed
                with the current weights in every forward pass (fully synchronous). With every key kept this
@@ -19,17 +21,15 @@ The value of token t is read from the hidden state at position t-1, i.e. before 
 generated, as in EasyPPO.
 """
 
-from contextlib import contextmanager
-
 import torch
 from torch import nn
 
 from agentic_critic.critic_input import Segment
+from agentic_critic.memory_config import KV_DEFAULT, resolve_memory_config  # noqa: F401 (public compatibility)
 
-MODES = ("shared", "state", "full_detach", "full", "kv")
+MODES = ("shared", "state", "full_detach", "full", "kv", "attention_matching")
 # kv settings: fraction of each segment's keys kept; evict | am | am_cv (agentic_critic/kv_compact.py);
 # queries from the next segment's tokens ("hindsight", known at training time) or from the segment itself ("causal").
-KV_DEFAULT = {"ratio": 0.25, "method": "am", "queries": "hindsight"}
 
 
 class ValueHead(nn.Module):
@@ -43,42 +43,8 @@ class ValueHead(nn.Module):
         return self.linear(hidden.float()).squeeze(-1)
 
 
-@contextmanager
-def assigning_cache_updates():
-    """Make the linear-attention cache store new states by assignment instead of in-place copy.
-
-    transformers writes the recurrent and conv states into the cache with `copy_` (to keep a static
-    address for compiled inference). During training that overwrites a tensor the graph still needs,
-    and backward fails. Assignment keeps the old tensor intact; the values are identical.
-    """
-    from transformers.cache_utils import LinearAttentionLayer
-
-    orig_conv, orig_rec = LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state
-
-    def update_conv_state(self, conv_states, **kwargs):
-        if not self.is_conv_states_initialized:
-            self.dtype, self.device = conv_states.dtype, conv_states.device
-            self.max_batch_size, self.conv_kernel_size = conv_states.shape[0], conv_states.shape[-1]
-            self.is_conv_states_initialized = True
-        k, new = self.conv_kernel_size, conv_states.shape[-1]
-        if not self.has_previous_state or new >= k:
-            self.conv_states = conv_states[..., -k:]
-        else:
-            self.conv_states = torch.cat([self.conv_states[..., new:], conv_states], dim=-1)
-        self.has_previous_state = True
-        return self.conv_states
-
-    def update_recurrent_state(self, recurrent_states, **kwargs):
-        self.is_recurrent_states_initialized = True
-        self.recurrent_states = recurrent_states
-        return self.recurrent_states
-
-    LinearAttentionLayer.update_conv_state = update_conv_state
-    LinearAttentionLayer.update_recurrent_state = update_recurrent_state
-    try:
-        yield
-    finally:
-        LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state = orig_conv, orig_rec
+# One compatibility implementation for frozen HF baseline/reference readers.
+from agentic_critic_runtime.cache import assigning_cache_updates
 
 
 def _detach_cache(cache, keep_kv: bool):
@@ -89,7 +55,9 @@ def _detach_cache(cache, keep_kv: bool):
             t = getattr(layer, name, None)
             if t is None:
                 continue
-            if isinstance(t, (list, tuple)):
+            if isinstance(t, dict):
+                setattr(layer, name, {k: v.detach() for k, v in t.items()})
+            elif isinstance(t, (list, tuple)):
                 setattr(layer, name, type(t)(x.detach() for x in t))
             else:
                 setattr(layer, name, t.detach())
@@ -116,23 +84,40 @@ def episode_values(
     without a backward pass: d(0.5 (V - G)^2)/dW = (V - G) h.
     """
     assert mode in MODES
+    if mode == "attention_matching":
+        if torch.is_grad_enabled():
+            raise ValueError("HF AM episode_values is frozen-reference only; train the native Miles critic")
+        from agentic_critic.context_reference import read_reference
+
+        config = resolve_memory_config(mode, kv)
+        values = []
+
+        def reference_head(hidden):
+            if features is not None:
+                features.append(hidden.detach())
+            return head(hidden)
+
+        read_reference(model, reference_head, segments, device,
+                       lambda pairs: values.extend(v for _, v in pairs), ratio=config["ratio"], ridge=config["ridge"])
+        return values
+    config = resolve_memory_config(mode, kv)
     with assigning_cache_updates():
-        if mode == "kv":
-            return _episode_values_kv(model, head, segments, device, features, {**KV_DEFAULT, **(kv or {})})
+        if config is not None:
+            return _episode_values_kv(model, head, segments, device, features, config)
         return _episode_values(model, head, segments, mode, device, features)
 
 
 def _episode_values_kv(model, head, segments, device, features, kv) -> list[torch.Tensor]:
-    import copy
-
     from agentic_critic import kv_compact
 
-    assert kv["queries"] in ("hindsight", "causal") and (kv["method"] != "am_cv" or kv["queries"] == "causal")
+    kv_compact.validate_model(model)
+    kv_compact.validate_summary_segments(segments, kv)
     out, cache, biases, seen, memory = [], None, {}, 0, 0
     for s, seg in enumerate(segments):
         ids = torch.tensor([seg.tokens], device=device)
         n = len(seg.tokens)
-        with kv_compact.capture_queries(model) as own_queries:
+        query_ctx = kv_compact.segment_queries(model, seg, kv)
+        with query_ctx as own_queries:
             if cache is None:
                 res = model(input_ids=ids, output_hidden_states=True, use_cache=True)
             else:
@@ -142,25 +127,10 @@ def _episode_values_kv(model, head, segments, device, features, kv) -> list[torc
         if s == len(segments) - 1:
             break
         cache = _detach_cache(res.past_key_values, keep_kv=True)
-        with torch.no_grad():
-            if kv["queries"] == "hindsight":
-                # The tokens that will read this memory are known: run them once on the uncompacted keys.
-                uncompacted = {i: torch.cat([b, b.new_zeros(b.shape[0], n)], dim=1) for i, b in biases.items()}
-                nxt = torch.tensor([segments[s + 1].tokens], device=device)
-                with kv_compact.capture_queries(model) as queries:
-                    if uncompacted:
-                        kv_compact.continue_from(model, copy.deepcopy(cache), uncompacted, nxt, seen)
-                    else:
-                        positions = torch.arange(seen, seen + nxt.shape[1], device=device).unsqueeze(0)
-                        model(input_ids=nxt, past_key_values=copy.deepcopy(cache), position_ids=positions, use_cache=True)
-                queries = dict(queries)
-            else:
-                queries = dict(own_queries)
-            keep = max(1, round(kv["ratio"] * n))
-            biases = kv_compact.compact_cache(
-                model, cache, queries, keep, method=kv["method"], causal=kv["queries"] == "causal", start=memory, prev_biases=biases
-            )  # fmt: skip
-            memory += keep
+        biases, memory = kv_compact.compact_segment(
+            model, cache, segments[s + 1].tokens, seen=seen, segment_length=n, memory_length=memory,
+            biases=biases, own_queries=own_queries, config=kv, summary_span=seg.summary_span,
+        )
     return out
 
 

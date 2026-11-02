@@ -59,6 +59,7 @@ def episode_samples(ep: Episode, call_logprobs: list[list[float]]) -> list[dict]
                 "critic_span": span,
                 "truncated": any(e.kind == "truncation_mark" for e in events),
                 "segment": s,
+                "metadata": {"summary_span": seg.summary_span},
             }
         )
     return out
@@ -121,7 +122,7 @@ async def generate(input):
         sample.reward = ep.reward
         sample.status = Sample.Status.TRUNCATED if fields["truncated"] else Sample.Status.COMPLETED
         sample.metadata = {
-            **(base.metadata or {}), "segment": fields["segment"], "n_compactions": ep.n_compactions,
+            **(base.metadata or {}), **fields["metadata"], "segment": fields["segment"], "n_compactions": ep.n_compactions,
             "scores": list(ep.scores), "finish_reason": ep.finish_reason, "critic_tokens_in_episode": len(fields["critic_tokens"]),
         }  # fmt: skip
         samples.append(sample)

@@ -265,4 +265,18 @@ def get_qwen3_5_spec(args, config, vp_stage):
                 params={"args": args},
             )
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
+        elif getattr(args, "critic_context_mode", "shared") == "attention_matching":
+            # Imported only for this optional critic mode; the wrapper preserves
+            # the native TE path on actor calls without critic layout metadata.
+            from miles_plugins.models.critic_memory_attention import CriticMemoryAttention
+
+            layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
+            core = layer_specs.submodules.self_attention.submodules.core_attention
+            core.module = CriticMemoryAttention
+            core.params = {
+                **(core.params or {}),
+                "memory_rotary_dim": int(args.kv_channels * args.rotary_percent),
+                "memory_rotary_base": args.rotary_base,
+            }
+            transformer_layer_spec.layer_specs[layer_id] = layer_specs
     return transformer_layer_spec

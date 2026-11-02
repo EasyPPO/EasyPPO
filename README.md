@@ -17,6 +17,10 @@ policy objective, and KL regularization.
 See the [terminal training guide](examples/easyppo/TERMINAL.md) for TMAX training
 with automatic Terminal-Bench 2.1 validation on the `miles` branch.
 
+## Attention-matching critic context
+
+See the [native Miles AM context fix](docs/examples/trained-attention-matching.md).
+
 ## Method
 
 EasyPPO combines three changes:
