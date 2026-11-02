@@ -16,7 +16,7 @@ from agentic_critic.context_memory import fit_memory, segment_attention
 @contextmanager
 def _full_attention(model, layout, memories, fits):
     # Transformers is optional for native Miles and pure tensor tests.
-    from transformers import AttentionInterface
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
     def attention(module, query, key, value, attention_mask, scaling=None, **kwargs):
         rotary = getattr(model.config, "partial_rotary_factor", 0.25)
@@ -37,16 +37,23 @@ def _full_attention(model, layout, memories, fits):
             fits[module.layer_idx] = fit
         return out.transpose(0, 1)[None], None
 
-    AttentionInterface.register("critic_context_am", attention)
+    # Scoped instance mapping: a global registered closure would keep the last
+    # model and its memory alive after evaluation, and could affect other models.
+    name = "critic_context_am"
+    previous_attention = ALL_ATTENTION_FUNCTIONS.get(name)
+    ALL_ATTENTION_FUNCTIONS[name] = attention
     previous = model.config._attn_implementation
     model.config._attn_implementation = "critic_context_am"
     try:
         yield
     finally:
         model.config._attn_implementation = previous
+        del ALL_ATTENTION_FUNCTIONS[name]
+        if previous_attention is not None:
+            ALL_ATTENTION_FUNCTIONS[name] = previous_attention
 
 
-def read_reference(model, head, segments, device, on_values, *, ratio, ridge=1e-4):
+def read_reference(model, head, segments, device, on_values, *, ratio):
     """Frozen evaluation only, retaining the original response/value alignment."""
     model = getattr(model, "model", model)
     if model.config.model_type != "qwen3_5_text":
@@ -60,4 +67,4 @@ def read_reference(model, head, segments, device, on_values, *, ratio, ridge=1e-
                 result = model(input_ids=torch.tensor([seg.tokens], device=device), use_cache=False)
             start = seg.response_start - 1
             on_values([(index, head(result.last_hidden_state[0, start : start + seg.response_length]))])
-            memories = {layer: fit_memory(fit, ratio=ratio, ridge=ridge) for layer, fit in fits.items()}
+            memories = {layer: fit_memory(fit, ratio=ratio) for layer, fit in fits.items()}

@@ -98,7 +98,7 @@ def episode_values(
             return head(hidden)
 
         read_reference(model, reference_head, segments, device,
-                       lambda pairs: values.extend(v for _, v in pairs), ratio=config["ratio"], ridge=config["ridge"])
+                       lambda pairs: values.extend(v for _, v in pairs), ratio=config["ratio"])
         return values
     config = resolve_memory_config(mode, kv)
     with assigning_cache_updates():

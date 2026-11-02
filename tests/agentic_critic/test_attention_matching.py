@@ -42,7 +42,7 @@ def test_positions(length, count, want):
         {"ratio": float("nan")},
         {"query_count": -1},
         {"query_count": 1.5},
-        {"ridge": 0},
+        {"ridge": 1e-4},
         {"ridge": float("inf")},
         {"queries": "causal"},
         {"queries": "hindsight"},
@@ -58,7 +58,7 @@ def test_reject_invalid_am_configuration(cfg):
 
 def test_resolver_preserves_caller_and_rejects_unused_settings():
     cfg = {"ratio": 0.5}
-    assert resolve_memory_config("attention_matching", cfg)["method"] == "am_ridge"
+    assert resolve_memory_config("attention_matching", cfg)["method"] == "am"
     assert cfg == {"ratio": 0.5}
     with pytest.raises(ValueError, match="not used"):
         resolve_memory_config("shared", cfg)

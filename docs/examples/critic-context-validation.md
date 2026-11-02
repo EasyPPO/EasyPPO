@@ -1,10 +1,10 @@
 # Validation record: problem / AM history / resume context
 
-Date: 2026-11-02. Base commit: `3c10130bdf220653d361a839b033b65b30385fee`.
+Date: 2026-11-03. Base commit: `3c10130bdf220653d361a839b033b65b30385fee`.
 
 ## Result
 
-357 selected CPU tests passed; 3 environment-dependent validation tests were
+361 selected CPU tests passed; 3 environment-dependent validation tests were
 excluded after their imports failed. Static undefined-name/import checks and
 `git diff --check` passed. Frozen HF evaluation also ran through its CLI for all
 three modes, wrote paired outputs and rendered figures using a tiny model.
@@ -38,6 +38,7 @@ the Transformers 5.19 convolution-return compatibility fix.
 KV_COMPACTION_REPO=/path/to/pinned/compaction OMP_NUM_THREADS=2 python -m pytest \
   --confcutdir=tests/agentic_critic -q \
   tests/agentic_critic/test_context_memory.py \
+  tests/agentic_critic/test_native_am_gpu.py \
   tests/agentic_critic/test_critic_modes.py \
   tests/agentic_critic/test_critic_train.py \
   tests/agentic_critic/test_attention_matching.py \
@@ -68,7 +69,7 @@ smoke test must still verify the actual pinned Megatron/TE/FLA stack, checkpoint
 save/load, resident critic validation, multi-rank DP and memory cost. No recovered
 9B EV, production throughput, or completed native GPU training is claimed.
 
-Use a fresh output directory and record `problem_am_resume_v1`; historical HF
+Use a fresh output directory and record `problem_am_resume_v2`; historical HF
 AM training and older frozen AM inputs used a different context and backend.
 
 ## Publication review, 2026-11-03
@@ -78,3 +79,33 @@ along with token rows. Added 1/2/4-rank sharder/packager tests and an optimizer
 schedule test; these execute the actual function bodies with CPU-only runtime
 stand-ins. They verify metadata survives, episodes stay ordered and complete,
 and optimizer steps do not separate sibling segments.
+
+## Official-alignment revision, 2026-11-03
+
+The AM path now calls unmodified upstream HighestAttnKeys selection/NNLS and C2
+least squares. The V0 ridge, selector monkeypatch, fixed per-boundary seed,
+forced-FP32 inputs and 128-query reader are removed from AM. Native reads use TE
+post-scale bias and bottom-right causal attention; HF remains a dense frozen
+reference. The implementation schema is `problem_am_resume_v2`.
+
+New CPU tests compare FP32/BF16 with upstream public results for unbiased history,
+independently check absolute mass for repeated biased history, exercise native
+BSHD/beta/causal ingress and gradient mapping, and check scoped HF registration.
+`test_native_am_gpu.py` was skipped because this environment has CPU-only PyTorch.
+Its real Megatron/TE CUDA forward/backward is still required before claiming
+production correctness, peak memory, speed or 9B convergence.
+
+See [remaining implementation audit](critic-am-official-audit.md). Existing legacy
+KV ablation math tests still exercise `mode=kv`, not the restored official AM path.
+
+The selected AM suite reports **361 passed, 1 CUDA test skipped, 3 dependency-blocked
+checks deselected**. The affected Frontier-CS launcher tests and default snapshots
+report **9 passed** (including the new AM backend selection case).
+
+The unmodified root launcher command still fails collection because IPython is
+missing through the SGLang fixture dependency. Running with a narrower conftest
+boundary allows collection, but the broad suite has **66 failures and 52 errors**
+(including /root/models permission failures). An identical run on the prior tree
+has exactly the same failing/error test identities: 455 pass on the prior tree,
+456 pass on the updated tree. No new launcher failure/error was observed. This is
+not a clean launcher-suite pass.

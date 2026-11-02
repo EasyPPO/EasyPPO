@@ -95,7 +95,7 @@ def save_validation_critic_values(args, *, rollout_id, rollout_data):
         rank=rank,
         full_history="value_slices" in rollout_data,
         context_mode=getattr(args, "critic_context_mode", "shared"),
-        context_schema="problem_am_resume_v1" if getattr(args, "critic_context_mode", "shared") == "attention_matching" else None,
+        context_schema="problem_am_resume_v2" if getattr(args, "critic_context_mode", "shared") == "attention_matching" else None,
         episodes=compact_rollout(rollout_data),
     )
     mode = ("attention_matching" if getattr(args, "critic_context_mode", "shared") == "attention_matching"

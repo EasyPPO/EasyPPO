@@ -175,7 +175,7 @@ def _chunk_values(plan, index, directory, mode, batch):
             or dump["rollout_id"] != batch
             or dump["full_history"] != (mode == "full_history")
             or (mode == "attention_matching" and dump.get("context_mode") != "attention_matching")
-            or (mode == "attention_matching" and dump.get("context_schema") != "problem_am_resume_v1")
+            or (mode == "attention_matching" and dump.get("context_schema") != "problem_am_resume_v2")
         ):
             raise ValueError("Validation dump schema/batch/context mismatch")
         for row in dump["episodes"]:
@@ -243,7 +243,7 @@ def finalize(plan, directory, *, mode, batch):
     )
     summary["plan_hash"] = plan["plan_hash"]
     if mode == "attention_matching":
-        summary["context_schema"] = "problem_am_resume_v1"
+        summary["context_schema"] = "problem_am_resume_v2"
         summary["linear_memory"] = "reset_per_actor_segment"
     temporary = directory / "metrics.json.tmp"
     temporary.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")

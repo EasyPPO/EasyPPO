@@ -5,6 +5,23 @@ actor-summary: the optimizer, prompt weights, shuffled episode mini-batches,
 value clipping, checkpointing and resident-model validation are retained.
 The previous separate HF AM optimizer is rejected. HF is a frozen reference only.
 
+## Official algorithm and attention backend
+
+The pinned upstream HighestAttnKeys demo configuration is used without replacing
+its methods: RMS, NNLS refinement=2, weight bounds 0.05/20, C2 least squares and
+ridge_lambda=0. Native memory reads call Megatron/TE with post-scale beta and
+bottom-right causal visibility. There is no 128-query Python SDPA loop. AM selects
+`--attention-backend auto`; Flash-only is rejected because it cannot express beta.
+HF is a frozen dense additive-mask reference, not an independent AM trainer.
+
+Repeated history requires converting upstream NNLS incremental beta to absolute
+beta before upstream C2 fitting. This is a documented cache adapter, not an
+unqualified claim that the entire official public wrapper is copied unchanged.
+
+See [implementation audit](critic-am-official-audit.md) for removed deviations,
+remaining task-specific choices, and GPU validation limits. Use a fresh output
+directory; `problem_am_resume_v2` identifies this corrected implementation.
+
 ## Context contract
 
 A resumed segment's full-attention read is:
@@ -33,7 +50,8 @@ The generated summary's full KV is discarded after its own values are evaluated.
 The next segment supplies its summary exactly once via its actual resume prompt.
 Older resume summaries may subsequently be represented inside compressed history;
 there is no additional uncompressed copy of the current generated summary.
-Source biases participate in selection, mass fitting and ridge value fitting.
+Source biases participate in selection, mass fitting and official C2 least squares.
+The former custom V0 ridge and selector monkeypatch are removed from native AM.
 
 **Linear attention follows actor-summary.** Every original segment remains an
 independent packed sequence with convolution and recurrent state reset. No HF
@@ -86,7 +104,7 @@ rebuilds local memory from its immutable packed metadata; checkpoint recomputati
 does not depend on mutable caches from an earlier call. Actor calls have no AM
 side channel and continue through the original TE core.
 
-`miles_run.json` records `problem_am_resume_v1` and per-segment linear resets.
+`miles_run.json` records `problem_am_resume_v2` and per-segment linear resets.
 AM validation dumps identify the context mode rather than labeling it actor-summary.
 Use a fresh output directory: earlier HF results used a different context and backend.
 

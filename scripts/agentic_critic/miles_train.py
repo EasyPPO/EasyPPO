@@ -158,7 +158,7 @@ def main():
             {
                 "backend": "miles",
                 "mode": args.mode,
-                "context_schema": "problem_am_resume_v1" if mode == "attention_matching" else None,
+                "context_schema": "problem_am_resume_v2" if mode == "attention_matching" else None,
                 "linear_memory": "reset_per_actor_segment" if mode == "attention_matching" else None,
                 "critic_am_ratio": args.critic_am_ratio if mode == "attention_matching" else None,
                 "miles_mode": mode,
