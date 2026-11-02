@@ -1,21 +1,15 @@
 """Offline reuse and replicated HF full/shared/AM training end to end."""
 
-import copy
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-import safetensors.torch
 import torch
 
 from agentic_critic.fcs_env import Episode, Event
 from agentic_critic.miles_fcs import episode_samples
 from agentic_critic_pipeline.data import digest
 from agentic_critic_pipeline.records import data_sha256
-from agentic_critic_pipeline.trained_am_figures import load_results
 from agentic_critic_pipeline.training_replay import index_events, load_batch, prepare_replay
 from tests.agentic_critic.test_critic_modes import model  # noqa: F401
 from tests.agentic_critic.test_frozen_am_validation import fixture_episode
@@ -129,86 +123,14 @@ def test_changed_token_ids_are_rejected(reuse_inputs, tmp_path):
         load_batch(path, source, index_events(source))
 
 
-def _run(root, output, workers, modes):
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "agentic_critic_pipeline.train_am_comparison",
-            "--model",
-            str(root / "base"),
-            "--rollouts",
-            str(root / "replay"),
-            "--validation-plan",
-            str(root / "plan.json"),
-            "--output",
-            str(output),
-            "--workers",
-            str(workers),
-            "--modes",
-            *modes,
-            "--mini-batches",
-            "2",
-            "--validation-interval",
-            "1",
-            "--save-interval",
-            "1",
-            "--autocast",
-            "none",
-            "--moment-dtype",
-            "float32",
-            "--lr",
-            "0.001",
-        ],
-        cwd=ROOT,
-        env={**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "CUDA_VISIBLE_DEVICES": ""},
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-8000:]
 
 
-def test_training_three_conditions_and_distributed_gradient_equivalence(reuse_inputs, model):  # noqa: F811
-    root = reuse_inputs
-    before = {str(p): data_sha256(p) for p in root.rglob("*") if p.is_file()}
-    output = root / "replicated"
-    modes = ["full_history", "actor_summary", "attention_matching"]
-    _run(root, output, 2, modes)
-    assert before == {name: data_sha256(name) for name in before}
-    _, run, results, training = load_results(output)
-    assert run["status"] == "complete" and set(results) == set(modes)
-    for mode in modes:
-        row = training[mode][0]
-        assert row["optimizer_updates"] == 2 and len(row["updates"]) == 2
-        assert all(u["grad_norm"] > 0 and u["value_loss"] > 0 for u in row["updates"])
-        assert results[mode][0]["episodes"] == 2
-        checkpoint = output / mode / "checkpoints/batch_0001/critic.safetensors"
-        state = safetensors.torch.load_file(str(checkpoint))
-        assert any(not torch.equal(v, model.state_dict()[name]) for name, v in state.items())
-    report = output / "training_report"
-    for name in (
-        "training_metrics.png",
-        "training_cost.pdf",
-        "validation_ev.png",
-        "compaction_l1_profiles.pdf",
-        "plot_data.json",
-    ):
-        assert (report / name).is_file()
-    assert len(list((report / "trajectories").glob("*.png"))) == 2
-    # The summed, globally token-normalized two-rank update must equal one rank.
-    single = root / "single"
-    _run(root, single, 1, ["attention_matching"])
-    for name in ("critic.safetensors",):
-        a = safetensors.torch.load_file(str(output / "attention_matching/checkpoints/batch_0001" / name))
-        b = safetensors.torch.load_file(str(single / "attention_matching/checkpoints/batch_0001" / name))
-        for key in a:
-            torch.testing.assert_close(a[key], b[key], atol=2e-6, rtol=2e-5)
-    a = torch.load(output / "attention_matching/checkpoints/batch_0001/value_head.pt", weights_only=True)
-    b = torch.load(single / "attention_matching/checkpoints/batch_0001/value_head.pt", weights_only=True)
-    for key in a:
-        torch.testing.assert_close(a[key], b[key], atol=2e-6, rtol=2e-5)
-    bad = copy.deepcopy(results["attention_matching"][0])
-    bad["trained_mode"] = "full_history"
-    (output / "attention_matching/validation/batch_0001/metrics.json").write_text(json.dumps(bad))
-    with pytest.raises(ValueError, match="trained mode"):
-        load_results(output)
+
+
+def test_am_training_must_use_native_miles():
+    from types import SimpleNamespace
+
+    from agentic_critic_pipeline.train_am_comparison import _validate_args
+
+    with pytest.raises(ValueError, match="native Miles"):
+        _validate_args(SimpleNamespace(modes=["attention_matching"]))

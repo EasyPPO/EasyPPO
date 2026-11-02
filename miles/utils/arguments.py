@@ -1576,13 +1576,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--critic-context-mode",
                 type=str,
-                choices=["shared", "full_history"],
+                choices=["shared", "full_history", "attention_matching"],
                 default="shared",
                 help="What the critic reads. shared: the same tokens as the actor (default, unchanged behaviour). "
                 "full_history: the critic trains on one sample per rollout, attached by the rollout function to the "
                 "rollout's samples as `critic_tokens`, `critic_response_length`, `critic_loss_mask` and, per sample, "
                 "`critic_span` (where that sample's response region sits in the critic sample). The critic's values "
-                "are cut back into per-sample vectors before they reach the actor, whose data does not change.",
+                "are cut back into per-sample vectors before they reach the actor, whose data does not change. "
+                "attention_matching: native Qwen3.5 critic memory between original actor segments; "
+                "linear attention resets per segment as in shared.",
+            )
+            parser.add_argument(
+                "--critic-am-ratio", type=float, default=0.1,
+                help="Run-wide fraction of nonproblem, presummary critic history retained by AM.",
+            )
+            parser.add_argument(
+                "--critic-context-events", type=str, default=None,
+                help="Original episode event JSONL to recover summary offsets in older replay; tokens must match.",
             )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument(
@@ -4101,6 +4111,32 @@ def _validate_easyppo_args(args) -> None:
     }
     enabled = [flag for flag, is_set in critic_only_flags.items() if is_set]
     assert args.use_critic or not enabled, f"{', '.join(enabled)} require --advantage-estimator ppo"
+
+    if getattr(args, "critic_context_mode", "shared") == "attention_matching":
+        if args.train_backend != "megatron" or not args.use_critic:
+            raise ValueError("AM context requires the native Miles Megatron critic")
+        if any(getattr(args, field, 1) != 1 for field in (
+            "tensor_model_parallel_size", "pipeline_model_parallel_size", "context_parallel_size"
+        )):
+            raise ValueError("AM context currently supports TP=PP=CP=1 with data parallelism")
+        if not 0 < args.critic_am_ratio <= 1:
+            raise ValueError("--critic-am-ratio must be in (0, 1]")
+        if args.qkv_format != "thd" or not args.use_dynamic_batch_size:
+            raise ValueError("AM requires THD dynamic batches containing complete original episodes")
+        if tuple(getattr(args, "spec", None) or ()) != (
+            "miles_plugins.models.qwen3_5", "get_qwen3_5_spec"
+        ):
+            raise ValueError("AM context requires --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec")
+        if getattr(args, "fully_async", False) or getattr(args, "enable_mtp_training", False):
+            raise ValueError("AM context requires synchronous, non-MTP training")
+        if getattr(args, "megatron_to_hf_mode", None) == "bridge":
+            raise ValueError("AM context requires the native Qwen3.5 model spec, not bridge-built layers")
+        if getattr(args, "rotary_interleaved", False) or getattr(args, "rotary_seq_len_interpolation_factor", None):
+            raise ValueError("AM context requires unscaled split-half RoPE")
+        if getattr(args, "attention_dropout", 0) or getattr(args, "apply_query_key_layer_scaling", False):
+            raise ValueError("AM context requires zero attention dropout and standard head-dimension scaling")
+    elif getattr(args, "critic_context_events", None) or getattr(args, "critic_am_ratio", 0.1) != 0.1:
+        raise ValueError("Critic AM settings require --critic-context-mode attention_matching")
 
     if args.critic_return_std_floor is not None:
         assert args.critic_return_std_floor > 0, "--critic-return-std-floor must be positive"

@@ -12,7 +12,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("model", "rollouts", "output", "model-dir", "prompt-data"):
         parser.add_argument(f"--{name}", required=True, type=Path)
-    parser.add_argument("--mode", choices=("full_history", "actor_summary", "shared"), required=True)
+    parser.add_argument("--mode", choices=("full_history", "actor_summary", "shared", "attention_matching"), required=True)
+    parser.add_argument("--critic-am-ratio", type=float, default=0.1)
+    parser.add_argument("--critic-context-events", type=Path)
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--gpus", type=int, default=8)
     parser.add_argument("--tensor-parallel", type=int, default=1)
@@ -110,6 +112,13 @@ def main():
         f"--critic-validation-output {args.output}/validation "
         f"--critic-validation-interval {args.validation_interval}"
     )
+    if mode == "attention_matching":
+        if args.tensor_parallel != 1:
+            raise ValueError("AM critic context currently requires tensor-parallel=1")
+        events = args.critic_context_events or args.rollouts / "episodes.jsonl"
+        if not events.is_file() or shlex.quote(str(events)) != str(events):
+            raise ValueError("AM requires a shell-safe path to original episode events")
+        extra += f" --critic-am-ratio {args.critic_am_ratio} --critic-context-events {events}"
     recipe_args = recipe.ScriptArgs(
         run_id="critic",
         prompt_data=str(args.prompt_data),
@@ -149,6 +158,9 @@ def main():
             {
                 "backend": "miles",
                 "mode": args.mode,
+                "context_schema": "problem_am_resume_v1" if mode == "attention_matching" else None,
+                "linear_memory": "reset_per_actor_segment" if mode == "attention_matching" else None,
+                "critic_am_ratio": args.critic_am_ratio if mode == "attention_matching" else None,
                 "miles_mode": mode,
                 "rollouts": str(args.rollouts),
                 "logical_batches": args.steps,

@@ -78,6 +78,12 @@ def convert_samples_to_train_data(
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
 
+    if getattr(args, "critic_context_mode", "shared") == "attention_matching":
+        # Optional experiment dependency; actor token data is never rewritten.
+        from agentic_critic.miles_context import prepare_context_samples
+
+        prepare_context_samples(samples, events=getattr(args, "critic_context_events", None))
+
     train_data = {
         "tokens": [sample.tokens for sample in samples],
         "response_lengths": [sample.response_length for sample in samples],
@@ -420,7 +426,8 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
 def split_train_data_by_dp_shards(args, data: dict[str, Any], train_parallel_config: dict | None) -> list[dict]:
     """The per-rank shards of `split_train_data_by_dp`, before they go into the object store."""
     # Critic mini-batches count complete episodes, including compacted siblings.
-    if getattr(args, "critic_num_steps_per_rollout", 1) > 1 and "rollout_ids" in data:
+    if (getattr(args, "critic_context_mode", "shared") == "attention_matching"
+            or (getattr(args, "critic_num_steps_per_rollout", None) or 1) > 1) and "rollout_ids" in data:
         return split_episode_aligned_shards(args, data, dp_size=train_parallel_config["dp_size"])
     if can_schedule_on_rollout_side(args, data, train_parallel_config):
         return split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
@@ -622,6 +629,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
         rollout_data["partition"] = partition
         for key in [
             "tokens",
+            "metadata",
             "multimodal_train_inputs",
             "response_lengths",
             "rewards",

@@ -1,4 +1,4 @@
-"""Attention Matching sampling, cache isolation, mass preservation and training contracts."""
+"""Legacy summary-KV ablation math. Native AM context contracts live in test_context_memory."""
 
 import copy
 from types import SimpleNamespace
@@ -8,11 +8,25 @@ import torch
 from torch.nn import functional as F
 
 from agentic_critic import kv_compact
-from agentic_critic.critic_modes import episode_values
+from agentic_critic.critic_modes import episode_values as _episode_values
 from agentic_critic.memory_attention import _biased_sdpa
 from agentic_critic.memory_config import resolve_memory_config
 from tests.agentic_critic.test_critic_modes import head, make_segments, model  # noqa: F401
-from tests.agentic_critic.test_critic_train import collect
+from tests.agentic_critic.test_critic_train import collect as _collect
+
+
+def _legacy_config(kv):
+    return dict(method="am_ridge", queries="summary", query_count=0, **(kv or {}))
+
+
+def legacy_values(backbone, value_head, segments, mode, device, kv=None):
+    if mode != "attention_matching":
+        return _episode_values(backbone, value_head, segments, mode, device, kv=kv)
+    return _episode_values(backbone, value_head, segments, "kv", device, kv=_legacy_config(kv))
+
+
+def legacy_collect(backbone, value_head, segments, mode, kv, **kwargs):
+    return _collect(backbone, value_head, segments, "kv", _legacy_config(kv), **kwargs)
 
 
 @pytest.mark.parametrize("length,count,want", [(11, 4, [0, 3, 6, 10]), (3, 9, [0, 1, 2]), (8, 1, [4])])
@@ -64,7 +78,7 @@ def test_probe_queries_are_exact_prefix_queries_and_do_not_mutate_memory(model):
     for old, new in zip(before.layers, cache.layers, strict=True):
         for attr in ("keys", "values", "conv_states", "recurrent_states"):
             if (value := getattr(old, attr, None)) is not None:
-                assert torch.equal(value, getattr(new, attr)), attr
+                torch.testing.assert_close(value, getattr(new, attr), rtol=0, atol=0)
 
 
 @torch.no_grad()
@@ -91,7 +105,7 @@ def test_summary_mode_never_probes_the_next_segment(model, head, monkeypatch):  
         raise AssertionError("summary queries must come from the existing critic forward")
 
     monkeypatch.setattr(kv_compact, "probe_queries", forbidden)
-    collect(model, head, make_segments(2, 3), "attention_matching", None, train=True)
+    legacy_collect(model, head, make_segments(2, 3), "attention_matching", None, train=True)
 
 
 @torch.no_grad()
@@ -123,7 +137,7 @@ def test_missing_summary_metadata_fails_before_model_forward(model, head, monkey
 
     monkeypatch.setattr(model, "forward", forbidden)
     with pytest.raises(ValueError, match="no actor summary_span"):
-        episode_values(model, head, segments, "attention_matching", "cpu")
+        legacy_values(model, head, segments, "attention_matching", "cpu")
 
 
 @torch.no_grad()
@@ -149,8 +163,8 @@ def test_keep_all_matches_full_detach_even_with_one_probe_position(model, head):
     for segment in segments:
         start, _ = segment.summary_span
         segment.summary_span = (start, start + 1)
-    actual = episode_values(model, head, segments, "attention_matching", "cpu", kv={"ratio": 1.0})
-    expected = episode_values(model, head, segments, "full_detach", "cpu")
+    actual = legacy_values(model, head, segments, "attention_matching", "cpu", kv={"ratio": 1.0})
+    expected = legacy_values(model, head, segments, "full_detach", "cpu")
     for a, b in zip(actual, expected, strict=True):
         torch.testing.assert_close(a, b, atol=1e-5, rtol=1e-5)
 
@@ -220,8 +234,8 @@ def test_bfloat16_autocast_training_matches_value_pass(model, head):  # noqa: F8
     segments = make_segments(8, 7)
     config = {}
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        predicted, _ = collect(model, head, segments, "attention_matching", config, train=False)
-        trained, grads = collect(model, head, segments, "attention_matching", config, train=True)
+        predicted, _ = legacy_collect(model, head, segments, "attention_matching", config, train=False)
+        trained, grads = legacy_collect(model, head, segments, "attention_matching", config, train=True)
     for a, b in zip(predicted, trained, strict=True):
         torch.testing.assert_close(a, b, atol=0.02, rtol=0.02)
     assert grads and all(torch.isfinite(g).all() for g in grads.values())
@@ -278,7 +292,7 @@ def test_repeated_compaction_recompresses_history_and_protects_current_summary(
         for old, new in zip(before.layers, cache.layers, strict=True):
             for attr in ("conv_states", "recurrent_states"):
                 if (tensor := getattr(old, attr, None)) is not None:
-                    assert torch.equal(tensor, getattr(new, attr))
+                    torch.testing.assert_close(tensor, getattr(new, attr), rtol=0, atol=0)
         previous.update({i: b.clone() for i, b in result.items()})
         checked.append(expected_length)
         return result
@@ -288,9 +302,9 @@ def test_repeated_compaction_recompresses_history_and_protects_current_summary(
     try:
         if reader == "reference":
             with torch.no_grad():
-                values = episode_values(model, head, segments, "attention_matching", "cpu")
+                values = legacy_values(model, head, segments, "attention_matching", "cpu")
         else:
-            values, grads = collect(model, head, segments, "attention_matching", None, train=reader == "train")
+            values, grads = legacy_collect(model, head, segments, "attention_matching", None, train=reader == "train")
             if reader == "train":
                 assert grads and all(torch.isfinite(g).all() for g in grads.values())
     finally:

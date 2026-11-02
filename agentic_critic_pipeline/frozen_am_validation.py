@@ -158,6 +158,7 @@ def _worker(args):
                         mode=mode,
                         batch=args.worker_batch,
                         trained_mode="full_history",
+                        context_schema="problem_am_resume_v1" if mode == "attention_matching" else None,
                         checkpoint_sha256=checkpoint["sha256"],
                         segments=[
                             dict(
@@ -199,6 +200,7 @@ def finalize(plan, out, checkpoint, workers):
                             or row["batch"] != batch
                             or row["checkpoint_sha256"] != checkpoint["sha256"]
                             or row["trained_mode"] != "full_history"
+                            or (mode == "attention_matching" and row.get("context_schema") != "problem_am_resume_v1")
                         ):
                             raise ValueError("Validation predictions use different checkpoints or modes")
                         if row["problem_id"] != plan["episodes"][identity]["problem_id"]:
@@ -218,6 +220,7 @@ def finalize(plan, out, checkpoint, workers):
                 **stats.summary(),
                 plan_hash=plan["plan_hash"],
                 trained_mode="full_history",
+                context_schema="problem_am_resume_v1" if mode == "attention_matching" else None,
                 checkpoint_sha256=checkpoint["sha256"],
                 timing=dict(
                     sum_rank_seconds=sum(t["seconds"] for t in timing),
@@ -294,6 +297,8 @@ def run(args):
         plan_hash=plan["plan_hash"],
         checkpoints=checkpoints,
         memory_config=resolve_memory_config("attention_matching", {"ratio": args.kv_ratio}),
+        context_schema="problem_am_resume_v1",
+        am_linear_memory="reset_per_actor_segment",
         dtype=args.dtype,
         status="running",
         base_model=str(args.base_model.resolve()),

@@ -21,9 +21,11 @@ actor-summary and AM inputs with the same weights. Deployment paths remain to be
 filled in `Claude.md`; production results have not yet been generated.
 An additional [AM training workflow](docs/examples/trained-attention-matching.md)
 reuses the existing offline trajectories and saves training statistics, periodic
-validation and figures. It defaults to AM only because full/shared training is
-already complete; an explicit three-mode HF comparison remains available.
-Both AM workflows remain available.
+validation and figures through the native Miles/Megatron critic trainer.
+Full attention reads the current problem, AM history, and the actor's original
+resume summary plus continuation instruction. Linear attention resets per actor
+segment as in actor-summary. The separate HF AM optimizer is retired; HF remains
+available for frozen reference evaluation.
 
 The [trajectory actor-gradient experiment](docs/examples/trajectory-actor-gradients.md)
 reuses the independently pretrained full-history and actor-summary critics to

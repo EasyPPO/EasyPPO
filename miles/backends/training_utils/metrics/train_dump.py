@@ -94,9 +94,12 @@ def save_validation_critic_values(args, *, rollout_id, rollout_data):
         rollout_id=rollout_id,
         rank=rank,
         full_history="value_slices" in rollout_data,
+        context_mode=getattr(args, "critic_context_mode", "shared"),
+        context_schema="problem_am_resume_v1" if getattr(args, "critic_context_mode", "shared") == "attention_matching" else None,
         episodes=compact_rollout(rollout_data),
     )
-    mode = "full_history" if "value_slices" in rollout_data else "actor_summary"
+    mode = ("attention_matching" if getattr(args, "critic_context_mode", "shared") == "attention_matching"
+            else "full_history" if "value_slices" in rollout_data else "actor_summary")
     token_directory = Path(args.load_debug_rollout_data).resolve().parent / "validation_values" / mode
     token_args = copy.copy(args)
     token_args.save_debug_train_data = str(

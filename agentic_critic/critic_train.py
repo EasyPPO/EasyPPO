@@ -15,6 +15,7 @@ as the segment has been read (`on_values` is called inside the contexts that the
 one segment's activations are alive at a time. Full is one pass over the whole log.
 """
 
+import inspect
 from contextlib import contextmanager, nullcontext
 from functools import partial
 
@@ -33,16 +34,19 @@ def frozen_cache_updates():
     from transformers.cache_utils import DynamicLayer, LinearAttentionLayer
 
     originals = (DynamicLayer.update, LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state)
+    multi_state = "state_idx" in inspect.signature(originals[1]).parameters
 
     def update(self, key_states, value_states, *args, **kwargs):
         if not getattr(self, "is_initialized", False) or self.keys.numel() == 0:
             return key_states, value_states
         return torch.cat([self.keys, key_states], dim=-2), torch.cat([self.values, value_states], dim=-2)
 
-    def update_conv_state(self, conv_states, **kwargs):
+    def update_conv_state(self, conv_states, state_idx=0, **kwargs):
+        if multi_state and self.has_previous_state[state_idx]:
+            return torch.cat([self.conv_states[state_idx], conv_states], dim=-1)
         return conv_states
 
-    def update_recurrent_state(self, recurrent_states, **kwargs):
+    def update_recurrent_state(self, recurrent_states, *args, **kwargs):
         return recurrent_states
 
     DynamicLayer.update, LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state = update, update_conv_state, update_recurrent_state
@@ -119,6 +123,14 @@ def read_episode(model, head, segments: list[Segment], mode: str, device, on_val
     Calls come in episode order: one segment at a time, or all segments at once in the Full setting.
     """
     assert mode in MODES
+    if mode == "attention_matching":
+        if train:
+            raise ValueError("Train AM with native Miles --critic-context-mode attention_matching; HF is reference-only")
+        from agentic_critic.context_reference import read_reference
+
+        config = resolve_memory_config(mode, kv)
+        read_reference(model, head, segments, device, on_values, ratio=config["ratio"], ridge=config["ridge"])
+        return
     kv = resolve_memory_config(mode, kv)
     if kv is not None:
         kv_compact.validate_model(model)
