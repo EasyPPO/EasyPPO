@@ -1,7 +1,7 @@
 """Critic forward passes with independent context and memory on a Hugging Face causal LM.
 
-All settings predict a value for every actor-generated token and are trained on the same
-trajectories with the same targets. They differ only in what the critic can see of the earlier
+All settings predict a value for every actor-generated token with the same targets.
+AM is frozen-reference only here and trains in native Miles. Settings differ in what the critic sees of earlier
 segments of an episode, and in whether the loss can back-propagate into them:
 
   shared       each segment alone: what the actor saw after its own compaction
@@ -10,8 +10,8 @@ segments of an episode, and in whether the loss can back-propagate into them:
                (hybrid models only)
   full_detach  earlier segments fully visible, but as constants: no gradient into them
   full         the whole append-only log in one differentiable forward pass
-  attention_matching  recompact all pre-summary KV (including old fitted memory), protecting the current
-                      summary suffix and probing with all original actor summary query positions
+  attention_matching  frozen reference for native Miles problem / AM memory / resume inputs;
+                      linear states reset per actor segment; HF training is refused
   kv           earlier segments reach the critic as a compacted attention KV (plus the recurrent states), as
                constants. After each segment its keys are compacted to a fraction; the memory is recomputed
                with the current weights in every forward pass (fully synchronous). With every key kept this
@@ -20,8 +20,6 @@ segments of an episode, and in whether the loss can back-propagate into them:
 The value of token t is read from the hidden state at position t-1, i.e. before the token is
 generated, as in EasyPPO.
 """
-
-from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -45,42 +43,8 @@ class ValueHead(nn.Module):
         return self.linear(hidden.float()).squeeze(-1)
 
 
-@contextmanager
-def assigning_cache_updates():
-    """Make the linear-attention cache store new states by assignment instead of in-place copy.
-
-    transformers writes the recurrent and conv states into the cache with `copy_` (to keep a static
-    address for compiled inference). During training that overwrites a tensor the graph still needs,
-    and backward fails. Assignment keeps the old tensor intact; the values are identical.
-    """
-    from transformers.cache_utils import LinearAttentionLayer
-
-    orig_conv, orig_rec = LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state
-
-    def update_conv_state(self, conv_states, **kwargs):
-        if not self.is_conv_states_initialized:
-            self.dtype, self.device = conv_states.dtype, conv_states.device
-            self.max_batch_size, self.conv_kernel_size = conv_states.shape[0], conv_states.shape[-1]
-            self.is_conv_states_initialized = True
-        k, new = self.conv_kernel_size, conv_states.shape[-1]
-        if not self.has_previous_state or new >= k:
-            self.conv_states = conv_states[..., -k:]
-        else:
-            self.conv_states = torch.cat([self.conv_states[..., new:], conv_states], dim=-1)
-        self.has_previous_state = True
-        return self.conv_states
-
-    def update_recurrent_state(self, recurrent_states, **kwargs):
-        self.is_recurrent_states_initialized = True
-        self.recurrent_states = recurrent_states
-        return self.recurrent_states
-
-    LinearAttentionLayer.update_conv_state = update_conv_state
-    LinearAttentionLayer.update_recurrent_state = update_recurrent_state
-    try:
-        yield
-    finally:
-        LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state = orig_conv, orig_rec
+# One compatibility implementation for frozen HF baseline/reference readers.
+from agentic_critic_runtime.cache import assigning_cache_updates
 
 
 def _detach_cache(cache, keep_kv: bool):
@@ -91,7 +55,9 @@ def _detach_cache(cache, keep_kv: bool):
             t = getattr(layer, name, None)
             if t is None:
                 continue
-            if isinstance(t, (list, tuple)):
+            if isinstance(t, dict):
+                setattr(layer, name, {k: v.detach() for k, v in t.items()})
+            elif isinstance(t, (list, tuple)):
                 setattr(layer, name, type(t)(x.detach() for x in t))
             else:
                 setattr(layer, name, t.detach())
@@ -118,6 +84,22 @@ def episode_values(
     without a backward pass: d(0.5 (V - G)^2)/dW = (V - G) h.
     """
     assert mode in MODES
+    if mode == "attention_matching":
+        if torch.is_grad_enabled():
+            raise ValueError("HF AM episode_values is frozen-reference only; train the native Miles critic")
+        from agentic_critic.context_reference import read_reference
+
+        config = resolve_memory_config(mode, kv)
+        values = []
+
+        def reference_head(hidden):
+            if features is not None:
+                features.append(hidden.detach())
+            return head(hidden)
+
+        read_reference(model, reference_head, segments, device,
+                       lambda pairs: values.extend(v for _, v in pairs), ratio=config["ratio"])
+        return values
     config = resolve_memory_config(mode, kv)
     with assigning_cache_updates():
         if config is not None:

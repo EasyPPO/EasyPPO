@@ -1,150 +1,121 @@
-# Train an attention-matching critic on existing trajectories
+# Native Miles attention-matching critic
 
-Data collection and full/shared baseline training are already complete. The
-remaining training task is AM on the same stored trajectories. Both workflows
-remain available:
+AM trains through the same Miles/Megatron critic lifecycle as full-history and
+actor-summary: the optimizer, prompt weights, shuffled episode mini-batches,
+value clipping, checkpointing and resident-model validation are retained.
+The previous separate HF AM optimizer is rejected. HF is a frozen reference only.
 
-| Workflow | Weights | Entry point |
-| --- | --- | --- |
-| Frozen input comparison | Reuse previously trained full-history checkpoints; no updates | `python -m agentic_critic_pipeline.frozen_am_validation` |
-| AM training | Train AM on the existing replay, from the original base | `python -m agentic_critic_pipeline.train_am_comparison` |
+## Official algorithm and attention backend
 
-The original Miles training recipe and compact-token gradient probe are unchanged.
-The new trained comparison uses one common Hugging Face backend for all conditions.
-It does not add AM to Megatron or substitute AM results into the native Miles
-comparison. Do not mix the two backends' curves as a controlled experiment.
+The pinned upstream HighestAttnKeys demo configuration is used without replacing
+its methods: RMS, NNLS refinement=2, weight bounds 0.05/20, C2 least squares and
+ridge_lambda=0. Native memory reads call Megatron/TE with post-scale beta and
+bottom-right causal visibility. There is no 128-query Python SDPA loop. AM selects
+`--attention-backend auto`; Flash-only is rejected because it cannot express beta.
+HF is a frozen dense additive-mask reference, not an independent AM trainer.
 
-## Reuse the existing offline data
+Repeated history requires converting upstream NNLS incremental beta to absolute
+beta before upstream C2 fitting. This is a documented cache adapter, not an
+unqualified claim that the entire official public wrapper is copied unchanged.
 
-**Do not generate new trajectories. Do not start an actor server or a judge. Do
-not tokenize the stored text again.** Reuse the original training replay and
-frozen validation cohort from the earlier experiment:
+See [implementation audit](critic-am-official-audit.md) for removed deviations,
+remaining task-specific choices, and GPU validation limits. Use a fresh output
+directory; `problem_am_resume_v2` identifies this corrected implementation.
 
-- `replay/rollout_0.pt`, `rollout_1.pt`, ... and `manifest.json`.
-- `replay/episodes.jsonl`, containing the original actor events.
-- `replay/episodes.identities.json`, linking training identities to the original source hash.
-- The existing `validation_replay/validation_plan.json` and original validation JSONL.
+## Context contract
 
-These files contain original token IDs, actor loss masks, rewards and summary
-events. The reader verifies token/mask/return equality between events and replay.
-For older replay files without `metadata.summary_span`, it restores offsets from
-the existing actor events in memory, without rewriting replay or re-encoding text.
-Missing events or token mismatches are errors; there is no text fallback.
+A resumed segment's full-attention read is:
 
-Training and validation IDs must be disjoint. Every configured full replay is
-consumed exactly once, in its original batch and episode order. No resampling,
-new rollout collection, prompt rewriting, padding or truncation is performed.
-A byte-offset index lets workers read the original event pool without retaining
-all trajectory tokens in RAM. `--steps` can explicitly select the first N existing
-replay batches for a short run; the default consumes all batches.
+```text
+[current problem and shared template prefix]
+[detached AM history]
+[original resume suffix: summary preamble + summary + continuation instruction + assistant template]
+[current segment responses and feedback, causally]
+```
+
+The problem prefix is the exact token prefix shared by the original initial and
+resume prompts. BPE may leave a boundary delimiter in the suffix; the entire
+suffix is retained verbatim, with no decoded-text search or retokenization.
+No actor tokens, response lengths, masks, rewards or value positions change.
+
+Each segment recomputes its problem prefix once, without attending to old
+memory. Its suffix attends to that fresh problem, AM memory and its own causal
+history. A whole-segment RoPE offset advances logical history while preserving
+all relative positions inside the actor's original prompt. The fresh problem
+replaces the previous problem physically; it is never added to compressed memory.
+
+At a boundary, the original generated summary queries probe the history block.
+AM compresses previous AM memory plus current presummary tokens after the problem.
+The generated summary's full KV is discarded after its own values are evaluated.
+The next segment supplies its summary exactly once via its actual resume prompt.
+Older resume summaries may subsequently be represented inside compressed history;
+there is no additional uncompressed copy of the current generated summary.
+Source biases participate in selection, mass fitting and official C2 least squares.
+The former custom V0 ridge and selector monkeypatch are removed from native AM.
+
+**Linear attention follows actor-summary.** Every original segment remains an
+independent packed sequence with convolution and recurrent state reset. No HF
+cross-segment cache monkeypatch participates in native training.
+
+The three-block layout applies only to full-attention reads, not to model input
+tokens. Linear layers receive the original problem/resume/response tokens and
+never consume AM K/V as synthetic tokens. A later linear layer can receive history
+indirectly through hidden states produced by an earlier full-attention layer.
+Resetting GDN state preserves the actor-summary boundary policy; it does not
+reconstruct the old linear state or prove that this policy is optimal. Carrying
+old state while replaying the question and summary would be a different policy.
+
+AM history fitting is detached. Ratio 1 is a detached-history control with this
+new context layout, not the old fully differentiable append-only full baseline.
+
+## Existing data
+
+Reuse the original `replay/rollout_*.pt`, the frozen validation plan and original
+events. There is no new actor collection or judge run. Older replay without
+`summary_span` requires its original `episodes.jsonl`; tokens and masks must match
+exactly. Validation recovers offsets from its own cohort source, not training events.
 
 ## Run
 
-Use the pinned Qwen3.5 environment and initialize the compaction submodule. Fill
-in deployment paths in `Claude.md`; they are intentionally not supplied here.
-Choose a fresh output directory, separate from the earlier training and frozen
-comparison results.
+Initialize the pinned dependency:
 
 ```bash
 git submodule update --init third_party/compaction
-python -m agentic_critic_pipeline.train_am_comparison \
-  --model "$MODEL" \
-  --rollouts "$TRAIN_REPLAY_DIR" \
-  --validation-plan "$VALIDATION_PLAN" \
-  --validation-episodes "$VALIDATION_JSONL" \
-  --output "$TRAINED_AM_OUTPUT" \
-  --modes attention_matching --workers 8 --mini-batches 4 \
-  --validation-interval 5 --save-interval 50 \
-  --kv-ratio 0.1
 ```
 
-The default is `attention_matching` only. Do not rerun the completed full/shared
-baselines for the current task. The script also supports an explicitly requested
-`--modes full_history actor_summary attention_matching` comparison, training the
-three conditions sequentially from the same HF base and head initialization.
-That optional controlled HF-backend comparison is separate from the current TODO.
-Keep earlier Miles results as reference and disclose the backend/precision
-difference when comparing them with the new AM run.
-The script writes local statistics and figures; it does not
-start W&B runs or upload data.
-
-Each GPU holds a complete critic, gradients and optimizer state. This is
-replicated data parallelism, **not tensor parallelism or sharded model state**.
-Model and gradient storage are FP32, default autocast is BF16, and Adam moments
-are BF16. Unlike the native Miles recipe, this backend does not store model
-parameters in BF16. Verify per-GPU capacity before a production run; eight GPUs
-do not pool their memory to fit one model. Use one worker and `--autocast none`
-for small CPU checks. Production GPU throughput has not been measured locally.
-
-## Training and validation
-
-Defaults preserve the existing standalone critic objective: LR `2e-6`, weight
-decay `0.01`, value clip `0.2`, value-loss coefficient `0.5`, return-standard-
-deviation floor `0.075`, global gradient clipping at `1`, and four mini-batches.
-Prompt weights use the whole replay batch's population return variance. Losses
-are normalized by the global mini-batch's generated-token count. Replicas SUM
-these already-normalized gradients once per mini-batch, including contributions
-from ranks with unequal token counts, before clipping and updating.
-
-Each replay batch first receives a no-gradient value pass; its predictions stay
-fixed as the clipping reference for all mini-batches. Training updates the entire
-critic backbone and value head. AM memory uses every original actor summary token
-and 0.1 retention of the entire physical KV prefix before the current summary.
-Every compaction recompresses earlier compressed memory and earlier summaries
-together with the new prefix. Only the current summary suffix is protected;
-its trailing template tokens are retained as well. Existing attention biases
-participate in key selection, mass fitting and value fitting. The harness owns
-trigger timing; the compactor does not impose a new cache-size threshold.
-This follows the whole-cache recompression mechanism in
-[Appendix F.3](https://arxiv.org/html/2602.16284v2#A6.SS3), with the actor summary
-replacing the protected recent 20 tokens. Actor summary generation is unchanged. KV fits
-are detached and rebuilt at current weights. Summary probing has no additional
-model pass; the checkpointed training reader retains its existing no-grad cache
-reconstruction pass on nonfinal segments. This work is included in training time.
-
-After each validation interval and at the final batch, evaluate the resident,
-updated critic on the exact original validation cohort under its own input mode.
-No validation optimizer/scheduler update occurs. Reuse the original selected
-trajectory IDs. Validation and save intervals use completed replay batches, not
-optimizer mini-steps. Save a checkpoint at every validation point, every requested
-save interval, and the final batch. Checkpoints contain FP32 backbone weights,
-value head and provenance; optimizer state is not saved and training resume is
-not supported. Stored checkpoints can be large.
-
-## Outputs
-
-For each mode, the new output root contains:
-
-- `training_log.json`: pre-update EV/MSE/MAE, every mini-batch's loss, value clipping
-  fraction and pre-clip global gradient norm, value-pass time, training/update
-  time and peak CUDA allocated memory.
-- `pre_update/batch_NNNN/values.rankR.jsonl.gz`: segment-local 100-token value means
-  and exact sufficient statistics from the training value pass.
-- `checkpoints/batch_NNNN/`: `critic.safetensors`, `value_head.pt`, and `meta.json`.
-- `validation/batch_NNNN/`: paired validation means, selected traces, exact
-  EV/MSE/MAE, compaction-jump statistics, checkpoint hashes and inference timings.
-
-`training_report/` includes PNG/PDF figures and `plot_data.json`:
-
-- Training loss, clipping fraction, global gradient norm and pre-update EV.
-- Value-pass time, training time and peak memory across replay batches.
-- Validation EV versus completed training batches, grouped by prior/total compactions.
-- Final-checkpoint compaction L1 profiles and jump distributions.
-- The same preselected validation trajectories, with the selected trained modes
-  (AM only by default) and return targets.
-
-Training timings use the slowest rank for each phase, include cache construction,
-AM fitting, backward and gradient synchronization as applicable, and exclude
-validation and checkpoint export. They are not total job wall-clock time. The
-existing per-token compact-boundary gradient experiment remains a separate probe;
-these logs report the usual whole-update gradient norm.
-
-Re-render without training or model inference:
+Use the existing Miles runtime and converted model paths:
 
 ```bash
-python -m agentic_critic_pipeline.trained_am_figures --output-root "$TRAINED_AM_OUTPUT"
+python scripts/agentic_critic/miles_train.py \
+  --model "$MODEL" --model-dir "$CONVERTED_MODEL_DIR" \
+  --rollouts "$REPLAY_DIR" --prompt-data "$REPLAY_DIR/prompts.jsonl" \
+  --output "$NEW_AM_OUTPUT" --mode attention_matching \
+  --validation-plan "$VALIDATION_PLAN" \
+  --critic-context-events "$REPLAY_DIR/episodes.jsonl" \
+  --critic-am-ratio 0.1 --steps 50 --gpus 4 --tensor-parallel 1 \
+  --problems-per-batch 32 --episodes-per-problem 16 --mini-batches 4
 ```
 
-Development tests use tiny random Qwen3.5 models and synthetic offline data to
-check optimization, unchanged inputs, distributed gradient equivalence, checkpoint
-saving and plotting. They do not establish production model quality or overhead.
+The native model spec is `miles_plugins.models.qwen3_5 get_qwen3_5_spec`.
+Initial supported topology is TP=PP=CP=1 with arbitrary data-parallel replicas,
+THD dynamic complete-episode batches, no MTP, zero attention dropout and standard
+split-half RoPE. Unsupported configurations fail at launch. Each native core call
+rebuilds local memory from its immutable packed metadata; checkpoint recomputation
+does not depend on mutable caches from an earlier call. Actor calls have no AM
+side channel and continue through the original TE core.
+
+`miles_run.json` records `problem_am_resume_v2` and per-segment linear resets.
+AM validation dumps identify the context mode rather than labeling it actor-summary.
+Use a fresh output directory: earlier HF results used a different context and backend.
+
+## Validation status
+
+CPU tests cover original-token preservation, inclusion of the continuation
+instruction, exclusion of raw problem/summary KV from history, independent problem
+reads, repeated fitting, logical positions, immutable memory, detached gradients
+and checkpoint output/gradient equivalence. Native GPU Megatron/Transformer Engine
+training must still be smoke-tested in the pinned production environment; CPU tests
+do not establish production throughput, CUDA numerics or recovered 9B EV.
+
+See [task decisions](critic-context-task-notes.md) for the user's requirements and
+why the earlier HF experiment is not a controlled Miles comparison.

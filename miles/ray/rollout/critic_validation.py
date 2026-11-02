@@ -1,6 +1,8 @@
 """Build frozen validation packs without advancing the training data source."""
 
 import copy
+import json
+from pathlib import Path
 
 from miles.ray.rollout.debug_data import load_debug_rollout_data
 from miles.ray.rollout.train_data_conversion import (
@@ -23,6 +25,10 @@ def validation_pack(args, *, replay_path, group_size, parallel):
     eval_args.rollout_batch_size = 1
     eval_args.n_samples_per_prompt = group_size
     eval_args.filter_truncated_in_actor_loss = False
+    if getattr(args, "critic_context_mode", "shared") == "attention_matching":
+        # Validation events belong to this cohort, never the training sidecar.
+        plan = json.loads(Path(args.critic_validation_plan).read_text())
+        eval_args.critic_context_events = plan["source"]
     samples, _ = load_debug_rollout_data(eval_args, 0)
     if len({s.rollout_id for s in samples}) != group_size:
         raise ValueError("Frozen validation replay has incorrect episode count")

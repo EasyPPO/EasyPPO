@@ -114,7 +114,7 @@ def make_worker(monkeypatch, args, *, dp_size=8):
             torch=torch,
             partial=partial,
             get_batch=get_batch,
-            get_packed_seq_params=lambda batch, args: None,
+            get_packed_seq_params=lambda batch, args, *, critic_context=False: None,
             DumperMegatronUtil=NoDumper,
             DumperPhase=SimpleNamespace(FWD_ONLY=0),
             get_model_config=lambda model: SimpleNamespace(timers=None),

@@ -1,5 +1,14 @@
 # Experiment progress and execution order
 
+## AM critic training — RERUN REQUIRED (2026-11-03)
+
+Bugs were found during AM critic training and have now been fixed. **The AM
+critic training experiment must be rerun with the fixed native Miles code.**
+Start a fresh run from the intended pretrained initialization using the existing
+frozen trajectories and replay; do not resume a pre-fix AM checkpoint. Keep old
+AM runs as superseded records, and regenerate results derived from them.
+The local 0.8B checks do not replace this production training rerun.
+
 All documentation, reports and figure text must be in English. Follow the order
 below. **Data collection and full-history/shared critic training are already
 DONE**, as confirmed by the user. They are context and inputs for the remaining
@@ -11,7 +20,7 @@ work, not instructions to repeat completed experiments.
 | 2 | Full-history and actor-summary/shared critic training | DONE | Reuse existing checkpoints and baseline results |
 | 3 | Baseline validation protocol, saved predictions and visualization | Existing baseline experiment | Locate and reuse its artifacts; do not rerun baseline training |
 | 4 | Development checks and compact-token gradient probe | Checks completed; probe execution unconfirmed | TODO: locate the probe report and establish whether any probe run remains |
-| 5 | Train an AM critic using the same offline replay | TODO — production run not performed here | Change the memory algorithm and rerun the existing trajectories; AM only |
+| 5 | Train an AM critic using the same offline replay | RERUN REQUIRED — training bugs fixed | Start a fresh native Miles AM run on the existing replay; supersede pre-fix AM results |
 | 6 | Evaluate existing full-history checkpoints with full/shared/AM inputs | TODO — production run not performed here | Frozen weights; no training |
 | 7 | Actor gradient norms/directions versus compaction count under independently pretrained full/shared critics | NEW — implementation ready; production run pending | Reuse completed critic checkpoints and frozen trajectories; see section 7 |
 
@@ -286,7 +295,7 @@ TODO: locate the existing gradient-probe result and record its completion status
 The user confirmed collection and full/shared training are complete; completion
 of this separate probe has not been confirmed here. Run it only if still pending.
 
-## 5. TODO — train the AM critic on the existing offline trajectories
+## 5. RERUN REQUIRED — train the AM critic with the fixes on the existing offline trajectories
 
 **Reuse the existing offline trajectories and replay. Do not collect new
 trajectories, invoke the actor or judge, or re-tokenize stored text.** The existing

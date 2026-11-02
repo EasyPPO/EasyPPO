@@ -16,7 +16,8 @@ async def evaluate(args, critic_model, rollout_executor, rollout_id):
         output.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
         raise FileExistsError(f"Validation directory already exists; use a fresh output: {output}") from None
-    mode = "full_history" if args.critic_context_mode == "full_history" else "actor_summary"
+    mode = {"shared": "actor_summary", "full_history": "full_history",
+            "attention_matching": "attention_matching"}[args.critic_context_mode]
     for index, replay in enumerate(plan["replay"]):
         pack = await rollout_executor.get_critic_validation(replay["path"], plan["group_size"])
         try:

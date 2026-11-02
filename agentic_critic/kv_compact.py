@@ -20,6 +20,7 @@ import copy
 import math
 import os
 import sys
+import types
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -34,7 +35,7 @@ UPSTREAM = os.environ.get("KV_COMPACTION_REPO", str(Path(__file__).resolve().par
 def _attention_layers(model):
     """(layer index, attention module) for every full-attention layer."""
     layers = model.model.layers if hasattr(model, "model") else model.layers
-    return [(i, layer.self_attn) for i, layer in enumerate(layers) if getattr(layer, "layer_type", None) == "full_attention"]
+    return [(i, layer.self_attn) for i, layer in enumerate(layers) if model.config.layer_types[i] == "full_attention"]
 
 
 def _queries(attn, hidden_states, position_embeddings) -> torch.Tensor:
@@ -178,9 +179,75 @@ def _algorithm(select_only: bool = False):
         # does not depend on these two settings.
         return HighestAttentionKeysCompaction(score_method="rms", beta_method="zero", c2_method="direct")
     # The settings of the upstream demo (examples/qa_demo.py).
-    return HighestAttentionKeysCompaction(
+    alg = HighestAttentionKeysCompaction(
         score_method="rms", nnls_iters=2, nnls_lower_bound=0.05, nnls_upper_bound=20.0, c2_method="lsq"
     )
+    alg._select_keys_highest_attention = types.MethodType(_select_keys_chunked, alg)
+    return alg
+
+
+QUERY_CHUNK = 2048
+
+
+def _bias_rows(bias, start, end):
+    """The rows [start, end) of an attention bias that is (T,), (1, T) or (n, T)."""
+    if bias is None:
+        return None
+    bias = bias.to(torch.float32)
+    return bias[start:end] if bias.dim() == 2 and bias.shape[0] > 1 else bias
+
+
+def _select_keys_chunked(self, K, queries, t, attention_bias=None):
+    """`HighestAttentionKeysCompaction._select_keys_highest_attention`, scoring the queries in chunks.
+
+    Upstream holds several (queries x keys) float32 matrices at once. With every summary token of every
+    query head as a query and the whole physical history as keys, that is tens of GB per head, which a
+    trainer that keeps weights, gradients and moments resident does not have. Same per-row softmax, same
+    key scores, same NNLS bias: only the reductions over queries are accumulated chunk by chunk.
+    """
+    n, d = queries.shape
+    T = K.shape[0]
+    scale = (1.0 / d) ** 0.5
+
+    def rows(start, end):
+        scores = (queries[start:end] @ K.T).to(torch.float32) * scale
+        bias = _bias_rows(attention_bias, start, end)
+        if bias is not None:
+            scores = scores + bias
+        exp_scores = torch.exp(scores - scores.max(dim=1, keepdim=True)[0])
+        return exp_scores, exp_scores / exp_scores.sum(dim=1, keepdim=True)
+
+    acc = torch.zeros(T, dtype=torch.float32, device=K.device)
+    for start in range(0, n, QUERY_CHUNK):
+        _, weights = rows(start, min(start + QUERY_CHUNK, n))
+        if self.score_method == "rms":
+            acc += (weights * weights).sum(dim=0)
+        elif self.score_method == "max":
+            acc = torch.maximum(acc, weights.max(dim=0)[0])
+        else:
+            acc += weights.sum(dim=0)
+    key_scores = torch.sqrt(acc / n) if self.score_method == "rms" else acc if self.score_method == "max" else acc / n
+    if self.pooling is not None:
+        pooled = key_scores[None, None]
+        if self.pooling == "avgpool":
+            pooled = torch.nn.functional.avg_pool1d(pooled, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
+        elif self.pooling == "maxpool":
+            pooled = torch.nn.functional.max_pool1d(pooled, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
+        key_scores = pooled[0, 0]
+    _, top = torch.topk(key_scores, t, largest=True)
+    C1 = K[top]
+    if self.beta_method == "zero":
+        beta32 = torch.zeros(t, dtype=torch.float32, device=K.device)
+    else:
+        target = torch.empty(n, dtype=torch.float32, device=K.device)
+        M = torch.empty(n, t, dtype=torch.float32, device=K.device)
+        for start in range(0, n, QUERY_CHUNK):
+            end = min(start + QUERY_CHUNK, n)
+            exp_scores, _ = rows(start, end)
+            target[start:end] = exp_scores.sum(dim=1)
+            M[start:end] = exp_scores[:, top]
+        beta32 = torch.log(self._nnls_pg(M, target, self.nnls_iters, self.nnls_lower_bound, self.nnls_upper_bound))
+    return C1, beta32.to(K.dtype), top.cpu().tolist()
 
 
 def _ridge_value_fit(k, v, q, c1, beta, sel, bias, mask_compact: bool, ridge: float):
@@ -192,8 +259,12 @@ def _ridge_value_fit(k, v, q, c1, beta, sel, bias, mask_compact: bool, ridge: fl
     """
     scale = k.shape[1] ** -0.5
     sel = torch.as_tensor(sel, device=k.device)
-    orig = q @ k.T * scale
-    y = torch.softmax(orig if bias is None else orig + bias, dim=1) @ v
+    y = torch.empty(q.shape[0], v.shape[1], dtype=v.dtype, device=v.device)
+    for start in range(0, q.shape[0], QUERY_CHUNK):  # the original attention of a query chunk, never [n, T] at once
+        end = min(start + QUERY_CHUNK, q.shape[0])
+        orig = q[start:end] @ k.T * scale
+        rows = _bias_rows(bias, start, end)
+        y[start:end] = torch.softmax(orig if rows is None else orig + rows, dim=1) @ v
     logits = q @ c1.T * scale + beta
     if mask_compact:
         logits = logits + bias[:, sel]

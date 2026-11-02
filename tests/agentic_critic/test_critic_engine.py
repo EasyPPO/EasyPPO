@@ -44,7 +44,7 @@ def workdir(tmp_path_factory):
     return d
 
 
-@pytest.mark.parametrize("mode", ["shared", "full", "full_detach", "kv", "attention_matching"])
+@pytest.mark.parametrize("mode", ["shared", "full", "full_detach", "kv"])
 def test_engine_trains_and_stores_values(workdir, mode):
     out = workdir / f"out_{mode}"
     r = subprocess.run([sys.executable, str(REPO / "scripts/critic_engine.py"), "--model", str(workdir / "model"), "--rollouts", str(workdir / "rollouts"),
@@ -79,3 +79,16 @@ def test_engine_stops_at_the_end_marker_of_a_growing_directory(workdir):
                         "--out", str(out), "--device", "cpu", "--no-autocast", "--wait-for-end", "--self-check", "0"], capture_output=True, text=True, timeout=600)  # fmt: skip
     assert r.returncode == 0, r.stderr[-2000:]
     assert [s["step"] for s in json.loads((out / "log.json").read_text())["steps"]] == [0]
+
+
+def test_engine_rejects_hf_am_training_before_loading_model(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(REPO / "scripts/critic_engine.py"),
+         "--model", str(tmp_path / "missing-model"),
+         "--rollouts", str(tmp_path / "missing-rollouts"),
+         "--mode", "attention_matching", "--out", str(tmp_path / "out")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "attention_matching training requires native Miles" in result.stderr
+    assert not (tmp_path / "out").exists()

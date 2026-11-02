@@ -1,7 +1,8 @@
-"""Train full/shared/AM critics on existing offline trajectories, then visualize.
+"""Legacy HF diagnostics. AM training is retired in favor of native Miles.
 
-This HF replicated-data-parallel experiment is separate from Miles training and
-from frozen_am_validation. No actor, judge, collection or tokenization is run.
+The historical HF AM entrypoint now refuses training with a native Miles
+instruction. Explicit full/shared diagnostic runs remain separate from Miles.
+Use frozen_am_validation for HF AM inference only. No new trajectories are made.
 
 python -m agentic_critic_pipeline.train_am_comparison \
   --model /models/base --rollouts /old-run/replay \
@@ -249,6 +250,11 @@ def _worker(config_path, mode):
 
 
 def _validate_args(args):
+    if "attention_matching" in args.modes:
+        raise ValueError(
+            "The separate HF AM optimizer is retired. Use scripts/agentic_critic/miles_train.py "
+            "--mode attention_matching with the native Miles Qwen3.5 spec."
+        )
     if any(getattr(args, k) is None for k in ("model", "rollouts", "validation_plan", "output")):
         raise ValueError("model, existing rollouts, validation-plan and fresh output are required")
     if min(args.workers, args.mini_batches, args.validation_interval, args.save_interval, args.max_tokens) < 1:

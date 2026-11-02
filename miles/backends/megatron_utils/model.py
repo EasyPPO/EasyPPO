@@ -321,6 +321,8 @@ def forward_only(
 
     config = get_model_config(model[0])
 
+    use_critic_context = getattr(model[0], "role", "actor") == "critic"
+
     @dumper_phase_util.wrap_forward_step
     def forward_step(
         data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False
@@ -329,6 +331,7 @@ def forward_only(
 
         forward_only_keys = [
             "tokens",
+            "metadata",
             "loss_masks",
             "multimodal_train_inputs",
             "total_lengths",
@@ -347,7 +350,7 @@ def forward_only(
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
-        packed_seq_params = get_packed_seq_params(batch, args)
+        packed_seq_params = get_packed_seq_params(batch, args, critic_context=use_critic_context)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
         rollout_sampling_mask = get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None
@@ -465,6 +468,7 @@ def run_forward_backward_pass(
             data_iterator,
             [
                 "tokens",
+                "metadata",
                 "multimodal_train_inputs",
                 "packed_seq_params",
                 "total_lengths",
@@ -513,7 +517,7 @@ def run_forward_backward_pass(
                 position_ids=None,
                 attention_mask=None,
                 labels=None,
-                packed_seq_params=get_packed_seq_params(batch, args),
+                packed_seq_params=get_packed_seq_params(batch, args, critic_context=args.loss_type == "value_loss"),
                 loss_mask=batch["input_loss_masks"],
             )
         else:
@@ -522,7 +526,7 @@ def run_forward_backward_pass(
                 "position_ids": None,
                 "attention_mask": None,
                 "labels": None,
-                "packed_seq_params": get_packed_seq_params(batch, args),
+                "packed_seq_params": get_packed_seq_params(batch, args, critic_context=args.loss_type == "value_loss"),
                 # Aligned with input_ids. With labels=None, Megatron derives the MTP labels
                 # from input_ids and shifts this mask itself; without MTP it never reads it.
                 "loss_mask": batch["input_loss_masks"],
