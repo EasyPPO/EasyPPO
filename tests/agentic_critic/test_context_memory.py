@@ -188,9 +188,10 @@ def test_hybrid_reference_resets_linear_states_and_retains_instruction():
         vocab_size=128,
         layer_types=["linear_attention"] * 3 + ["full_attention"],
     )
-    model = transformers.AutoModelForCausalLM.from_config(cfg, attn_implementation="sdpa").eval()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = transformers.AutoModelForCausalLM.from_config(cfg, attn_implementation="sdpa").to(device).eval()
     backbone = model.model
-    head = torch.nn.Linear(32, 1)
+    head = torch.nn.Linear(32, 1).to(device)
     original = segments()
     captured, hooks = [], []
     for layer in backbone.layers[:3]:
@@ -202,7 +203,7 @@ def test_hybrid_reference_resets_linear_states_and_retains_instruction():
         hooks.append(layer.linear_attn.register_forward_pre_hook(check, with_kwargs=True))
     values = []
     try:
-        read_reference(model, lambda h: head(h).squeeze(-1), original, "cpu", lambda pairs: values.extend(v for _, v in pairs), ratio=0.5)
+        read_reference(model, lambda h: head(h).squeeze(-1), original, device, lambda pairs: values.extend(v for _, v in pairs), ratio=0.5)
     finally:
         for hook in hooks:
             hook.remove()
@@ -210,7 +211,7 @@ def test_hybrid_reference_resets_linear_states_and_retains_instruction():
     assert [len(v) for v in values] == [s.response_length for s in original]
     assert all(torch.isfinite(v).all() for v in values)
     with torch.no_grad():
-        shared = backbone(input_ids=torch.tensor([original[0].tokens]), use_cache=False).last_hidden_state[0]
+        shared = backbone(input_ids=torch.tensor([original[0].tokens], device=device), use_cache=False).last_hidden_state[0]
         p = original[0].response_start - 1
         expected = head(shared[p : p + original[0].response_length]).squeeze(-1)
     torch.testing.assert_close(values[0], expected, atol=1e-5, rtol=1e-5)
@@ -279,6 +280,7 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
             self.calls.append((attn_mask_type, kwargs.get("attention_bias")))
             if getattr(kwargs.get("packed_seq_params"), "qkv_format", None) != "bshd":
                 return "original TE actor kernel"
+            assert all(x.is_contiguous() for x in (query, key, value)), "Native BSHD storage must be contiguous"
             q, k, v = [x.transpose(1, 2) for x in (query, key, value)]
             mask = q.new_zeros(q.shape[2], k.shape[2])
             offset = k.shape[2] - q.shape[2] if attn_mask_type == "causal_bottom_right" else 0
@@ -290,7 +292,7 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
 
     core_type = _definition(
         "miles_plugins/models/critic_memory_attention.py", "CriticMemoryAttention",
-        {"TEDotProductAttention": Base, "packed_attention": packed_attention,
+        {"torch": torch, "TEDotProductAttention": Base, "packed_attention": packed_attention,
          "PackedSeqParams": SimpleNamespace,
          "AttnMaskType": SimpleNamespace(causal="causal", causal_bottom_right="causal_bottom_right")},
     )
@@ -313,7 +315,7 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
     native = core._read_native(qh, kh, vh, fixed_bias=bias)
     reference = reference_attention(qh, kh, vh, fixed_bias=bias)
     torch.testing.assert_close(native, reference)
-    assert core.calls[-1][0] == "causal_bottom_right"
+    assert core.calls[-1][0] == "causal"
     assert core.calls[-1][1].shape == (1, 4, 1, 12)
     assert core.calls[-1][1].is_contiguous()
     ng = torch.autograd.grad(native.square().sum(), (qh, kh, vh))

@@ -65,14 +65,17 @@ absolute_beta = incremental_beta + source_beta[selected]
 
 - 无历史：整段普通 causal。
 - 有历史的问题 prefix：独立 causal。
-- 有历史的 suffix：Q 为 suffix，K/V 为 `[问题][AM memory][suffix]`；使用
-  `causal_bottom_right`，通过 `attention_bias` 加 per-key beta。
+- 有历史的 suffix：真实 Q 为 suffix，K/V 为 `[问题][AM memory][suffix]`。
+  接入层给 Q 左侧补 `Lk-Lq` 行零，使用普通 `causal` 加 per-key beta，丢弃补齐行的输出。
+  真实第 i 行对应补齐后的 `Lk-Lq+i`，因此可见 K 与 bottom-right causal 完全一致。
+  cuDNN 不支持原先的 bottom-right causal + bias 组合，不能直接把两者传入。
+- Q/K/V 在 BSHD 边界均显式 `.contiguous()`，防止 native kernel 按声明布局读取转置视图。
 
 bias 使用真实连续的 `[1,Hq,1,Lk]` 张量，通过 singleton query 维度广播，
 不使用零 stride 的 `[1,Hq,Lq,Lk]` expand 视图。TE fused C++ 只传 data_ptr/shape，
 其 cuDNN descriptor 根据 shape 生成连续 stride；旧 expand 视图在此边界不安全，已修正。
-具体命中 fused 还是 unfused、workspace 和长序列显存开销，
-仍须真实 GPU 验证，不能依据接口存在就承诺性能。
+0.8B/sm86 实测：训练命中 TE unfused，eval 命中 cuDNN fused；两种模式的 core 均与参考一致，
+训练反向也通过。补 Q 增加 core 的计算量，未展开 beta 为 dense Q×K；长序列和生产 GPU 仍须单独验证。
 
 HF frozen reference 采用官方同类 additive-mask + backend 调用，可能创建较大 dense mask，
 不作为 HF AM 训练器或高性能长序列实现宣传。

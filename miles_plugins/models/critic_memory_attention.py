@@ -1,5 +1,7 @@
 """Native TE attention with official AM cache/beta adaptation for the critic."""
 
+import torch
+
 from megatron.core.extensions.transformer_engine import TEDotProductAttention
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.enums import AttnMaskType
@@ -20,9 +22,19 @@ class CriticMemoryAttention(TEDotProductAttention):
 
     def _read_native(self, q, k, v, *, fixed_bias=None, scale=None):
         bias = None
+        query_length = q.shape[1]
         mask_type = AttnMaskType.causal
         if fixed_bias is not None:
-            mask_type = AttnMaskType.causal_bottom_right
+            # cuDNN rejects bottom-right causal + bias. Left-padding Q makes
+            # ordinary causal mathematically identical for the retained rows:
+            # padded query (Lk-Lq+i) sees exactly keys j <= Lk-Lq+i.
+            # Discarded rows contribute no gradient. This is one fixed native
+            # representation, independent of TE backend selection/train mode.
+            prefix = k.shape[1] - query_length
+            if prefix < 0:
+                raise ValueError("AM memory reads require key length >= query length")
+            if prefix:
+                q = torch.cat([q.new_zeros(q.shape[0], prefix, q.shape[2]), q], dim=1)
             groups = q.shape[0] // k.shape[0]
             # Native post_scale_bias supplies the official per-key beta. The
             # causal pattern is represented by TE, not an explicit Python mask.
@@ -33,10 +45,12 @@ class CriticMemoryAttention(TEDotProductAttention):
             # that axis. An expanded [1,H,Lq,Lk] view is unsafe at this boundary.
             bias = beta[None, :, None]
         output = super().forward(
-            q.transpose(0, 1)[None], k.transpose(0, 1)[None], v.transpose(0, 1)[None],
+            q.transpose(0, 1)[None].contiguous(),
+            k.transpose(0, 1)[None].contiguous(), v.transpose(0, 1)[None].contiguous(),
             None, mask_type, attention_bias=bias, packed_seq_params=self._memory_seq_params,
         )
-        return output.reshape(q.shape[1], q.shape[0], v.shape[-1]).transpose(0, 1)
+        output = output.reshape(q.shape[1], q.shape[0], v.shape[-1]).transpose(0, 1)
+        return output[:, -query_length:]
 
     def forward(self, query, key, value, attention_mask, attn_mask_type=None, attention_bias=None, packed_seq_params=None, **kwargs):
         context = getattr(packed_seq_params, "critic_context", None)
