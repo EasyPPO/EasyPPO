@@ -68,8 +68,10 @@ absolute_beta = incremental_beta + source_beta[selected]
 - 有历史的 suffix：Q 为 suffix，K/V 为 `[问题][AM memory][suffix]`；使用
   `causal_bottom_right`，通过 `attention_bias` 加 per-key beta。
 
-bias 由一份 per-head/key 向量 expand 为 query 广播视图，不在 Python 中构造完整 causal mask。
-但 TE 内部是否复制该 view、具体命中 fused 还是 unfused、workspace 和长序列显存开销，
+bias 使用真实连续的 `[1,Hq,1,Lk]` 张量，通过 singleton query 维度广播，
+不使用零 stride 的 `[1,Hq,Lq,Lk]` expand 视图。TE fused C++ 只传 data_ptr/shape，
+其 cuDNN descriptor 根据 shape 生成连续 stride；旧 expand 视图在此边界不安全，已修正。
+具体命中 fused 还是 unfused、workspace 和长序列显存开销，
 仍须真实 GPU 验证，不能依据接口存在就承诺性能。
 
 HF frozen reference 采用官方同类 additive-mask + backend 调用，可能创建较大 dense mask，

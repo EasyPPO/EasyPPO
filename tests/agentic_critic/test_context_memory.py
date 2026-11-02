@@ -284,6 +284,7 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
             offset = k.shape[2] - q.shape[2] if attn_mask_type == "causal_bottom_right" else 0
             mask.masked_fill_(torch.arange(k.shape[2])[None] > offset + torch.arange(q.shape[2])[:, None], -torch.inf)
             bias = kwargs.get("attention_bias")
+            assert bias is None or bias.is_contiguous(), "TE fused bias must have dense storage"
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask if bias is None else mask + bias, enable_gqa=True)
             return out.transpose(1, 2).flatten(2)
 
@@ -313,7 +314,8 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
     reference = reference_attention(qh, kh, vh, fixed_bias=bias)
     torch.testing.assert_close(native, reference)
     assert core.calls[-1][0] == "causal_bottom_right"
-    assert core.calls[-1][1].stride(2) == 0
+    assert core.calls[-1][1].shape == (1, 4, 1, 12)
+    assert core.calls[-1][1].is_contiguous()
     ng = torch.autograd.grad(native.square().sum(), (qh, kh, vh))
     rg = torch.autograd.grad(reference.square().sum(), (qh, kh, vh))
     for actual, expected in zip(ng, rg, strict=True):
