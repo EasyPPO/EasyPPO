@@ -7,7 +7,7 @@ actor segment as an independent packed sequence. Only full-attention reads diffe
 from dataclasses import asdict, dataclass
 from itertools import groupby
 
-SCHEMA = "problem_am_resume_v1"
+SCHEMA = "problem_am_resume_v2"
 
 
 @dataclass(frozen=True)

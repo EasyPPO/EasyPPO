@@ -105,7 +105,7 @@ def test_repeated_compaction_keeps_only_history_and_current_resume_once():
             assert fit[0].shape[1] == expected_source
             memory = fit_memory(fit, ratio=0.5)
             lengths.append(memory.keys.shape[1])
-            assert memory.keys.shape[1] == max(1, round(0.5 * expected_source))
+            assert memory.keys.shape[1] == max(1, int(0.5 * expected_source))
             assert torch.isfinite(memory.values).all() and torch.isfinite(memory.bias).all()
         if previous is not None:
             # segment_attention never mutates its incoming memory.
@@ -128,8 +128,10 @@ def test_checkpoint_recompute_matches_forward_and_gradients_with_real_fits(dtype
     def run(q, k, v):
         return packed_attention(q, k, v, layouts, boundaries + [n], ratio=0.5, rotary_dim=4, base=10000.0)
 
+    rng = torch.get_rng_state()
     out = run(q, k, v)
     gradients = torch.autograd.grad(out.square().sum(), (q, k, v))
+    torch.set_rng_state(rng)
     repeated = checkpoint(run, q, k, v, use_reentrant=False)
     repeated_gradients = torch.autograd.grad(repeated.square().sum(), (q, k, v))
     torch.testing.assert_close(out, repeated)
@@ -271,19 +273,25 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
     class Base(torch.nn.Module):
         def __init__(self, config, *args, **kwargs):
             super().__init__()
-            self.calls = 0
+            self.calls = []
 
         def forward(self, query, key, value, attention_mask, attn_mask_type, **kwargs):
-            self.calls += 1
-            return "original TE actor kernel"
+            self.calls.append((attn_mask_type, kwargs.get("attention_bias")))
+            if getattr(kwargs.get("packed_seq_params"), "qkv_format", None) != "bshd":
+                return "original TE actor kernel"
+            q, k, v = [x.transpose(1, 2) for x in (query, key, value)]
+            mask = q.new_zeros(q.shape[2], k.shape[2])
+            offset = k.shape[2] - q.shape[2] if attn_mask_type == "causal_bottom_right" else 0
+            mask.masked_fill_(torch.arange(k.shape[2])[None] > offset + torch.arange(q.shape[2])[:, None], -torch.inf)
+            bias = kwargs.get("attention_bias")
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask if bias is None else mask + bias, enable_gqa=True)
+            return out.transpose(1, 2).flatten(2)
 
     core_type = _definition(
-        "miles_plugins/models/critic_memory_attention.py",
-        "CriticMemoryAttention",
-        {
-            "TEDotProductAttention": Base,
-            "packed_attention": packed_attention,
-        },
+        "miles_plugins/models/critic_memory_attention.py", "CriticMemoryAttention",
+        {"TEDotProductAttention": Base, "packed_attention": packed_attention,
+         "PackedSeqParams": SimpleNamespace,
+         "AttnMaskType": SimpleNamespace(causal="causal", causal_bottom_right="causal_bottom_right")},
     )
     core = core_type(None, memory_rotary_dim=4, memory_rotary_base=10000.0)
     q, k, v = tensors(13)
@@ -292,7 +300,24 @@ def test_native_core_preserves_actor_fallback_and_accepts_te_call_signature():
     layout = ContextSegment("one", 0, 1, 13, 4, None)
     packed = SimpleNamespace(critic_context={"layouts": (layout,), "ratio": 0.1}, cu_seqlens_host=(0, 13))
     result = core(q, k, v, None, "causal", packed_seq_params=packed)
-    assert result.shape == (13, 32) and core.calls == 1
+    assert result.shape == (13, 32) and len(core.calls) == 2
+    torch.testing.assert_close(result, dense(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1)).transpose(0, 1).flatten(1))
+    # This checks the real wrapper's per-key beta and bottom-right causal mapping.
+    qh = torch.randn(4, 5, 8, requires_grad=True)
+    kh = torch.randn(2, 12, 8, requires_grad=True)
+    vh = torch.randn(2, 12, 8, requires_grad=True)
+    bias = torch.randn(2, 7)
+    from agentic_critic.context_memory import reference_attention
+
+    native = core._read_native(qh, kh, vh, fixed_bias=bias)
+    reference = reference_attention(qh, kh, vh, fixed_bias=bias)
+    torch.testing.assert_close(native, reference)
+    assert core.calls[-1][0] == "causal_bottom_right"
+    assert core.calls[-1][1].stride(2) == 0
+    ng = torch.autograd.grad(native.square().sum(), (qh, kh, vh))
+    rg = torch.autograd.grad(reference.square().sum(), (qh, kh, vh))
+    for actual, expected in zip(ng, rg, strict=True):
+        torch.testing.assert_close(actual, expected)
 
 
 def test_hf_optimizer_refuses_am_instead_of_silently_training_another_backend():
@@ -349,3 +374,65 @@ def test_am_optimizer_schedule_shuffles_episodes_without_splitting_segments():
     args.max_tokens_per_gpu = 10
     with pytest.raises(ValueError, match="complete episode"):
         schedule(args, data, rollout_id=3, num_rollouts=[8])
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_fit_matches_unmodified_official_algorithm_for_unbiased_history(dtype, monkeypatch):
+    from agentic_critic import kv_compact
+    from agentic_critic.official_am import algorithm
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("native AM must not call the legacy patched selector or V0 ridge")
+
+    monkeypatch.setattr(kv_compact, "_algorithm", forbidden)
+    monkeypatch.setattr(kv_compact, "_ridge_value_fit", forbidden)
+    torch.manual_seed(31)
+    keys = torch.randn(2, 12, 8, dtype=dtype)
+    values = torch.randn(2, 12, 8, dtype=dtype)
+    queries = torch.randn(4, 6, 8, dtype=dtype)
+    biases = torch.zeros(2, 12)
+    state = torch.get_rng_state()
+    actual = fit_memory((keys, values, biases, queries, 100), ratio=0.25)
+    after = torch.get_rng_state()
+    torch.set_rng_state(state)
+    alg = algorithm()
+    assert alg.c2_ridge_lambda == 0 and alg.c2_solver == "lstsq"
+    for h in range(2):
+        expected_k, expected_b, expected_v, _ = alg.compute_compacted_cache(
+            keys[h], values[h], queries[2*h:2*h+2].flatten(0, 1), 3,
+        )
+        torch.testing.assert_close(actual.keys[h], expected_k)
+        torch.testing.assert_close(actual.values[h], expected_v)
+        torch.testing.assert_close(actual.bias[h], expected_b.float())
+    assert torch.equal(torch.get_rng_state(), after)
+
+
+def test_repeated_memory_bias_preserves_absolute_attention_mass_and_values():
+    # Three identical keys carry masses 2,3,5. One retained key must carry mass
+    # 10, not just the NNLS incremental multiplier (2 for the mass-5 key).
+    keys = torch.zeros(1, 3, 2)
+    values = torch.tensor([[[1., 1.], [4., 4.], [7., 7.]]])
+    biases = torch.tensor([[2., 3., 5.]]).log()
+    queries = torch.zeros(1, 2, 2)
+    memory = fit_memory((keys, values, biases, queries, 20), ratio=1/3)
+    torch.testing.assert_close(memory.bias.exp(), torch.tensor([[10.]]))
+    # Jointly normalize the memory with a fresh unit-mass zero-valued token.
+    predicted = torch.softmax(torch.cat([memory.bias[0], torch.zeros(1)]), 0) @ torch.cat([memory.values[0], torch.zeros(1, 2)])
+    expected = torch.tensor([49/11, 49/11])
+    torch.testing.assert_close(predicted, expected)
+
+
+def test_hf_reference_attention_registration_is_scoped_even_on_failure():
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    from agentic_critic.context_reference import _full_attention
+
+    name = "critic_context_am"
+    before = ALL_ATTENTION_FUNCTIONS.get(name)
+    model = SimpleNamespace(config=SimpleNamespace(_attn_implementation="sdpa"))
+    with pytest.raises(RuntimeError, match="test failure"):
+        with _full_attention(model, None, {}, {}):
+            assert ALL_ATTENTION_FUNCTIONS[name] is not before
+            raise RuntimeError("test failure")
+    assert ALL_ATTENTION_FUNCTIONS.get(name) is before
+    assert model.config._attn_implementation == "sdpa"

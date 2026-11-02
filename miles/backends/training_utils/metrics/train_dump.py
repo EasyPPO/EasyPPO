@@ -69,7 +69,7 @@ def save_debug_critic_values(args, *, rollout_id, rollout_data, rank=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"rollout_id": rollout_id, "rank": rank,
                "context_mode": getattr(args, "critic_context_mode", "shared"),
-               "context_schema": "problem_am_resume_v1" if getattr(args, "critic_context_mode", "shared") == "attention_matching" else None}
+               "context_schema": "problem_am_resume_v2" if getattr(args, "critic_context_mode", "shared") == "attention_matching" else None}
     for key in CRITIC_DUMP_KEYS:
         if key in rollout_data:
             value = rollout_data[key]

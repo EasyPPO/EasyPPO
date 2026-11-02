@@ -236,7 +236,8 @@ def execute(args: ScriptArgs):
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        "--attention-backend flash "
+        # AM beta uses native post-scale bias, which Flash-only cannot express.
+        f"--attention-backend {'auto' if args.critic_context_mode == 'attention_matching' else 'flash'} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "

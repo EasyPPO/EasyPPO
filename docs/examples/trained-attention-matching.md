@@ -5,6 +5,17 @@ actor-summary: the optimizer, prompt weights, shuffled episode mini-batches,
 value clipping, checkpointing and resident-model validation are retained.
 The previous separate HF AM optimizer is rejected. HF is a frozen reference only.
 
+## Official algorithm and native reader
+
+Uses pinned upstream HighestAttnKeys methods without monkeypatches or custom V0
+ridge. Memory reads delegate to native Megatron/TE with additive beta and
+bottom-right causal visibility; no 128-query Python reader remains. AM selects
+`--attention-backend auto`; Flash-only is rejected. The corrected implementation
+uses `problem_am_resume_v2`, and must use fresh output directories.
+
+See [implementation audit](critic-am-official-audit.md) for exact upstream settings,
+necessary task adapters, repeated-history beta conversion and remaining risks.
+
 ## Context contract
 
 A resumed segment's full-attention read is:
@@ -33,7 +44,7 @@ The generated summary's full KV is discarded after its own values are evaluated.
 The next segment supplies its summary exactly once via its actual resume prompt.
 Older resume summaries may subsequently be represented inside compressed history;
 there is no additional uncompressed copy of the current generated summary.
-Source biases participate in selection, mass fitting and ridge value fitting.
+Source biases participate in official selection, mass fitting and C2 least squares; custom V0 ridge is removed.
 
 **Linear attention follows actor-summary.** Every original segment remains an
 independent packed sequence with convolution and recurrent state reset. No HF

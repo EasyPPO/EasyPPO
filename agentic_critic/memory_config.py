@@ -13,7 +13,7 @@ def resolve_memory_config(mode: str, kv: dict | None) -> dict | None:
         return None
     defaults = {**KV_DEFAULT}
     if mode == "attention_matching":
-        defaults.update(method="am_ridge", queries="summary")
+        defaults.update(method="am", queries="summary", ridge=0)
     supplied = {k: v for k, v in (kv or {}).items() if v is not None}
     if unknown := supplied.keys() - defaults.keys():
         raise ValueError(f"unknown memory settings: {sorted(unknown)}")
@@ -21,8 +21,8 @@ def resolve_memory_config(mode: str, kv: dict | None) -> dict | None:
     if cfg["queries"] in ("summary", "causal") and "query_count" not in supplied:
         # Summary probes always use every original summary token; only hindsight has a budget.
         cfg["query_count"] = 0
-    if mode == "attention_matching" and (cfg["method"] != "am_ridge" or cfg["queries"] != "summary"):
-        raise ValueError("attention_matching requires method=am_ridge and queries=summary; use kv for ablations")
+    if mode == "attention_matching" and (cfg["method"] != "am" or cfg["queries"] != "summary" or cfg["ridge"] != 0):
+        raise ValueError("attention_matching requires official method=am, queries=summary, ridge=0; use kv for ablations")
     if not math.isfinite(cfg["ratio"]) or not 0 < cfg["ratio"] <= 1:
         raise ValueError("kv ratio must be finite and in (0, 1]")
     if cfg["method"] not in ("evict", "am", "am_cv", "am_ridge"):
@@ -35,6 +35,6 @@ def resolve_memory_config(mode: str, kv: dict | None) -> dict | None:
         raise ValueError("kv query_count must be a nonnegative integer")
     if cfg["queries"] != "hindsight" and cfg["query_count"]:
         raise ValueError("kv query_count applies only to hindsight queries; summary probes use all tokens")
-    if not math.isfinite(cfg["ridge"]) or cfg["ridge"] <= 0:
+    if not math.isfinite(cfg["ridge"]) or (cfg["ridge"] <= 0 and mode != "attention_matching"):
         raise ValueError("kv ridge must be finite and positive")
     return cfg

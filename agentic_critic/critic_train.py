@@ -129,7 +129,7 @@ def read_episode(model, head, segments: list[Segment], mode: str, device, on_val
         from agentic_critic.context_reference import read_reference
 
         config = resolve_memory_config(mode, kv)
-        read_reference(model, head, segments, device, on_values, ratio=config["ratio"], ridge=config["ridge"])
+        read_reference(model, head, segments, device, on_values, ratio=config["ratio"])
         return
     kv = resolve_memory_config(mode, kv)
     if kv is not None:

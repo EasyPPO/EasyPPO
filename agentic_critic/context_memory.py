@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from torch.utils.checkpoint import checkpoint
 
 from agentic_critic.context_layout import ContextSegment
 
@@ -44,37 +43,26 @@ def _sdpa(q, k, v, **kwargs):
         return F.scaled_dot_product_attention(q, k, v, **kwargs)
 
 
-def _read_chunk(q, k, v, bias, memory_slots, first, stop, scale):
+def reference_attention(q, k, v, *, fixed_bias=None, scale=None):
+    """Official HF-style additive beta mask followed by one backend call.
+
+    Native Miles supplies its TE reader instead; this dense mask is only the
+    CPU/HF reference. Unequal lengths use prefix-offset causal visibility.
+    """
     groups = q.shape[0] // k.shape[0]
-    position = torch.arange(first, stop, device=q.device) + memory_slots
-    mask = q.new_zeros(1, q.shape[0], stop - first, k.shape[1])
-    mask[..., :memory_slots] = bias.repeat_interleave(groups, 0)[None, :, None].to(q.dtype)
-    mask.masked_fill_((torch.arange(k.shape[1], device=q.device)[None] > position[:, None])[None, None], -torch.inf)
-    return _sdpa(
-        q[None, :, first:stop],
-        k[None],
-        v[None],
-        attn_mask=mask,
-        scale=scale,
-        enable_gqa=groups != 1,
-    )[0]
+    if fixed_bias is None:
+        return _sdpa(q[None], k[None], v[None], is_causal=True,
+                     scale=scale, enable_gqa=groups != 1)[0]
+    fixed = k.shape[1] - q.shape[1]
+    mask = q.new_zeros(1, q.shape[0], q.shape[1], k.shape[1])
+    mask[..., :fixed] += fixed_bias.repeat_interleave(groups, 0)[None, :, None].to(q.dtype)
+    future = torch.arange(k.shape[1], device=q.device)[None] > fixed + torch.arange(q.shape[1], device=q.device)[:, None]
+    mask.masked_fill_(future[None, None], -torch.inf)
+    return _sdpa(q[None], k[None], v[None], attn_mask=mask,
+                 scale=scale, enable_gqa=groups != 1)[0]
 
 
-def _read(q, k, v, *, memory_slots, bias, scale):
-    """All history is visible; only the current segment suffix is causal."""
-    outputs = []
-    for first in range(0, q.shape[1], 128):
-        stop = min(first + 128, q.shape[1])
-        args = (q, k, v, bias, memory_slots, first, stop, scale)
-        if torch.is_grad_enabled() and any(t.requires_grad for t in (q, k, v)):
-            out = checkpoint(_read_chunk, *args, use_reentrant=False)
-        else:
-            out = _read_chunk(*args)
-        outputs.append(out)
-    return torch.cat(outputs, dim=1)
-
-
-def segment_attention(q, k, v, layout: ContextSegment, memory, *, rotary_dim, base, scale=None):
+def segment_attention(q, k, v, layout: ContextSegment, memory, *, rotary_dim, base, scale=None, attention=reference_attention):
     """Read one original segment; do not persist its duplicate problem or summary.
 
     Return output plus detached inputs for the later memory fit. No input tensor
@@ -85,27 +73,20 @@ def segment_attention(q, k, v, layout: ContextSegment, memory, *, rotary_dim, ba
     q = shift_rotary(q, offset=offset, rotary_dim=rotary_dim, base=base)
     k = shift_rotary(k, offset=offset, rotary_dim=rotary_dim, base=base)
     suffix_q, suffix_k = q[:, p:], k[:, p:]
-    prefix = _sdpa(
-        q[None, :, :p],
-        k[None, :, :p],
-        v[None, :, :p],
-        is_causal=True,
-        scale=scale,
-        enable_gqa=q.shape[0] != k.shape[0],
-    )[0]
     old_k = k[:, :0] if memory is None else memory.keys
     old_v = v[:, :0] if memory is None else memory.values
     old_bias = k.new_zeros(k.shape[0], 0, dtype=torch.float32) if memory is None else memory.bias
-    fixed_bias = torch.cat([old_bias.new_zeros(k.shape[0], p), old_bias], dim=1)
-    suffix = _read(
-        suffix_q,
-        torch.cat([k[:, :p], old_k, suffix_k], dim=1),
-        torch.cat([v[:, :p], old_v, v[:, p:]], dim=1),
-        memory_slots=p + old_k.shape[1],
-        bias=fixed_bias,
-        scale=scale,
-    )
-    output = torch.cat([prefix, suffix], dim=1)
+    if old_k.shape[1] == 0:
+        output = attention(q, k, v, scale=scale)
+    else:
+        prefix = attention(q[:, :p], k[:, :p], v[:, :p], scale=scale)
+        fixed_bias = torch.cat([old_bias.new_zeros(k.shape[0], p), old_bias], dim=1)
+        suffix = attention(
+            suffix_q, torch.cat([k[:, :p], old_k, suffix_k], dim=1),
+            torch.cat([v[:, :p], old_v, v[:, p:]], dim=1),
+            fixed_bias=fixed_bias, scale=scale,
+        )
+        output = torch.cat([prefix, suffix], dim=1)
     logical_end = offset + layout.length
     if layout.index + 1 == layout.count:
         return output, None
@@ -122,38 +103,41 @@ def segment_attention(q, k, v, layout: ContextSegment, memory, *, rotary_dim, ba
 
 
 @torch.no_grad()
-def fit_memory(fit, *, ratio, ridge=1e-4):
-    """Fit only the history block, excluding the problem and current summary."""
-    # Optional upstream package is needed only when an actual boundary is fitted.
-    from agentic_critic.kv_compact import _algorithm, _ridge_value_fit
+def fit_memory(fit, *, ratio):
+    """Use unchanged upstream selection/NNLS and C2 least squares.
+
+    Repeated biased history needs an absolute stored beta: upstream selection
+    solves with exp(logit + source_beta), so its log-weight is an increment.
+    Apply that conversion before upstream C2 fitting and subsequent reads.
+    """
+    from agentic_critic.official_am import algorithm
 
     keys, values, biases, queries, logical_end = fit
     total = keys.shape[1]
-    if total == 0:
+    keep = max(1, min(total, int(ratio * total)))
+    if total == 0 or keep == total:
         return Memory(keys, values, biases, logical_end)
-    keep = max(1, min(total, round(ratio * total)))
-    if keep == total:
-        return Memory(keys, values, biases, logical_end)
-    alg = _algorithm()
-    cuda = [keys.device.index] if keys.is_cuda else []
+    alg = algorithm()
     new_k, new_v, new_b = [], [], []
     groups = queries.shape[0] // keys.shape[0]
-    with torch.random.fork_rng(devices=cuda), torch.autocast(device_type=keys.device.type, enabled=False):
-        torch.manual_seed(0)
+    with torch.autocast(device_type=keys.device.type, enabled=False):
         for h in range(keys.shape[0]):
-            q = queries[h * groups : (h + 1) * groups].flatten(0, 1).float()
-            k, v, bias = keys[h].float(), values[h].float(), biases[h][None]
-            c1, beta, selected = alg._select_keys_highest_attention(k, q, keep, bias)
-            beta = beta + biases[h, selected]
-            c2 = _ridge_value_fit(k, v, q, c1, beta, selected, bias, False, ridge)
-            order = torch.tensor(selected, device=keys.device).argsort()
-            new_k.append(c1[order].to(keys.dtype))
-            new_v.append(c2[order].to(values.dtype))
-            new_b.append(beta[order])
+            q = queries[h * groups : (h + 1) * groups].flatten(0, 1)
+            k, v, source = keys[h], values[h], biases[h][None]
+            c1, delta, selected = alg._select_keys_highest_attention(k, q, keep, source)
+            beta = delta + biases[h, selected]
+            c2 = alg._compute_C2_with_method(
+                c1, beta, k, v, q, method=alg.c2_method, indices=selected,
+                attention_bias=source, ridge_lambda=alg.c2_ridge_lambda,
+                solver=alg.c2_solver, ridge_scale=alg.c2_ridge_scale,
+            )
+            new_k.append(c1)
+            new_v.append(c2)
+            new_b.append(beta)
     return Memory(torch.stack(new_k), torch.stack(new_v), torch.stack(new_b), logical_end)
 
 
-def packed_attention(query, key, value, layouts, boundaries, *, ratio, rotary_dim, base, scale=None):
+def packed_attention(query, key, value, layouts, boundaries, *, ratio, rotary_dim, base, scale=None, attention=reference_attention):
     """Native THD core attention, with episode-local immutable memory per layer."""
     outputs, memory, episode = [], None, None
     for index, layout in enumerate(layouts):
@@ -161,13 +145,12 @@ def packed_attention(query, key, value, layouts, boundaries, *, ratio, rotary_di
         if layout.episode != episode:
             episode, memory = layout.episode, None
         q, k, v = [x[start:end].transpose(0, 1) for x in (query, key, value)]
-        out, fit = segment_attention(q, k, v, layout, memory, rotary_dim=rotary_dim, base=base, scale=scale)
+        out, fit = segment_attention(q, k, v, layout, memory, rotary_dim=rotary_dim, base=base, scale=scale, attention=attention)
         outputs.append(out.transpose(0, 1))
         memory = None if fit is None else fit_memory(fit, ratio=ratio)
     # Packed padding is a separate independent sequence, never episode memory.
     end = boundaries[len(layouts)]
     if end < query.shape[0]:
-        q, k, v = [x[end:].transpose(0, 1)[None] for x in (query, key, value)]
-        pad = _sdpa(q, k, v, is_causal=True, scale=scale, enable_gqa=q.shape[1] != k.shape[1])
-        outputs.append(pad[0].transpose(0, 1))
+        q, k, v = [x[end:].transpose(0, 1) for x in (query, key, value)]
+        outputs.append(attention(q, k, v, scale=scale).transpose(0, 1))
     return torch.cat(outputs, dim=0).flatten(1)

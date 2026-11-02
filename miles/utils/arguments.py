@@ -4087,6 +4087,9 @@ def _validate_easyppo_args(args) -> None:
             "tensor_model_parallel_size", "pipeline_model_parallel_size", "context_parallel_size"
         )):
             raise ValueError("AM context currently supports TP=PP=CP=1 with data parallelism")
+        backend = getattr(args, "attention_backend", "auto")
+        if getattr(backend, "name", backend) not in ("auto", "fused"):
+            raise ValueError("Official AM beta requires --attention-backend auto or fused; Flash alone cannot represent it")
         if not 0 < args.critic_am_ratio <= 1:
             raise ValueError("--critic-am-ratio must be in (0, 1]")
         if args.qkv_format != "thd" or not args.use_dynamic_batch_size:
