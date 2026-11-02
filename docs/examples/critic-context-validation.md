@@ -85,7 +85,7 @@ and optimizer steps do not separate sibling segments.
 The AM path now calls unmodified upstream HighestAttnKeys selection/NNLS and C2
 least squares. The V0 ridge, selector monkeypatch, fixed per-boundary seed,
 forced-FP32 inputs and 128-query reader are removed from AM. Native reads use TE
-post-scale bias and bottom-right causal attention; HF remains a dense frozen
+post-scale bias and equivalent left-padded-Q causal attention; HF remains a dense frozen
 reference. The implementation schema is `problem_am_resume_v2`.
 
 New CPU tests compare FP32/BF16 with upstream public results for unbiased history,
@@ -118,3 +118,35 @@ expanded zero-stride [1,H,Lq,Lk] bias view by a real contiguous [1,H,1,Lk] tenso
 The wrapper test now checks this native boundary contract as well as outputs and
 gradients. The selected context suite: 22 passed; CUDA smoke: 1 skipped. This is
 source/CPU evidence, not a completed native CUDA compatibility or throughput test.
+
+## Native 0.8B execution, 2026-11-03
+
+A Python 3.12 CUDA 13 / torch 2.13 / TE 2.17 / FLA 0.5.2 environment now runs
+unmodified upstream dependencies on an RTX 3070 Ti Laptop (sm86, 8 GiB).
+The real native spec exposed a class-versus-ModuleSpec integration bug, now fixed
+without mutating TEDotProductAttention. Real train/eval testing also required
+left-padding Q for ordinary causal masking (cuDNN rejects bottom-right + bias)
+and contiguous BSHD Q/K/V. The compact beta remains [1,H,1,Lk].
+
+The native CUDA plus context suite passes 23 tests. Actual pretrained 24-layer
+Qwen3.5-0.8B completes two SGD forward/backward updates on three 64-token
+segments, both with and without full uniform activation recomputation.
+Memory fitting and its outputs remain detached; controlled-RNG future-segment
+perturbation leaves earlier outputs unchanged. Recompute repeats compression;
+no_grad does not suppress re-execution. This is a native-component correctness
+smoke, not a full Miles PPO/Adam run, a 9B result, or evidence of convergence.
+
+TE auto uses unfused training and fused eval on this GPU. The first segment
+matches ordinary shared attention in train mode. Comparing different native
+eval kernels yields nonzero BF16 drift; it is recorded rather than described
+as exact whole-model equivalence. The repository's full native dependency lock
+also has declared incompatibilities; selected runtime checks do not prove that
+the entire SGLang/Bridge service stack passes pip check.
+
+The complete CPU agentic_critic regression passes 491 tests in the separate CPU
+reference environment; five affected launcher tests pass. The legacy HF
+critic_engine CLI now rejects AM training before loading a model; its negative
+test replaces the obsolete expectation of HF AM training. Validation test
+doubles accept the current critic_context keyword. A native pretrained GDN
+check finds zero gradient into earlier packed segments and agrees with separate
+segment execution (BF16 max absolute difference 0.00390625).

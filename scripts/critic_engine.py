@@ -129,6 +129,8 @@ def main() -> None:
     ap.add_argument("--self-check", type=int, default=2, help="episodes to run the correctness checks on before training (0: skip)")
     ap.add_argument("--save-model", action="store_true", help="store the trained backbone (bfloat16, about 18 GB for 9B) next to the value head")
     args = ap.parse_args()
+    if args.mode == "attention_matching":
+        ap.error("attention_matching training requires native Miles; use scripts/agentic_critic/miles_train.py")
     # Preserve the legacy CLI's eviction default; the named AM mode fixes its algorithm and query source.
     supplied = dict(ratio=args.kv_ratio, method=args.kv_method or ("evict" if args.mode == "kv" else None),
                     queries=args.kv_queries, query_count=args.kv_query_count, ridge=args.kv_ridge)
