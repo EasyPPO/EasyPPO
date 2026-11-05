@@ -26,7 +26,7 @@ def test_agentic_recipe_requires_a_dataset(launcher):
         launcher._require_frontier_cs_inputs(args)
 
 
-@pytest.mark.parametrize("mode", ["shared", "full_history", "attention_matching"])
+@pytest.mark.parametrize("mode", ["shared", "full_history"])
 def test_agentic_recipe_routes_context_and_reward(launcher, monkeypatch, tmp_path, mode):
     recording = install_command_recorder(monkeypatch)
     call_entrypoint(
@@ -49,4 +49,3 @@ def test_agentic_recipe_routes_context_and_reward(launcher, monkeypatch, tmp_pat
     assert "--apply-chat-template" not in command
     assert "--custom-rm-path" not in command
     assert "--use-dynamic-global-batch-size" not in command
-    assert f"--attention-backend {'auto' if mode == 'attention_matching' else 'flash'}" in command

@@ -67,9 +67,7 @@ def save_debug_critic_values(args, *, rollout_id, rollout_data, rank=None):
         rank = torch.distributed.get_rank()
     path = Path(path_template.format(rollout_id=rollout_id, rank=rank)).with_suffix(".critic.pt")
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"rollout_id": rollout_id, "rank": rank,
-               "context_mode": getattr(args, "critic_context_mode", "shared"),
-               "context_schema": "problem_am_resume_v2" if getattr(args, "critic_context_mode", "shared") == "attention_matching" else None}
+    payload = {"rollout_id": rollout_id, "rank": rank}
     for key in CRITIC_DUMP_KEYS:
         if key in rollout_data:
             value = rollout_data[key]
