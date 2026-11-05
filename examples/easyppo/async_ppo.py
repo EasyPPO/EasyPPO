@@ -1,28 +1,7 @@
-"""One-step asynchronous terminal actor-critic with independent critic memory.
+"""Shared Qwen3.5-27B terminal recipe and one-step asynchronous launch helpers.
 
-Adapts T1 terminal training with user-selected optimizers to dense Qwen3.5-27B and
-FrontierSmith/Frontier-CS or TMAX-15K/Terminal-Bench. See ASYNC_PPO.md for
-every default, deviations from the paper, memory semantics and prerequisites.
-Miles' existing score-centering loss with critic GAE is enabled by default;
-its official importance-weight switches are documented in PPO_SCORE_CENTERING.md.
-
-Args:
-    --action: prepare downloads data/weights; train submits; all does both.
-    --critic-context-mode: full_detach or actor-summary (separate experiments).
-    --dataset: frontiersmith (Frontier-CS eval) or tmax (TB2.1 eval).
-    --prompt-data / --eval-data: Override the selected recipe's JSONL paths.
-    --critic-load: Optional HF memory-critic checkpoint, distinct from actor load.
-    --num-rollout / --num-critic-only-steps: Explicit rollout and warmup budgets.
-    --num-nodes / --num-gpus-per-node: Allocation, default eight eight-GPU nodes.
-    --trainer-num-nodes: Two train nodes, leaving six nodes for rollout by default.
-    --score-centering-is: Existing Miles SC weighting: none, tis or mis.
-    --no-score-centering: Run the original clipped-PPO baseline without candidates.
-    All model, data, sandbox, sampling and optimizer knobs are ScriptArgs fields.
-
-Example (run from the head of a prejoined eight-node Ray cluster):
-    MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_ppo.py \
-        --critic-context-mode full_detach --model-dir /shared/models \
-        --data-dir /shared/data --output-dir /shared/runs
+Dataset-specific run_* wrappers own the CLI. Synchronous launch helpers reuse
+these parameter blocks while choosing the synchronous driver and PPO actor loss.
 """
 
 import base64
@@ -34,7 +13,6 @@ from pathlib import Path
 from typing import Literal
 
 import agentic_critic
-import typer
 
 from miles.utils.external_utils import command_utils as U
 
@@ -50,7 +28,7 @@ _RECIPES = {"frontiersmith": _Recipe(32, 35), "tmax": _Recipe(32, 35)}
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = field(default_factory=U.create_run_id)
+    run_id: str = field(default_factory=lambda: U.create_run_id())
     action: Literal["prepare", "train", "all"] = "all"
     num_nodes: int = 8
     num_gpus_per_node: int = 8
@@ -119,10 +97,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_mem_fraction_static: float = 0.7
     sglang_server_concurrency: int = 128
     eval_interval: int = 10
+    eval_samples_per_prompt: int = 5
     eval_temperature: float = 1.0
     eval_top_p: float = 1.0
     eval_top_k: int = -1
-    eval_max_tasks: int = 16
+    eval_max_tasks: int = 0
     eval_subset_seed: int = 42
     save_interval: int = 10
     seed: int = 1234
@@ -190,8 +169,10 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("SGLang server concurrency must be positive")
     if args.tensor_model_parallel_size <= 0 or trainer_gpus % args.tensor_model_parallel_size:
         raise ValueError("Training GPUs must divide into complete tensor-parallel groups")
-    if args.rollout_batch_size <= 0 or args.rollout_batch_size % (trainer_gpus // args.tensor_model_parallel_size):
-        raise ValueError("Rollout batch must be positive and divisible by trainer DP size")
+    # DP partitions episodes; one prompt's responses may span several ranks.
+    global_batch_size = args.rollout_batch_size * args.samples_per_prompt
+    if args.rollout_batch_size <= 0 or global_batch_size % (trainer_gpus // args.tensor_model_parallel_size):
+        raise ValueError("Rollout episode batch must be positive and divisible by trainer DP size")
     if args.samples_per_prompt <= 1 or args.critic_steps_per_rollout <= 0:
         raise ValueError("Inverse-std training requires repeated samples and positive critic steps")
     if args.rollout_batch_size % args.critic_steps_per_rollout:
@@ -203,6 +184,8 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("Critic inverse-std floor must be finite and positive")
     if args.eval_max_tasks < 0 or args.eval_subset_seed < 0:
         raise ValueError("Evaluation task limit and subset seed must be nonnegative")
+    if args.eval_samples_per_prompt <= 0:
+        raise ValueError("Evaluation samples per prompt must be positive")
     if args.dataset not in ("frontiersmith", "tmax"):
         raise ValueError("Choose frontiersmith or tmax")
     if args.over_sampling_batch_size < args.rollout_batch_size:
@@ -262,7 +245,13 @@ def _validate(args: ScriptArgs) -> None:
     )
 
 
-def prepare(args: ScriptArgs) -> None:
+def _validate_dataset(args: ScriptArgs, *, dataset: str) -> None:
+    if args.dataset != dataset:
+        raise ValueError(f"This launcher requires --dataset {dataset}")
+
+
+def _prepare(args: ScriptArgs, *, dataset: str) -> None:
+    _validate_dataset(args, dataset=dataset)
     _validate(args)
     backend = args.create_backend()
     backend.exec_command_cpu(shlex.join(["mkdir", "-p", args.model_dir, args.data_dir]))
@@ -383,7 +372,7 @@ def _rollout_args(args: ScriptArgs) -> list[str]:
         "--no-eval-on-epoch",
         "--no-save-on-epoch",
         "--n-samples-per-eval-prompt",
-        "1",
+        str(args.eval_samples_per_prompt),
         "--eval-temperature",
         str(args.eval_temperature),
         "--eval-top-p",
@@ -572,7 +561,8 @@ def _resource_args(args: ScriptArgs) -> list[str]:
     ]
 
 
-def execute(args: ScriptArgs) -> None:
+def _execute(args: ScriptArgs, *, dataset: str, script_path: str) -> None:
+    _validate_dataset(args, dataset=dataset)
     _validate(args)
     argv = (
         _checkpoint_args(args)
@@ -580,7 +570,7 @@ def execute(args: ScriptArgs) -> None:
         + _terminal_args(args)
         + _algorithm_args(args)
         + _resource_args(args)
-        + shlex.split(U.get_default_wandb_args(__file__, run_id=args.run_id))
+        + shlex.split(U.get_default_wandb_args(script_path, run_id=args.run_id))
     )
     args.create_backend().execute_train(
         train_args=shlex.join(argv),
@@ -590,16 +580,3 @@ def execute(args: ScriptArgs) -> None:
         megatron_path=args.megatron_path,
         extra_env_vars={"PYTHONPATH": args.megatron_path},
     )
-
-
-@U.dataclass_cli
-def main(args: ScriptArgs) -> None:
-    _validate(args)
-    if args.action in ("prepare", "all"):
-        prepare(args)
-    if args.action in ("train", "all"):
-        execute(args)
-
-
-if __name__ == "__main__":
-    typer.run(main)

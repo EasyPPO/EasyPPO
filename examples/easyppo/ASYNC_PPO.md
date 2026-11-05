@@ -1,8 +1,16 @@
 # Asynchronous terminal actor-critic
 
-Entry point: [`run_qwen3_5_27b_async_ppo.py`](run_qwen3_5_27b_async_ppo.py).
-Use the [recipe guide](RECIPES.md) for environment setup, dataset preparation,
-judges, launch commands, checkpoints, and the synchronous PPO entry points.
+Dataset-specific entry points:
+
+- [`run_qwen3_5_27b_async_frontiersmith.py`](run_qwen3_5_27b_async_frontiersmith.py): FrontierSmith → Frontier-CS.
+- [`run_qwen3_5_27b_async_tmax.py`](run_qwen3_5_27b_async_tmax.py): TMAX → Terminal-Bench 2.1.
+
+Use the [README](../../README.md) for setup and launch commands, and
+[RECIPES.md](RECIPES.md) for training mechanics, checkpoints, and the
+synchronous PPO entry points. Both async launchers default to an eight-node,
+64-GPU allocation; the sync launchers default to four nodes and 32 GPUs.
+The filename selects the dataset, and all entry points accept the same
+critic-memory options.
 
 | Setting | Value |
 |---|---|
@@ -24,7 +32,7 @@ judges, launch commands, checkpoints, and the synchronous PPO entry points.
 | Training episode packing limit | 262144 tokens |
 | Default GPU allocation | 16 trainer + 48 rollout B200s |
 | 32-GPU allocation | `--num-nodes 4 --trainer-num-nodes 1`: 8 trainer + 24 rollout |
-| Validation | Fixed 16-task subset, one episode per task, sampling `1/1/-1` |
+| Validation | Full FCS 179 / TB2.1 89 tasks, five episodes per task, sampling `1/1/-1` |
 | Eval / save cadence | Every 10 outer rounds and the final round; initial evaluation enabled |
 
 The actor and critic have independent weights, optimizers, and memory. The
@@ -40,3 +48,12 @@ apply only when selecting `--no-score-centering`.
 
 See [Score Centering](PPO_SCORE_CENTERING.md) for the actor loss and
 [data preparation](ASYNC_DATA.md) for dataset sources and judge mounts.
+
+Validation defaults are `--eval-max-tasks 0 --eval-samples-per-prompt 5`.
+Each validation point runs 895 Frontier-CS trials or 445 TB2.1 trials. Initial
+validation plus rounds 10..120 gives 13 points: 11,635 or 5,785 trials per
+experiment. Full-set result names are `fcs` / `tb21`.
+
+An explicit positive `--eval-max-tasks N` selects a seed-42 fixed subset with
+`fcs_quick` / `tb21_quick` names. For a smoke run, set
+`--eval-max-tasks 1 --eval-samples-per-prompt 1`.

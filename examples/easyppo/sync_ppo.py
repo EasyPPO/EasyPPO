@@ -4,13 +4,15 @@ import shlex
 from dataclasses import dataclass
 from typing import Literal
 
-from examples.easyppo import run_qwen3_5_27b_async_ppo as _recipe
+from examples.easyppo import async_ppo as _recipe
 
 from miles.utils.external_utils import command_utils as U
 
 
 @dataclass
 class _SyncScriptArgs(_recipe.ScriptArgs):
+    num_nodes: int = 4
+    trainer_num_nodes: int = 1
     score_centering: bool = False
     score_centering_candidates: int = 0
     score_centering_is: Literal["none"] = "none"
@@ -55,7 +57,7 @@ def _validate(args: _SyncScriptArgs, *, dataset: str) -> None:
 
 def _prepare(args: _SyncScriptArgs, *, dataset: str) -> None:
     _validate(args, dataset=dataset)
-    _recipe.prepare(args)
+    _recipe._prepare(args, dataset=dataset)
 
 
 def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:

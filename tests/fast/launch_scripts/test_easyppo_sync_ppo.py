@@ -6,12 +6,15 @@ import os
 import shlex
 import subprocess
 import sys
+from dataclasses import fields
 
 import pytest
 import typer
 from tests.fast.launch_scripts.py_harness import import_launch_script
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 from typer.testing import CliRunner
+
+from miles.utils.external_utils import command_utils as U
 
 
 @pytest.fixture(params=["frontiersmith", "tmax"])
@@ -89,15 +92,20 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--terminal-max-context-tokens": "32768",
         "--rollout-max-context-len": "32768",
         "--max-tokens-per-gpu": "262144",
-        "--actor-num-nodes": "2",
+        "--actor-num-nodes": "1",
         "--actor-num-gpus-per-node": "8",
-        "--critic-num-nodes": "2",
+        "--critic-num-nodes": "1",
         "--critic-num-gpus-per-node": "8",
-        "--rollout-num-gpus": "48",
+        "--rollout-num-gpus": "24",
         "--rollout-num-gpus-per-engine": "4",
         "--tensor-model-parallel-size": "4",
     }
     assert {flag: value(flag) for flag in expected} == expected
+    assert args.num_nodes * args.num_gpus_per_node == 32
+    assert (
+        int(value("--actor-num-nodes")) * int(value("--actor-num-gpus-per-node")) + int(value("--rollout-num-gpus"))
+        == 32
+    )
     assert {"--filter-truncated-in-actor-loss", "--offload-train", "--calculate-per-token-loss"} <= set(argv)
     assert not {
         "--keep-old-actor",
@@ -114,13 +122,14 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
     assert "--loss-type" not in argv  # The existing Miles default is policy_loss.
     evaluation = json.loads(base64.b64decode(value("--eval-config").removeprefix("base64:")))["datasets"][0]
     assert evaluation["path"] == args.validation_data
-    assert evaluation["name"] == ("fcs_quick" if args.dataset == "frontiersmith" else "tb21_quick")
-    assert evaluation["max_samples"] == 16 and evaluation["sample_seed"] == 42
+    assert evaluation["name"] == ("fcs" if args.dataset == "frontiersmith" else "tb21")
+    assert evaluation["max_samples"] is None and evaluation["sample_seed"] == 42
+    assert value("--n-samples-per-eval-prompt") == "5"
     assert value("--prompt-data") == args.train_data
 
     # All remaining flags must be identical to the existing async clipped-PPO
     # recipe, including order. The schedule and the old-actor copy are the changes.
-    asynchronous = import_launch_script(REPO_ROOT / "examples/easyppo/run_qwen3_5_27b_async_ppo.py")
+    asynchronous = import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{args.dataset}.py")
     monkeypatch.setattr(asynchronous.ScriptArgs, "create_backend", lambda self: backend)
     asynchronous.execute(asynchronous.ScriptArgs(**vars(args)))
     async_argv = shlex.split(backend.training[-1]["train_args"])
@@ -251,3 +260,76 @@ def test_file_invocation_help_needs_neither_pythonpath_nor_repo_working_director
     assert result.returncode == 0, result.stderr
     assert "--action" in result.stdout and "--critic-context-mode" in result.stdout
     assert launcher.ScriptArgs().dataset in result.stdout
+
+
+def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
+    args = launcher.ScriptArgs(run_id="parameter-parity")
+    asynchronous = import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{args.dataset}.py")
+    async_args = asynchronous.ScriptArgs(run_id=args.run_id)
+    sync_fields = {field.name for field in fields(args)}
+    assert sync_fields == {field.name for field in fields(async_args)}
+    assert {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)} == {
+        "score_centering",
+        "score_centering_candidates",
+        "score_centering_is",
+        "score_centering_recompute_loss",
+        "num_nodes",
+        "trainer_num_nodes",
+        "rollout_num_gpus",
+    }
+
+    def options(main):
+        app = typer.Typer(add_completion=False)
+        app.command()(main)
+        return {
+            option
+            for parameter in typer.main.get_command(app).params
+            for option in parameter.opts + parameter.secondary_opts
+        }
+
+    assert options(launcher.main) == options(asynchronous.main)
+    assert args.eval_max_tasks == async_args.eval_max_tasks == 0
+    assert args.eval_samples_per_prompt == async_args.eval_samples_per_prompt == 5
+    assert (args.num_nodes, args.trainer_num_nodes, args.rollout_num_gpus) == (4, 1, 24)
+    assert (async_args.num_nodes, async_args.trainer_num_nodes, async_args.rollout_num_gpus) == (8, 2, 48)
+    assert args.num_nodes * args.num_gpus_per_node == 32
+    assert async_args.num_nodes * async_args.num_gpus_per_node == 64
+
+
+def test_run_id_factory_resolves_the_generator_after_shared_module_import(launcher, monkeypatch):
+    asynchronous = import_launch_script(
+        REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{launcher.ScriptArgs().dataset}.py"
+    )
+    identifiers = iter(("late-sync-id", "late-async-id"))
+    monkeypatch.setattr(U, "create_run_id", lambda: next(identifiers))
+    assert launcher.ScriptArgs().run_id == "late-sync-id"
+    assert asynchronous.ScriptArgs().run_id == "late-async-id"
+    assert launcher.ScriptArgs(run_id="explicit-id").run_id == "explicit-id"
+
+
+@pytest.mark.parametrize("maximum,samples", [(0, 5), (16, 1), (7, 3)])
+def test_sync_eval_controls_share_the_async_defaults_and_overrides(launcher, monkeypatch, maximum, samples):
+    backend = _backend(monkeypatch, launcher)
+    launcher.execute(launcher.ScriptArgs(eval_max_tasks=maximum, eval_samples_per_prompt=samples))
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert argv[argv.index("--n-samples-per-eval-prompt") + 1] == str(samples)
+    config = json.loads(base64.b64decode(argv[argv.index("--eval-config") + 1].removeprefix("base64:")))
+    assert config["datasets"][0]["max_samples"] == (maximum or None)
+    assert config["datasets"][0]["name"].endswith("_quick") == bool(maximum)
+
+
+@pytest.mark.parametrize("samples", [0, -1])
+def test_sync_rejects_nonpositive_eval_sample_count_before_commands(launcher, monkeypatch, samples):
+    backend = _backend(monkeypatch, launcher)
+    with pytest.raises(ValueError, match="Evaluation samples per prompt must be positive"):
+        launcher.main(eval_samples_per_prompt=samples)
+    assert not backend.commands and not backend.conversions and not backend.training
+
+
+def test_exactly_four_dataset_specific_27b_launchers_remain():
+    paths = {path.name for path in (REPO_ROOT / "examples/easyppo").glob("run_qwen3_5_27b_*.py")}
+    assert paths == {
+        f"run_qwen3_5_27b_{schedule}_{dataset}.py"
+        for schedule in ("sync", "async")
+        for dataset in ("frontiersmith", "tmax")
+    }

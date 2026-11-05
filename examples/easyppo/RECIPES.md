@@ -8,14 +8,17 @@ specifies the current training behavior shared by those commands.
 
 | Entry point | Driver | Actor objective |
 |---|---|---|
-| [`run_qwen3_5_27b_async_ppo.py`](run_qwen3_5_27b_async_ppo.py) | [`train_async.py`](../../train_async.py), one-batch prefetch | Miles Score Centering with TIS; `--dataset frontiersmith` or `tmax` |
+| [`run_qwen3_5_27b_async_frontiersmith.py`](run_qwen3_5_27b_async_frontiersmith.py) | [`train_async.py`](../../train_async.py), one-batch prefetch | Miles Score Centering with TIS; FrontierSmith → Frontier-CS |
+| [`run_qwen3_5_27b_async_tmax.py`](run_qwen3_5_27b_async_tmax.py) | [`train_async.py`](../../train_async.py), one-batch prefetch | Miles Score Centering with TIS; TMAX → TB2.1 |
 | [`run_qwen3_5_27b_sync_frontiersmith.py`](run_qwen3_5_27b_sync_frontiersmith.py) | [`train.py`](../../train.py), synchronous | Clipped PPO; FrontierSmith → Frontier-CS |
 | [`run_qwen3_5_27b_sync_tmax.py`](run_qwen3_5_27b_sync_tmax.py) | [`train.py`](../../train.py), synchronous | Clipped PPO; TMAX → TB2.1 |
 
-All three launchers use an independent HF memory critic and accept
+All four launchers use an independent HF memory critic and accept
 `--critic-context-mode full_detach|actor-summary`. A run trains one critic in
 one selected mode. They share data preparation, rewards, batching, optimizer,
-token budgets, validation, and checkpoint conventions.
+token budgets, validation, and checkpoint conventions. Async defaults to
+64 GPUs (16 train + 48 rollout); sync defaults to 32 GPUs (8 train + 24 rollout).
+The launch interface is the same shape, with the dataset selected by filename.
 
 ## Model and data
 
@@ -52,6 +55,19 @@ runs one epoch over four mini-batches, each **8 groups × 16 = 128 episodes**,
 with one optimizer update per mini-batch. A prompt group stays within one
 critic update. Its episodes can occupy different DP shards; each episode's
 segments retain matching actor/value placement.
+
+With PP=CP=1, let `D=trainer_GPUs/actor_TP`, `P` be accepted prompt groups,
+`n` episodes per group, and `K` critic steps. The batch constraints are:
+
+```text
+(P*n) % D       = 0       # Actor episodes distribute evenly across DP
+P % K           = 0       # Critic updates contain complete prompt groups
+(P*n/K) % D     = 0       # Each critic mini-batch distributes evenly across DP
+```
+
+`P` itself need not divide evenly across DP. Rollout GPUs must divide into
+complete engine-TP groups; prompt groups, oversampling, and evaluation counts
+are independent of the total GPU count and number of rollout engines.
 
 An episode can produce multiple physical actor samples after compaction.
 Those segments share one terminal reward, episode identity, and critic weight.
@@ -129,7 +145,7 @@ train/rollout probability differences. The existing math and IS modes are
 described in [PPO_SCORE_CENTERING.md](PPO_SCORE_CENTERING.md) and the
 [official Miles reference](https://github.com/radixark/miles/blob/ff97a63b6971f4c2f176d7d99f902163aac7dc01/docs/examples/infra-features/score-centering.md).
 
-The async launcher also accepts `--no-score-centering`, selecting its existing
+The async launchers also accept `--no-score-centering`, selecting its existing
 clipped-PPO path with `--keep-old-actor` and bounds `[0.8,1.28]`. The synchronous
 launchers select their fixed PPO configuration directly.
 
@@ -235,10 +251,21 @@ and logs. Plan shared storage and host memory for the actual response length.
 
 ## GPU allocation and offload
 
-| Allocation | Actor training | Rollout |
+| Recipe / allocation | Actor training | Rollout |
 |---|---|---|
-| Default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
-| Option: 4 nodes × 8 B200 | 8 GPUs, TP4 × DP2, PP=CP=1 | 24 GPUs, 6 TP4 engines |
+| Async default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
+| Sync default: 4 nodes × 8 B200 | 8 GPUs, TP4 × DP2, PP=CP=1 | 24 GPUs, 6 TP4 engines |
+
+Each recipe uses disjoint training and rollout pools. Join the corresponding
+8-node async or 4-node sync Ray allocation before launch. Async can also use the
+32-GPU layout with `--num-nodes 4 --trainer-num-nodes 1`; sync can request the
+64-GPU layout with `--num-nodes 8 --trainer-num-nodes 2`.
+
+The global actor batch remains 512 episodes and each critic mini-batch remains
+128 episodes in both defaults. Async DP4 assigns 128 actor episodes per
+logical DP shard per round and 32 per critic step. Sync DP2 assigns 256 actor
+episodes per logical DP shard per round and 64 per critic step. TP siblings
+replicate the shard's data.
 
 The independent HF critic runs sequentially on the training GPUs. Each rank
 holds a full BF16 forward model and gradients; `A_log` stays FP32 from load.
@@ -262,12 +289,20 @@ service failures propagate as trial errors. Optional `test-count` mode reads
 `passing_assertions/20`; a missing/unparseable count can fall back only to a
 valid binary result, with the reason saved in metadata.
 
-Validation samples a fixed seed-42 subset of 16 evaluation tasks and runs one
-episode per task at `1/1/-1` sampling. A 120-round fresh run evaluates initially
-and at rounds 10 through 120: 13 points, **208 trials per experiment**. Names
-are `fcs_quick` / `tb21_quick`. `--eval-max-tasks 0` selects the full dataset at
-each point. Checkpoints are saved at rounds 10 through 120, giving 12 points.
+Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
+episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
+runs **179 × 5 = 895 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
+result names `fcs` / `tb21`.
+
+A fresh 120-round run evaluates initially and at rounds 10 through 120: 13
+points, **11,635 Frontier-CS trials** or **5,785 TB2.1 trials per experiment**.
+Checkpoints are saved at rounds 10 through 120, giving 12 points.
 Epoch-triggered extra eval/save is disabled.
+
+For a quick subset, set `--eval-max-tasks N` with positive N. Selection and order
+are fixed by seed 42, and names become `fcs_quick` / `tb21_quick`.
+`--eval-samples-per-prompt N` independently controls trials per task.
+Smoke runs use `--eval-max-tasks 1 --eval-samples-per-prompt 1`.
 
 Evaluation logs include `eval/<name>/episode_raw_reward`, the mean over numeric
 returned episodes, and `eval/<name>/num_training_samples`, the number of physical

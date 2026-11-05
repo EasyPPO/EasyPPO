@@ -174,6 +174,38 @@ async def test_group_variance_four_steps_and_actor_filter_survive_executor_pack_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+@pytest.mark.parametrize("balance", [False, True])
+async def test_prompt_groups_can_span_dp_ranks_with_equal_episode_batches(monkeypatch, mode, balance):
+    # Twelve prompt groups need not divide DP=8: 192 actor episodes and each
+    # 48-episode critic mini-batch do. Each step retains three complete groups.
+    samples, _ = _samples()
+    samples = [sample for sample in samples if sample.group_index < 100 + 12 * 7]
+    executor = _executor(monkeypatch, mode=mode, dp_size=8, balance=balance, samples=samples, num_groups=12)
+    pack = await executor.get(0)
+    groups_per_step = [Counter() for _ in range(4)]
+    seen = []
+    for rank in range(8):
+        actor, actor_result = process_rollout_data(executor.args, pack.data_ref, rank, 8, witness_info=None)
+        critic, critic_result = process_rollout_data(
+            executor.args, pack.for_critic().data_ref, rank, 8, witness_info=None
+        )
+        with actor_result, critic_result:
+            assert actor["num_rollouts"] == [192]
+            assert actor["num_microbatches"] == [24]
+            assert critic["num_rollouts"] == [48] * 4
+            assert critic["num_microbatches"] == [6] * 4
+            seen.extend(critic["rollout_ids"])
+            for step, indices in enumerate(critic["critic_minibatch_indices"]):
+                assert len(indices) == 6
+                groups_per_step[step].update(critic["prompt_group_ids"][index] for index in indices)
+    assert len(seen) == len(set(seen)) == 192
+    assert [len(groups) for groups in groups_per_step] == [3] * 4
+    assert all(set(groups.values()) == {16} for groups in groups_per_step)
+    assert len(set.union(*(set(groups) for groups in groups_per_step))) == 12
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
 async def test_packed_conversion_trains_real_memory_critic_and_returns_actor_ordered_old_values(monkeypatch, mode):
     samples, _ = _samples()
     groups = {100 + group * 7 for group in (0, 8, 16, 24)}

@@ -60,11 +60,11 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-max-response-len 8192
   --rollout-max-context-len 32768
   --update-weights-interval 1
-  --eval-config base64:eyJkYXRhc2V0cyI6IFt7Im5hbWUiOiAiZmNzX3F1aWNrIiwgInBhdGgiOiAiL3Jvb3QvZGF0YXNldHMvZmNzLmV2YWwuanNvbmwiLCAibWF4X3NhbXBsZXMiOiAxNiwgInNhbXBsZV9zZWVkIjogNDJ9XX0=
+  --eval-config base64:eyJkYXRhc2V0cyI6IFt7Im5hbWUiOiAiZmNzIiwgInBhdGgiOiAiL3Jvb3QvZGF0YXNldHMvZmNzLmV2YWwuanNvbmwiLCAibWF4X3NhbXBsZXMiOiBudWxsLCAic2FtcGxlX3NlZWQiOiA0Mn1dfQ==
   --eval-interval 10
   --no-eval-on-epoch
   --no-save-on-epoch
-  --n-samples-per-eval-prompt 1
+  --n-samples-per-eval-prompt 5
   --eval-temperature 1.0
   --eval-top-p 1.0
   --eval-top-k -1
@@ -114,12 +114,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --critic-lr-warmup-iters 0
   --eps-clip 0.2
   --eps-clip-high 0.28
-  --actor-num-nodes 2
+  --actor-num-nodes 1
   --actor-num-gpus-per-node 8
-  --critic-num-nodes 2
+  --critic-num-nodes 1
   --critic-num-gpus-per-node 8
   --num-gpus-per-node 8
-  --rollout-num-gpus 48
+  --rollout-num-gpus 24
   --rollout-num-gpus-per-engine 4
   --sglang-mem-fraction-static 0.7
   --sglang-server-concurrency 128

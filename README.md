@@ -16,13 +16,15 @@ critic contexts.
 
 | Launcher | Training → evaluation | Actor objective |
 |---|---|---|
-| [`run_qwen3_5_27b_async_ppo.py`](examples/easyppo/run_qwen3_5_27b_async_ppo.py) | `--dataset frontiersmith` or `--dataset tmax` | Official Miles Score Centering + TIS |
+| [`run_qwen3_5_27b_async_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py) | FrontierSmith → Frontier-CS | Official Miles Score Centering + TIS |
+| [`run_qwen3_5_27b_async_tmax.py`](examples/easyppo/run_qwen3_5_27b_async_tmax.py) | TMAX → Terminal-Bench 2.1 | Official Miles Score Centering + TIS |
 | [`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py) | FrontierSmith → Frontier-CS | Synchronous clipped PPO |
 | [`run_qwen3_5_27b_sync_tmax.py`](examples/easyppo/run_qwen3_5_27b_sync_tmax.py) | TMAX → Terminal-Bench 2.1 | Synchronous clipped PPO |
 
-Default allocation: **64 B200s**, with 16 training GPUs and 48 rollout GPUs.
-A 32-GPU allocation uses 8 training GPUs and 24 rollout GPUs. The actor and
-critic share the training pool through CPU offload. Each round accepts
+The **async default is 64 B200s**: eight nodes, with 16 training GPUs and
+48 rollout GPUs. The **sync default is 32 B200s**: four nodes, with 8 training
+GPUs and 24 rollout GPUs. Both use separate training and rollout pools; the
+actor and critic share the training pool through CPU offload. Each round accepts
 **32 prompt groups × 16 episodes = 512 episodes**; the critic makes four updates
 and the actor makes one after the initial 30 critic-only rounds.
 
@@ -31,47 +33,23 @@ describes the objectives, memory, batching, budgets, and checkpoint contracts.
 
 ## 1. Set up the Miles GPU environment
 
-Use Linux GPU hosts with NVIDIA drivers, NVIDIA Container Toolkit, Docker
-Engine, the `docker compose` plugin, and a high-bandwidth interconnect. The
-terminal packages require **Python 3.12+**. Training nodes should provision
-roughly 1.5–2 TB of host RAM for offloaded models and optimizer state.
+Use the [Miles NVIDIA image](docs/getting-started/installation.md),
+`radixark/miles:latest`, or an image built from this checkout's
+[`docker/Dockerfile`](docker/Dockerfile). Use the same image digest on every
+node. The GPU stack includes patched SGLang and Megatron-LM, Transformer Engine,
+and CUDA kernels; terminal packages require **Python 3.12+** and
+**Transformers 5.12.1**. Training nodes should provision roughly 1.5–2 TB of
+host RAM for offloaded models and optimizer state.
 
-Use the [Miles NVIDIA image](docs/getting-started/installation.md), which includes
-its patched SGLang, Megatron-LM, Transformer Engine, and CUDA kernels. Pull the
-same image on every node and record its digest for the run:
-
-```bash
-docker pull radixark/miles:latest
-docker image inspect radixark/miles:latest --format '{{index .RepoDigests 0}}'
-```
-
-The following layout assumes `/shared` is available at the **same absolute path**
-on every host. Clone once on that shared filesystem:
+The examples use `/shared` at the **same absolute path** on every worker and
+Docker daemon host. Clone once on that shared filesystem:
 
 ```bash
 git clone --branch miles https://github.com/dyxg/EasyPPO.git /shared/EasyPPO
 mkdir -p /shared/models /shared/data /shared/runs
 ```
 
-On **each node**, start a Miles container. Mount the shared directory at the
-same path and expose the host Docker daemon so Harbor can start task sandboxes:
-
-```bash
-docker run -d --name easyppo-miles \
-  --gpus all --network=host --ipc=host \
-  --ulimit memlock=-1 --ulimit stack=67108864 \
-  --mount type=bind,source=/shared,target=/shared \
-  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
-  --workdir /shared/EasyPPO \
-  radixark/miles:latest sleep infinity
-
-docker exec -it easyppo-miles bash
-```
-
-For an InfiniBand/RDMA fabric, also expose the site's RDMA devices to the
-container, for example with `--device=/dev/infiniband`.
-
-Run the remaining setup inside **every** training/rollout container:
+Install this checkout inside every worker's Miles environment:
 
 ```bash
 cd /shared/EasyPPO
@@ -79,48 +57,27 @@ git submodule update --init third_party/compaction
 python -m pip install -e '.[agentic,terminal]'
 python -m pip install 'transformers==5.12.1'
 python -c "import miles, agentic_critic, transformers; print(miles.__file__); print(agentic_critic.__file__); print(transformers.__version__)"
-nvidia-smi
 ```
 
 The import paths must resolve to `/shared/EasyPPO`. The extras install Harbor
-0.24.0 and mini-swe-agent 1.17.1. Install the named extras above; Harbor's optional
-`tinker` dependency set uses a different Transformers range.
+0.24.0 and mini-swe-agent 1.17.1. Use these extras; Harbor's optional `tinker`
+dependency set uses a different Transformers range.
 
-The container also needs a Docker CLI and Compose plugin. Check both the client
-and host daemon connection:
-
-```bash
-docker version
-docker compose version
-```
-
-If the client packages are absent, install them inside the Ubuntu-based Miles
-container using [Docker's package repository](https://docs.docker.com/engine/install/ubuntu/):
-
-```bash
-apt-get update
-apt-get install -y ca-certificates curl
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-chmod a+r /etc/apt/keyrings/docker.asc
-. /etc/os-release
-printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
-  "$(dpkg --print-architecture)" "${UBUNTU_CODENAME:-$VERSION_CODENAME}" \
-  > /etc/apt/sources.list.d/docker.list
-apt-get update
-apt-get install -y docker-ce-cli docker-buildx-plugin docker-compose-plugin
-```
-
-This uses the mounted host daemon; a second Docker daemon is not needed inside
-the training container. Hosts must allow the privileged judge containers used
-by FrontierSmith/Frontier-CS. Provide CPU, RAM, disk, and outbound package/image
-access for task containers independently of GPU allocation.
+For containerized Miles workers, bind `/shared` to `/shared` and expose the host
+Docker daemon through `/var/run/docker.sock`; the worker environment needs the
+Docker CLI and Compose plugin. The daemon resolves task/source bind mounts on
+its host. Hosts must allow Frontier's privileged judge sidecars. Expose the
+site's RDMA devices when using an InfiniBand/RDMA fabric. Provision CPU, RAM,
+image storage, and package/image network access for Harbor trials separately
+from GPU allocation.
 
 ## 2. Join the Ray cluster
 
-Start Ray **after installation** in those containers. Replace the example IPs
-with the cluster's reachable data-network addresses. Set `NCCL_SOCKET_IFNAME`
-and `GLOO_SOCKET_IFNAME` to the site's network interface when needed.
+Choose the allocation for the launcher you will run: **eight eight-GPU nodes
+for async**, or **four eight-GPU nodes for sync**. Start Ray after installation
+in each Miles worker environment. Replace the example IPs with the cluster's
+reachable data-network addresses. Set `NCCL_SOCKET_IFNAME` and
+`GLOO_SOCKET_IFNAME` to the site's network interface when needed.
 
 On the head node:
 
@@ -130,7 +87,8 @@ ray start --head --node-ip-address "$MASTER_ADDR" --port=6379 \
   --dashboard-host=0.0.0.0 --num-gpus=8 --disable-usage-stats
 ```
 
-On each of the other seven nodes, using that node's own IP:
+Join the remaining seven async workers or three sync workers, using each
+node's own IP:
 
 ```bash
 export MASTER_ADDR=10.0.0.10
@@ -139,22 +97,22 @@ ray start --address "$MASTER_ADDR:6379" --node-ip-address "$EASYPPO_NODE_IP" \
   --num-gpus=8 --disable-usage-stats
 ```
 
-Back on the head, `ray status` should show eight live nodes and 64 GPUs.
-For the 32-GPU allocation, join four eight-GPU nodes instead. Submit all launchers
-from the head container, with `MASTER_ADDR` still set and
-`MILES_SCRIPT_EXTERNAL_RAY=1` to use this prejoined cluster.
+On the head, `ray status` should show eight live nodes / 64 GPUs for the async
+allocation, or four live nodes / 32 GPUs for sync. Submit from that allocation's
+head worker, with `MASTER_ADDR` still set and `MILES_SCRIPT_EXTERNAL_RAY=1`.
 
 ## 3. Download the model and prepare both datasets
 
-Run on the head container from `/shared/EasyPPO`:
+Run on an eight-GPU head worker from `/shared/EasyPPO`, in either the 32-GPU
+or 64-GPU environment. Prepared model/data assets are shared by all four launchers:
 
 ```bash
-python examples/easyppo/run_qwen3_5_27b_async_ppo.py \
-  --action prepare --dataset frontiersmith \
+python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
+  --action prepare \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 
-python examples/easyppo/run_qwen3_5_27b_async_ppo.py \
-  --action prepare --dataset tmax \
+python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
+  --action prepare \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 ```
 
@@ -209,27 +167,27 @@ packages, so image caching alone may not remove runtime network access.
 
 ## 5. Launch training
 
-Run one experiment at a time on the shared allocation. Each command writes to
-its own `run-id` directory. Both context modes are accepted by all three
-launchers.
+Run the selected block from the head of its matching allocation. Each block
+reuses that allocation sequentially, with a separate `run-id` for every
+experiment. All four launchers accept the same context-mode and path options.
 
-**Asynchronous SC/TIS — four dataset/context runs:**
+**Asynchronous SC/TIS — default eight nodes / 64 GPUs, four dataset/context runs:**
 
 ```bash
 for MEMORY_MODE in full_detach actor-summary; do
-  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_ppo.py \
-    --action train --dataset frontiersmith --critic-context-mode "$MEMORY_MODE" \
+  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
+    --action train --critic-context-mode "$MEMORY_MODE" \
     --run-id "async-fs-$MEMORY_MODE" \
     --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 
-  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_ppo.py \
-    --action train --dataset tmax --critic-context-mode "$MEMORY_MODE" \
+  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
+    --action train --critic-context-mode "$MEMORY_MODE" \
     --run-id "async-tmax-$MEMORY_MODE" \
     --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 done
 ```
 
-**Synchronous PPO — the two dataset-specific launchers:**
+**Synchronous PPO — default four nodes / 32 GPUs, four dataset/context runs:**
 
 ```bash
 for MEMORY_MODE in full_detach actor-summary; do
@@ -245,16 +203,19 @@ for MEMORY_MODE in full_detach actor-summary; do
 done
 ```
 
-For **32 GPUs**, add `--num-nodes 4 --trainer-num-nodes 1` to the selected command.
+To run async on a **32-GPU allocation**, add
+`--num-nodes 4 --trainer-num-nodes 1`; sync already uses these defaults.
+For sync on a 64-GPU allocation, set `--num-nodes 8 --trainer-num-nodes 2`.
+Use a matching Ray allocation for the chosen resource settings.
 For a short integration run, use a fresh run ID and add:
 
 ```bash
 --rollout-batch-size 4 --over-sampling-batch-size 5 --samples-per-prompt 2 \
 --critic-steps-per-rollout 1 --num-rollout 3 --num-critic-only-steps 1 \
---eval-max-tasks 1
+--eval-max-tasks 1 --eval-samples-per-prompt 1
 ```
 
-The short run keeps the requested GPU allocation. It exercises task startup,
+The short run keeps the selected launcher's GPU allocation. It exercises task startup,
 updates, offload, and weight publication. Training logs are always available in
 the Ray job; exporting `WANDB_API_KEY` before submission additionally enables
 the launcher's W&B configuration.
@@ -262,11 +223,21 @@ the launcher's W&B configuration.
 ## 6. Evaluate and resume
 
 Training performs initial validation, then validation and checkpointing every
-ten rounds, including the final round. Validation uses the same seed-42 subset
-of 16 tasks each time, one episode per task, temperature/top-p/top-k `1/1/-1`.
-A fresh 120-round run schedules 13 validation points: **208 trials**. Results use
-`fcs_quick` or `tb21_quick`. Add `--eval-max-tasks 0` to evaluate all 179 FCS or
-89 TB2.1 tasks at each validation point.
+ten rounds, including the final round. By default, `--eval-max-tasks 0` selects
+the **full validation set** and `--eval-samples-per-prompt 5` runs five independent
+episodes per task at temperature/top-p/top-k `1/1/-1`.
+
+| Dataset | Trials per validation point | Trials over 13 points in a fresh 120-round run |
+|---|---:|---:|
+| Frontier-CS | 179 × 5 = **895** | **11,635** |
+| Terminal-Bench 2.1 | 89 × 5 = **445** | **5,785** |
+
+Full-set results use `fcs` or `tb21`. For an explicit quick subset, add
+`--eval-max-tasks 16`; selection and order are fixed with seed 42, and result
+names become `fcs_quick` or `tb21_quick`. Use `--eval-samples-per-prompt 1` when
+one trial per task is sufficient, including smoke runs. Evaluation reward
+summaries average numeric returned episodes; five trials per task do not
+change training's 16-sample prompt groups.
 
 Outputs for a run are organized as:
 
@@ -281,8 +252,8 @@ Resume with the **same launcher, dataset, context mode, run ID, and trainer
 topology**, loading the matching critic checkpoint explicitly:
 
 ```bash
-MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_ppo.py \
-  --action train --dataset frontiersmith --critic-context-mode full_detach \
+MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
+  --action train --critic-context-mode full_detach \
   --run-id async-fs-full_detach \
   --critic-load /shared/runs/async-fs-full_detach/checkpoints_critic \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
@@ -292,7 +263,7 @@ The actor checkpoint is selected from that run's `checkpoints` directory. To
 start a **new** run from critic weights alone, choose a new run ID and add
 `--critic-load <source-run>/checkpoints_critic --critic-weights-only`. This starts
 fresh optimizer/step state. The same resume and warm-start options apply to the
-two synchronous launchers.
+other launchers.
 
 ## Recipe reference and validation
 

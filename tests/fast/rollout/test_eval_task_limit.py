@@ -2,6 +2,7 @@
 
 import base64
 import json
+from collections import Counter
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +35,21 @@ def test_eval_config_merges_dataset_limits_and_defaults():
     assert first != EvalDatasetConfig("other", "/tb.jsonl", max_samples=16, sample_seed=7).select_samples(original)
 
 
+def test_fullset_eval_inherits_five_samples_per_prompt_instead_of_training_fanout():
+    document = {"datasets": [{"name": "fcs", "path": "/fcs.jsonl", "max_samples": None}]}
+    args = SimpleNamespace(
+        eval_config="base64:" + base64.b64encode(json.dumps(document).encode()).decode(),
+        eval_prompt_data=None,
+        n_samples_per_eval_prompt=5,
+        n_samples_per_prompt=16,
+    )
+    [config] = _resolve_eval_datasets(args)
+    assert config.n_samples_per_eval_prompt == 5
+    assert config.max_samples is None
+    original = list(range(179))
+    assert config.select_samples(original) is original
+
+
 @pytest.mark.parametrize("limit", [0, -1, True, 1.5])
 def test_invalid_task_limits_are_rejected(limit):
     with pytest.raises(ValueError, match="max_samples"):
@@ -47,9 +63,12 @@ def test_invalid_subset_seeds_are_rejected(seed):
 
 
 @pytest.mark.parametrize("backend", ["native", "legacy"])
-async def test_subset_limits_real_eval_task_creation_without_mutating_cache(monkeypatch, backend):
+@pytest.mark.parametrize("task_count,fanout", [(89, 1), (89, 5), (179, 5)])
+async def test_subset_and_fullset_fanout_create_independent_episodes_without_mutating_cache(
+    monkeypatch, backend, task_count, fanout
+):
     module = inference_rollout_eval if backend == "native" else sglang_rollout
-    raw = [Sample(prompt=f"task-{i}", metadata={"task_id": i}) for i in range(89)]
+    raw = [Sample(prompt=f"task-{i}", metadata={"task_id": i}) for i in range(task_count)]
     created, sampled = [], []
 
     class Dataset:
@@ -99,7 +118,7 @@ async def test_subset_limits_real_eval_task_creation_without_mutating_cache(monk
             "/tb.jsonl",
             max_samples=limit,
             sample_seed=42,
-            n_samples_per_eval_prompt=1,
+            n_samples_per_eval_prompt=fanout,
             temperature=1,
             top_p=1,
             top_k=-1,
@@ -107,13 +126,21 @@ async def test_subset_limits_real_eval_task_creation_without_mutating_cache(monk
         )
 
     limited = await run(config("tb21_quick", 16))
-    assert len(limited["tb21_quick"]["samples"]) == len(sampled) == 16
+    assert len(limited["tb21_quick"]["samples"]) == len(sampled) == 16 * fanout
+    assert len(Counter(sampled)) == 16
+    assert set(Counter(sampled).values()) == {fanout}
     chosen = list(sampled)
     sampled.clear()
     await run(config("tb21_quick", 16))
     assert sorted(sampled) == sorted(chosen)
     sampled.clear()
     full = await run(config("tb21_quick", None))
-    assert len(full["tb21_quick"]["samples"]) == len(sampled) == 89
+    episodes = full["tb21_quick"]["samples"]
+    assert len(episodes) == len(sampled) == task_count * fanout
+    assert Counter(sampled) == Counter({task: fanout for task in range(task_count)})
+    assert [sample.index for sample in episodes] == list(range(task_count * fanout))
+    assert len({id(sample) for sample in episodes}) == task_count * fanout
+    assert len(full["tb21_quick"]["rewards"]) == len(full["tb21_quick"]["truncated"]) == task_count * fanout
     assert len(created) == 1  # Selection is per-call; the full cached dataset is intact.
     assert all(sample.index is None and sample.reward is None for sample in raw)
+    assert [sample.metadata for sample in raw] == [{"task_id": i} for i in range(task_count)]

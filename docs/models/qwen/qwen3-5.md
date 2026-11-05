@@ -53,14 +53,22 @@ python scripts/run_qwen3_dense.py --model-name Qwen3.5-4B        # or Qwen3.5-9B
 
 All three variants are 1 node × 8 GPU. The launcher reads checkpoints from `--model-dir` (default `/root/models`) and datasets from `--data-dir` (default `/root/datasets`), and writes checkpoints under `--output-dir` (default `/root/shared_data`).
 
-For **Qwen3.5-27B asynchronous terminal actor-critic**, use
-[`examples/easyppo/run_qwen3_5_27b_async_ppo.py`](../../../examples/easyppo/run_qwen3_5_27b_async_ppo.py).
+For **Qwen3.5-27B terminal actor-critic**, choose the dataset and trainer:
+
+| Dataset | Asynchronous SC/TIS | Synchronous PPO |
+|---|---|---|
+| FrontierSmith → Frontier-CS | [Async launcher](../../../examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py) | [Sync launcher](../../../examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py) |
+| TMAX-15K → TB2.1 | [Async launcher](../../../examples/easyppo/run_qwen3_5_27b_async_tmax.py) | [Sync launcher](../../../examples/easyppo/run_qwen3_5_27b_sync_tmax.py) |
+
 The [recipe and parameter guide](../../../examples/easyppo/RECIPES.md) covers
 FrontierSmith → Frontier-CS, TMAX-15K → TB2.1, and independent
 `full_detach` / `actor-summary` critics.
 It includes asynchronous SC/TIS and synchronous clipped-PPO entry points.
-The default candidate allocation is 64 B200s (16 training + 48 rollout);
-32 GPUs (8 + 24) are supported. GPU capacity and throughput require validation.
+The asynchronous default is 64 B200s (16 training + 48 rollout); its 32-GPU
+option uses 8 training + 24 rollout GPUs. Synchronous PPO defaults to that
+32-GPU allocation. The actor uses TP=4 and PP=CP=1, giving training DP=4 or 2.
+The accepted batch has 512 episodes and each critic update uses 128; both
+divide evenly across either DP size.
 
 ## 5. Recipe Configuration
 
