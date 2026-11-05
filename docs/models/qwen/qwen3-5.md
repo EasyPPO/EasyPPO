@@ -66,23 +66,21 @@ FrontierSmith → Frontier-CS, TMAX-15K → TB2.1, and independent
 It includes asynchronous SC/TIS and synchronous clipped-PPO entry points.
 The asynchronous default is 64 B200s (16 training + 48 rollout); its 32-GPU
 option uses 8 training + 24 rollout GPUs. Synchronous PPO defaults to that
-32-GPU allocation. Both actor and critic use the standard
-`MegatronTrainRayActor` with native TP=4 and PP=CP=1, giving training DP=4 or 2;
-Qwen3.5 GDN follows the framework's existing layer-specific TP behavior.
+32-GPU allocation. Both actor and critic use TP=4 and PP=CP=1, giving training
+DP=4 or 2.
 The accepted batch has 512 episodes and each critic update uses 128; both
 divide evenly across either DP size.
 
 The critic's `full_detach` mode passes explicit segment lengths through the
-native packed-sequence path. Full-attention layers detach earlier K/V and use
-the existing TE SBHD bottom-right causal kernel; GDN calls existing FLA kernels
+packed-sequence path. Full-attention layers detach earlier K/V and use
+the TE SBHD bottom-right causal kernel; GDN calls FLA kernels
 with convolution/recurrent states detached between segments. Memory is local
-to one forward and follows framework activation recomputation. `actor-summary`
-keeps each segment as a separate native row with independent attention/GDN
-boundaries and packs an episode's rows into the same micro-batch. Existing
-schedule fields and `value_slices` preserve actor/value alignment.
+to one forward, including activation recomputation. `actor-summary` keeps each
+segment as a separate row with independent attention/GDN boundaries and packs
+an episode's rows into the same micro-batch. `value_slices` preserves actor/value
+alignment.
 
-Both roles use native optimizer/scheduler, CPU offload, value-loss metrics,
-and Megatron checkpoints. Terminal launchers enable
+Terminal launchers enable
 `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
 Resume selects the run's `checkpoints` and `checkpoints_critic` directories
 automatically, with converted-reference initialization for a fresh run.
@@ -127,7 +125,7 @@ All three variants pin `--rollout-num-gpus-per-engine 1` because SGLang TP > 1 p
 
 ### 5.4 Optimizer
 
-In the single-node dense recipes, only 27 B enables CPU Adam (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`). The 4 B and 9 B recipes leave Adam on GPU. The 27 B terminal actor-critic launchers enable these native options for both training roles.
+In the single-node dense recipes, only 27 B enables CPU Adam (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`). The 4 B and 9 B recipes leave Adam on GPU. The 27 B terminal actor-critic launchers enable these options for both training roles.
 
 ### 5.5 Notable quirks
 

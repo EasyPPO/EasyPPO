@@ -75,7 +75,7 @@ Those segments share one terminal reward, episode identity, and critic weight.
 They do not increase the logical batch or count as independent return samples.
 
 Episode ownership and the four prompt-group mini-batches are expressed through
-the existing `micro_batch_indices`, `num_microbatches`, and `num_rollouts`
+`micro_batch_indices`, `num_microbatches`, and `num_rollouts`
 schedule fields. Actor and critic segments of one episode share DP placement;
 `value_slices` maps the native critic outputs back to the actor response spans.
 
@@ -91,7 +91,7 @@ Each synchronous round generates the entire batch, computes critic values,
 performs the four critic updates, and performs the actor update before starting
 the next training rollout. The new actor is published for the next round.
 
-The two synchronous launchers use the standard `policy_loss` with PPO bounds
+The two synchronous launchers use `policy_loss` with PPO bounds
 `[1-0.2, 1+0.28] = [0.8, 1.28]`. The denominator is scored by the trainer before
 the actor update for that round. They do not enable SC, TIS, or an old-actor
 queue. The rollout's actor weights remain unchanged until collection finishes.
@@ -151,8 +151,8 @@ train/rollout probability differences. The existing math and IS modes are
 described in [PPO_SCORE_CENTERING.md](PPO_SCORE_CENTERING.md) and the
 [official Miles reference](https://github.com/radixark/miles/blob/ff97a63b6971f4c2f176d7d99f902163aac7dc01/docs/examples/infra-features/score-centering.md).
 
-The async launchers also accept `--no-score-centering`, selecting its existing
-clipped-PPO path with `--keep-old-actor` and bounds `[0.8,1.28]`. The synchronous
+The async launchers also accept `--no-score-centering`, selecting
+the clipped-PPO path with `--keep-old-actor` and bounds `[0.8,1.28]`. The synchronous
 launchers select their fixed PPO configuration directly.
 
 ## Critic targets and inverse-STD regression
@@ -168,8 +168,8 @@ value clipping, and the actor uses it for GAE after the critic finishes. Each
 backward rebuilds memory using the current critic weights; caches and graphs
 are not reused across optimizer updates.
 
-The existing rollout-conversion helper computes each prompt group's population
-return standard deviation, counting an episode once across its segments:
+Inverse-STD regression uses each prompt group's population return standard
+deviation, counting an episode once across its segments:
 
 ```text
 std_g   = sqrt(population_variance(rewards_g))
@@ -199,17 +199,17 @@ gradient-norm clipping at 1. Dropout is zero.
 ## Critic memory and token alignment
 
 **`actor-summary`** reads the actor's actual context for each segment: the task,
-current summary, and local conversation. Each segment is a separate native
+current summary, and local conversation. Each segment is a separate
 packed-sequence row, with its own attention and GDN sequence boundaries.
 Segments from one episode occupy the same micro-batch, and attention KV,
 convolution state, and recurrent state start fresh for each segment.
 
-**`full_detach`** reads the critic's chronological episode stream as one native
+**`full_detach`** reads the critic's chronological episode stream as one
 packed sequence. Its `critic_segment_lengths` describe the compaction
 boundaries. Qwen3.5 full-attention layers detach the history K/V before each
-segment and call Transformer Engine's existing SBHD bottom-right causal
+segment and call Transformer Engine's SBHD bottom-right causal
 attention kernel. The current segment's K/V remain trainable. GDN layers call
-the existing FLA convolution and recurrent kernels, detaching both state tensors
+FLA convolution and recurrent kernels, detaching both state tensors
 between segments. Later segments can use earlier information while gradients
 remain within their own segment.
 
@@ -233,15 +233,6 @@ Generated action and summary tokens have mask 1. Tool outputs, template glue,
 and summary copies in subsequent inputs have mask 0. The trace stores exact
 response spans and candidate rows; masked gaps use `-1/-inf` sentinels.
 Candidates are stored in `easyppo-topk.npz` alongside the trajectory JSON.
-
-Both roles use the standard `MegatronTrainRayActor`. Miles/Megatron provide
-the optimizer and scheduler, TP/DP execution, gradient reduction and clipping,
-CPU offload, activation recomputation, `value_loss`, metrics, and checkpoint
-loading/saving. The recipe extensions supply episode samples and value spans,
-the prompt-group schedule and inverse-STD numerator weights, and the detach
-boundaries inside the existing Qwen3.5 layers. Top-k wire validation and
-observation-gap merging use the shared rollout helpers; complete candidate
-distribution validation follows the framework's `--ci-test` gate.
 
 ## Context, summaries, and generation budget
 
@@ -291,13 +282,12 @@ logical DP shard per round and 32 per critic step. Sync DP2 assigns 256 actor
 episodes per logical DP shard per round and 64 per critic step. TP siblings
 consume matching shard inputs.
 
-Actor and critic both use native Megatron TP4, with DP4 for async and DP2 for
-sync. Each layer follows the framework's existing tensor-parallel behavior,
-including the Qwen3.5 GDN module. The two roles alternate residency on the
-shared training pool through native CPU offload.
+Actor and critic both use Megatron TP4, with DP4 for async and DP2 for
+sync. The two roles alternate residency on the shared training pool through
+CPU offload.
 
 Training uses sequence parallelism, a distributed optimizer, full-layer
-activation recomputation, and the native CPU optimizer settings
+activation recomputation, and the CPU optimizer settings
 `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
 Host-memory requirements depend on the model, optimizer, offload configuration,
 and episode lengths.

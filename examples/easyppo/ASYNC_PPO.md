@@ -32,27 +32,25 @@ critic-memory options.
 | Training episode packing limit | 262144 tokens |
 | Default GPU allocation | 16 trainer + 48 rollout B200s |
 | 32-GPU allocation | `--num-nodes 4 --trainer-num-nodes 1`: 8 trainer + 24 rollout |
-| Actor and critic parallelism | Native Megatron TP4, PP=CP=1; DP4 on 16 trainer GPUs or DP2 on 8 |
+| Actor and critic parallelism | Megatron TP4, PP=CP=1; DP4 on 16 trainer GPUs or DP2 on 8 |
 | Validation | Full FCS 179 / TB2.1 89 tasks, five episodes per task, sampling `1/1/-1` |
 | Eval / save cadence | Every 10 outer rounds and the final round; initial evaluation enabled |
 
-The actor and critic use the standard `MegatronTrainRayActor`, with independent
-weights, optimizers, schedulers, and memory. The critic freezes pre-update
-values for the entire rollout, then trains four times
-before those values are supplied to the actor. Inverse-STD weights use the 16
+The actor and critic have independent weights, optimizers, schedulers, and
+memory. The critic freezes pre-update values for the entire rollout, then
+trains four times before those values are supplied to the actor. Inverse-STD weights use the 16
 returns in each prompt group, a standard-deviation floor of `0.075`, and
 normalization across the accepted rollout.
 
-`full_detach` uses the native packed episode and explicit segment lengths:
-full-attention layers detach history K/V before the existing TE SBHD
+`full_detach` uses a packed episode and explicit segment lengths:
+full-attention layers detach history K/V before the TE SBHD
 bottom-right causal kernel, and GDN detaches convolution/recurrent state
-between existing FLA kernel calls. Memory is rebuilt within each forward, with
-activation recomputation managed by the framework. `actor-summary` uses separate
-native packed rows and attention/GDN boundaries for each segment, with all
-segments of an episode in one micro-batch. The existing schedule fields and
-`value_slices` carry episode ownership and actor/value alignment.
+between FLA kernel calls. Memory is rebuilt within each forward, including
+activation recomputation. `actor-summary` uses separate packed rows and
+attention/GDN boundaries for each segment, with all segments of an episode
+in one micro-batch. `value_slices` carries actor/value alignment.
 
-Both roles use native optimizer CPU offload, enabled by
+Both roles enable optimizer CPU offload with
 `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
 Native Megatron checkpoints are stored under `checkpoints` and
 `checkpoints_critic`. Resuming the same run selects both directories

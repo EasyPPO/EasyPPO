@@ -14,9 +14,6 @@ critic. It includes one-step asynchronous Score Centering/TIS training and
 synchronous clipped PPO. Each recipe supports `full_detach` and `actor-summary`
 critic contexts.
 
-Actor and critic use the standard Miles `MegatronTrainRayActor`, with independent
-weights and native optimizer, scheduler, tensor parallelism, offload, and checkpoints.
-
 | Launcher | Training → evaluation | Actor objective |
 |---|---|---|
 | [`run_qwen3_5_27b_async_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py) | FrontierSmith → Frontier-CS | Official Miles Score Centering + TIS |
@@ -41,14 +38,14 @@ Use the [Miles NVIDIA image](docs/getting-started/installation.md),
 [`docker/Dockerfile`](docker/Dockerfile). Use the same image digest on every
 node. The GPU stack includes patched SGLang and Megatron-LM, Transformer Engine,
 and CUDA kernels; terminal packages require **Python 3.12+** and
-**Transformers 5.12.1**. Size training-host memory for the native offload
+**Transformers 5.12.1**. Size training-host memory for the offload
 configuration and the observed workload.
 
 The examples use `/shared` at the **same absolute path** on every worker and
 Docker daemon host. Clone once on that shared filesystem:
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO.git /shared/EasyPPO
+git clone --branch miles https://github.com/dyxg/EasyPPO_fork.git /shared/EasyPPO
 mkdir -p /shared/models /shared/data /shared/runs
 ```
 
@@ -211,9 +208,9 @@ To run async on a **32-GPU allocation**, add
 For sync on a 64-GPU allocation, set `--num-nodes 8 --trainer-num-nodes 2`.
 Use a matching Ray allocation for the chosen resource settings.
 
-Both actor and critic use native TP4 with PP=CP=1, giving DP2 on 8 training
+Both actor and critic use TP4 with PP=CP=1, giving DP2 on 8 training
 GPUs and DP4 on 16. The launchers enable sequence parallelism, full-layer
-activation recomputation, and the native CPU optimizer options
+activation recomputation, and the CPU optimizer options
 `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
 
 For a short integration run, use a fresh run ID and add:
