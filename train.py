@@ -84,8 +84,9 @@ async def train(args, *, disposer: Disposer):
             if args.use_critic and args.offload_train:
                 await model.offload()
 
-        if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
-            await save_training_model(actor_model)
+        # A frozen actor still needs the matching rollout checkpoint so that
+        # joint actor/critic resume can recover during critic-only warmup.
+        await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
         await rollout_executor.save(rollout_id)

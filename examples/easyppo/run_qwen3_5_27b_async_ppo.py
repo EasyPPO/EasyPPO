@@ -435,7 +435,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
     ]
 
 
-def _algorithm_args(args: ScriptArgs) -> list[str]:
+def _algorithm_args(args: ScriptArgs, *, keep_old_actor: bool = True) -> list[str]:
     argv = [
         "--advantage-estimator",
         "ppo",
@@ -512,8 +512,9 @@ def _algorithm_args(args: ScriptArgs) -> list[str]:
         if args.score_centering_recompute_loss:
             argv += ["--recompute-loss-function"]
     else:
+        if keep_old_actor:
+            argv += ["--keep-old-actor"]
         argv += [
-            "--keep-old-actor",
             "--eps-clip",
             str(args.policy_clip),
             "--eps-clip-high",
