@@ -203,6 +203,9 @@ def get_batch(
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
     if "adapter_slots" not in keys:
         keys = [*keys, "adapter_slots"]
+    if "critic_segment_lengths" in data_iterator.rollout_data and "critic_segment_lengths" not in keys:
+        # Native critic memory boundaries must reach both value-only and training forwards.
+        keys = [*keys, "critic_segment_lengths"]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
@@ -216,6 +219,14 @@ def get_batch(
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
 
     tokens = batch["tokens"]
+    if (segment_lengths := batch.get("critic_segment_lengths")) is not None:
+        for token_ids, lengths in zip(tokens, segment_lengths, strict=True):
+            if (
+                not lengths
+                or any(type(length) is not int or length <= 0 for length in lengths)
+                or sum(lengths) != len(token_ids)
+            ):
+                raise ValueError("Critic segment lengths must cover every real token of each critic sample")
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
     pad_size = parallel_state.tp.size * pad_multiplier
@@ -477,7 +488,8 @@ def get_critic_train_schedule(
     """EasyPPO critic mini-batches: re-split this rank's rollout shard into
     ``--critic-num-steps-per-rollout`` optimizer steps.
 
-    Each step takes one slice of a per-rank random permutation of the local
+    Rollout-side memory-critic plans retain complete prompt groups across DP
+    ranks. Otherwise each step takes one slice of a per-rank random permutation of the local
     samples (the EasyPPO reference shuffles its critic mini-batches per DP rank
     as well), so every step is one mini-batch across the DP group with its own
     gradient clipping and, under --calculate-per-token-loss, its own exact
@@ -488,6 +500,17 @@ def get_critic_train_schedule(
     nominal per-step count ``total / num_steps``: it advances the LR scheduler
     and, without --calculate-per-token-loss, normalizes the loss.
     """
+    if getattr(args, "critic_context_mode", "shared") in ("full_detach", "actor-summary"):
+        # These schedules are planned before DP placement so every optimizer
+        # step retains complete prompt groups, even when responses span ranks.
+        precomputed = _get_precomputed_data_iterator(args, rollout_data)
+        if precomputed is None:
+            raise ValueError("Memory critic requires a rollout-computed prompt-group schedule")
+        data_iterator, num_microbatches = precomputed
+        if len(num_microbatches) != args.critic_num_steps_per_rollout:
+            raise ValueError("Critic precomputed schedule does not match --critic-num-steps-per-rollout")
+        return data_iterator, num_microbatches, get_num_rollouts(args, rollout_data, len(num_microbatches))
+
     parallel_state = get_parallel_state()
     dp = parallel_state.effective_dp
     num_steps = args.critic_num_steps_per_rollout
@@ -543,6 +566,20 @@ def get_critic_train_schedule(
     return data_iterator, num_microbatches, [total_rollouts // num_steps] * num_steps
 
 
+def _get_precomputed_data_iterator(
+    args: Namespace, rollout_data: RolloutBatch
+) -> tuple[list[DataIterator], list[int]] | None:
+    """Consume the rollout planner's common schedule without recomputing placement."""
+    if "micro_batch_indices" not in rollout_data:
+        return None
+    assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
+    data_iterator = [
+        DataIterator(rollout_data, micro_batch_indices=rollout_data["micro_batch_indices"])
+        for _ in range(get_parallel_state().vpp_size)
+    ]
+    return data_iterator, rollout_data["num_microbatches"]
+
+
 def get_data_iterator(
     args: Namespace,
     model: torch.nn.Module | Sequence[torch.nn.Module],
@@ -566,13 +603,8 @@ def get_data_iterator(
 
     parallel_state = get_parallel_state()
 
-    if "micro_batch_indices" in rollout_data:
-        assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
-        micro_batch_indices = rollout_data["micro_batch_indices"]
-        data_iterator = [
-            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(parallel_state.vpp_size)
-        ]
-        return data_iterator, rollout_data["num_microbatches"]
+    if (precomputed := _get_precomputed_data_iterator(args, rollout_data)) is not None:
+        return precomputed
 
     dp_size = parallel_state.effective_dp.size
     dp_group = parallel_state.effective_dp.group

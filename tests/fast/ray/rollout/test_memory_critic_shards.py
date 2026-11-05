@@ -15,7 +15,11 @@ from tests.fast.fixtures.score_centering_fixtures import _args as _conversion_ar
 
 from miles.ray.rollout import rollout_executor as executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.ray.rollout.train_data_conversion import build_critic_samples, split_full_history_shards
+from miles.ray.rollout.train_data_conversion import (
+    build_critic_samples,
+    convert_samples_to_train_data,
+    split_full_history_shards,
+)
 from miles.utils import object_store
 from miles.utils.types import Sample
 
@@ -47,9 +51,12 @@ def _samples():
 def test_memory_modes_build_own_episode_and_return_actor_spans(mode):
     samples = _samples()
     critic, spans = build_critic_samples(samples, context_mode=mode)
-    assert len(critic) == 1
-    expected_tokens = [1, 2, 3, 4, 90, 6, 7] if mode == "full_detach" else samples[0].tokens + samples[1].tokens
-    assert critic[0].tokens == expected_tokens
+    if mode == "full_detach":
+        assert len(critic) == 1 and critic[0].tokens == [1, 2, 3, 4, 90, 6, 7]
+        assert critic[0]._critic_segment_lengths == [4, 3]
+    else:
+        assert [sample.tokens for sample in critic] == [sample.tokens for sample in samples]
+        assert all("critic_segment_lengths" not in sample.metadata for sample in critic)
     args = SimpleNamespace(
         critic_context_mode=mode,
         use_dynamic_batch_size=True,
@@ -60,13 +67,45 @@ def test_memory_modes_build_own_episode_and_return_actor_spans(mode):
     )
 
     def rows(items):
-        return {"tokens": [s.tokens for s in items], "response_lengths": [s.response_length for s in items]}
+        return {
+            "tokens": [s.tokens for s in items],
+            "response_lengths": [s.response_length for s in items],
+            "rollout_ids": [s.rollout_id for s in items],
+        }
 
     actor_shards, critic_shards = split_full_history_shards(args, rows(samples), rows(critic), spans, {"dp_size": 1})
-    response = critic[0].tokens[-critic[0].response_length :]
-    shipped = [response[start : start + length] for _, start, length in critic_shards[0]["value_slices"]]
+    responses = [sample.tokens[-sample.response_length :] for sample in critic]
+    shipped = [responses[row][start : start + length] for row, start, length in critic_shards[0]["value_slices"]]
     assert shipped == [sample.tokens[-sample.response_length :] for sample in samples]
     assert actor_shards[0]["tokens"] == [sample.tokens for sample in samples]
+    # Actor-summary's two sequences stay in one episode microbatch, with an
+    # independent packed-sequence boundary for each original actor context.
+    assert critic_shards[0]["micro_batch_indices"] == ([[0]] if mode == "full_detach" else [[0, 1]])
+
+
+@pytest.mark.parametrize("mode", ["shared", "actor-summary", "full_detach"])
+def test_dataset_metadata_cannot_enable_detached_memory_on_actor_samples(mode):
+    samples = _samples()
+    for sample in samples:
+        sample.metadata["critic_segment_lengths"] = [len(sample.tokens)]
+    actor_data = convert_samples_to_train_data(
+        _conversion_args(critic_context_mode=mode, rollout_top_logprobs_num=0),
+        samples,
+        metadata={},
+        custom_convert_samples_to_train_data_func=None,
+        custom_reward_post_process_func=None,
+    )
+    assert "critic_segment_lengths" not in actor_data
+    if mode != "shared":
+        critic, _ = build_critic_samples(samples, context_mode=mode)
+        critic_data = convert_samples_to_train_data(
+            _conversion_args(critic_context_mode=mode, rollout_top_logprobs_num=0),
+            critic,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert critic_data.get("critic_segment_lengths") == ([[4, 3]] if mode == "full_detach" else None)
 
 
 def test_full_detach_rejects_untracked_template_boundary():
@@ -129,20 +168,18 @@ async def test_executor_sc_actor_and_memory_critic_have_separate_conversion_cont
     actor = store.get(pack.data_ref[0]).value
     critic = store.get(pack.for_critic().data_ref[0]).value
     assert args.rollout_top_logprobs_num == 128  # Only the critic's copied args disable candidates.
-    assert len(actor["tokens"]) == 2 and len(critic["tokens"]) == 1
+    assert len(actor["tokens"]) == 2 and len(critic["tokens"]) == (1 if mode == "full_detach" else 2)
     for i, sample in enumerate(samples):
         np.testing.assert_array_equal(actor["rollout_topk_token_ids"][i], sample.rollout_topk_token_ids)
         np.testing.assert_array_equal(actor["rollout_topk_log_probs"][i], sample.rollout_topk_log_probs)
         assert actor["rollout_log_probs"][i] == sample.rollout_log_probs
     assert not any(key.startswith("rollout_topk") or key.startswith("rollout_sampling_mask") for key in critic)
     assert "rollout_log_probs" not in critic
-    assert "critic_segments" in critic and len(critic["critic_segments"][0]) == 2
-    expected = (
-        samples[0].critic_segments
-        if mode == "full_detach"
-        else [dict(tokens=s.tokens, response_length=s.response_length, loss_mask=s.loss_mask) for s in samples]
-    )
-    assert critic["critic_segments"][0] == expected
-    response = critic["tokens"][0][-critic["response_lengths"][0] :]
-    values = [response[start : start + length] for _, start, length in critic["value_slices"]]
+    assert "critic_segments" not in critic and "critic_segment_lengths" not in actor
+    if mode == "full_detach":
+        assert critic["critic_segment_lengths"] == [[4, 3]]
+    else:
+        assert "critic_segment_lengths" not in critic
+    responses = [tokens[-length:] for tokens, length in zip(critic["tokens"], critic["response_lengths"], strict=True)]
+    values = [responses[row][start : start + length] for row, start, length in critic["value_slices"]]
     assert values == [s.tokens[-s.response_length :] for s in samples]

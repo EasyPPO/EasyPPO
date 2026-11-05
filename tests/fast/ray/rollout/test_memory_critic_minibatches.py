@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock
 import pytest
 import torch
 from agentic_critic.critic_input import Segment
-from agentic_critic.memory_critic import MemoryEpisode, flatten_episode_values, train_memory_minibatches
 from agentic_critic.miles_samples import critic_episode
-from tests.agentic_critic.test_memory_critic import _make_critic, _optimizer, _reference_loss
 from tests.fast.fixtures.driver_fakes import FakeObjectStore
 from tests.fast.fixtures.score_centering_fixtures import _args as _conversion_args
 
+from miles.backends.training_utils.data import rollout as data_utils
+from miles.backends.training_utils.loss.hub import losses as native_losses
 from miles.backends.training_utils.loss.objective import drop_truncated_samples_from_actor_loss
 from miles.ray.rollout import rollout_executor as executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
@@ -73,6 +73,7 @@ def _executor(monkeypatch, *, mode, dp_size, balance, samples, num_groups=32, fa
         critic_context_mode=mode,
         rollout_top_logprobs_num=0,
         use_dynamic_batch_size=True,
+        use_dynamic_global_batch_size=False,
         global_batch_size=num_groups * fanout,
         rollout_batch_size=num_groups,
         n_samples_per_prompt=fanout,
@@ -104,6 +105,27 @@ def _executor(monkeypatch, *, mode, dp_size, balance, samples, num_groups=32, fa
     return executor
 
 
+def _critic_steps(monkeypatch, args, critic):
+    """Drain the real native iterator with the producer's optimizer-step boundaries."""
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: SimpleNamespace(vpp_size=1))
+    data = {**critic, "row_indices": list(range(len(critic["tokens"])))}
+    [iterator], counts, rollouts = data_utils.get_critic_train_schedule(
+        args, data, rollout_id=0, num_rollouts=critic["num_rollouts"]
+    )
+    assert iterator.micro_batch_indices is critic["micro_batch_indices"]
+    assert counts == critic["num_microbatches"] and rollouts == critic["num_rollouts"]
+    return [
+        [row for _ in range(count) for row in iterator.get_next(["row_indices"])["row_indices"]] for count in counts
+    ]
+
+
+def _step_groups(critic, indices):
+    # Actor-summary keeps several independent rows for one response. Count each
+    # logical response only once when checking complete global prompt groups.
+    groups = {critic["rollout_ids"][index]: critic["prompt_group_ids"][index] for index in indices}
+    return list(groups.values())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
 @pytest.mark.parametrize("dp_size", [2, 4])
@@ -127,13 +149,14 @@ async def test_group_variance_four_steps_and_actor_filter_survive_executor_pack_
             assert "critic_minibatch_indices" not in actor
             assert critic["num_rollouts"] == [128] * 4
             assert critic["num_microbatches"] == [128 // dp_size] * 4
-            schedule = critic["critic_minibatch_indices"]
-            assert [len(batch) for batch in schedule] == [128 // dp_size] * 4
-            assert sorted(index for batch in schedule for index in batch) == list(range(512 // dp_size))
+            assert "critic_minibatch_indices" not in critic
+            schedule = _critic_steps(monkeypatch, executor.args, critic)
+            assert [len(_step_groups(critic, batch)) for batch in schedule] == [128 // dp_size] * 4
+            assert sorted(index for batch in schedule for index in batch) == list(range(len(critic["tokens"])))
             assert set(actor["rollout_ids"]) == set(critic["rollout_ids"])
-            seen_episodes.extend(critic["rollout_ids"])
+            seen_episodes.extend(set(critic["rollout_ids"]))
             for step, indices in enumerate(schedule):
-                groups_per_step[step].update(critic["prompt_group_ids"][index] for index in indices)
+                groups_per_step[step].update(_step_groups(critic, indices))
             for shard in (actor, critic):
                 assert shard["critic_loss_weights"] == pytest.approx(
                     [expected_weights[group] for group in shard["prompt_group_ids"]]
@@ -164,7 +187,7 @@ async def test_group_variance_four_steps_and_actor_filter_survive_executor_pack_
             )
             with sibling_result:
                 assert sibling["rollout_ids"] == critic["rollout_ids"]
-                assert sibling["critic_minibatch_indices"] == schedule
+                assert sibling["micro_batch_indices"] == critic["micro_batch_indices"]
     assert sorted(seen_episodes) == list(range(1000, 1512))
     assert [len(groups) for groups in groups_per_step] == [8] * 4
     assert all(set(groups.values()) == {16} for groups in groups_per_step)
@@ -194,10 +217,10 @@ async def test_prompt_groups_can_span_dp_ranks_with_equal_episode_batches(monkey
             assert actor["num_microbatches"] == [24]
             assert critic["num_rollouts"] == [48] * 4
             assert critic["num_microbatches"] == [6] * 4
-            seen.extend(critic["rollout_ids"])
-            for step, indices in enumerate(critic["critic_minibatch_indices"]):
-                assert len(indices) == 6
-                groups_per_step[step].update(critic["prompt_group_ids"][index] for index in indices)
+            seen.extend(set(critic["rollout_ids"]))
+            for step, indices in enumerate(_critic_steps(monkeypatch, executor.args, critic)):
+                assert len(_step_groups(critic, indices)) == 6
+                groups_per_step[step].update(_step_groups(critic, indices))
     assert len(seen) == len(set(seen)) == 192
     assert [len(groups) for groups in groups_per_step] == [3] * 4
     assert all(set(groups.values()) == {16} for groups in groups_per_step)
@@ -206,77 +229,56 @@ async def test_prompt_groups_can_span_dp_ranks_with_equal_episode_batches(monkey
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
-async def test_packed_conversion_trains_real_memory_critic_and_returns_actor_ordered_old_values(monkeypatch, mode):
+async def test_native_value_loss_consumes_global_weights_with_each_steps_token_mean(monkeypatch, mode):
     samples, _ = _samples()
     groups = {100 + group * 7 for group in (0, 8, 16, 24)}
     samples = [sample for sample in samples if sample.group_index in groups and sample.index % 16 in (0, 15)]
-    for sample in samples:
-        sample.tokens = [token % 128 for token in sample.tokens]
-        sample.critic_tokens = [token % 128 for token in sample.critic_tokens]
-        sample.critic_segments = [
-            {**part, "tokens": [token % 128 for token in part["tokens"]]} for part in sample.critic_segments
-        ]
     executor = _executor(
         monkeypatch, mode=mode, dp_size=1, balance=True, samples=samples, num_groups=4, fanout=2, critic_steps=2
     )
     pack = await executor.get(0)
-    actor, actor_result = process_rollout_data(executor.args, pack.data_ref, 0, 1, witness_info=None)
-    critic, critic_result = process_rollout_data(executor.args, pack.for_critic().data_ref, 0, 1, witness_info=None)
-    with actor_result, critic_result:
+    critic, result = process_rollout_data(executor.args, pack.for_critic().data_ref, 0, 1, witness_info=None)
+    with result:
         assert max(critic["critic_loss_weights"]) > 2 * min(critic["critic_loss_weights"])
-        episodes = [
-            MemoryEpisode([Segment(**part) for part in segments], reward)
-            for segments, reward in zip(critic["critic_segments"], critic["rewards"], strict=True)
-        ]
-        model = _make_critic()
-        reference = deepcopy(model)
-        frozen = [reference.values(episode, mode=mode, device="cpu") for episode in episodes]
-        optimizer = _optimizer(reference.parameters())
-        for indices in critic["critic_minibatch_indices"]:
-            optimizer.zero_grad()
-            count = sum(sum(segment.loss_mask) for index in indices for segment in episodes[index].segments)
-            loss = sum(
-                _reference_loss(
-                    reference,
-                    episodes[index],
-                    frozen[index],
-                    mode=mode,
-                    weight=critic["critic_loss_weights"][index],
-                    count=count,
-                )
-                for index in indices
+        steps = _critic_steps(monkeypatch, executor.args, critic)
+        args = SimpleNamespace(critic_return_std_floor=0.075, value_clip=0.2, value_loss_coef=0.5)
+        for indices in steps:
+            lengths = [critic["response_lengths"][index] for index in indices]
+            masks = torch.cat([torch.tensor(critic["loss_masks"][index], dtype=torch.bool) for index in indices])
+            weights = torch.tensor([critic["critic_loss_weights"][index] for index in indices])
+            rewards = torch.tensor([critic["rewards"][index] for index in indices])
+            count = masks.sum()
+            # Distinct rows exercise weight expansion over unequal response
+            # lengths, while large deltas activate the original clipped loss.
+            old = [torch.full((length,), 0.4) for length in lengths]
+            current = [torch.full((length,), 0.9, requires_grad=True) for length in lengths]
+            batch = {
+                "values": old,
+                "returns": [reward.expand(length) for reward, length in zip(rewards, lengths, strict=True)],
+                "critic_loss_weights": weights,
+                "unconcat_tokens": [critic["tokens"][index] for index in indices],
+                "total_lengths": [critic["total_lengths"][index] for index in indices],
+                "response_lengths": lengths,
+            }
+            monkeypatch.setattr(native_losses, "get_values", lambda *a, current=current, **k: {"values": current})
+            loss, _ = native_losses.value_loss_function(
+                args, batch, torch.empty(0), lambda errors, masks=masks, count=count: errors[masks].sum() / count
             )
+            # With old=.4 and current=.9, clipping at .2 gives .6. Compute
+            # per-row expected loss independently of native weight expansion.
+            expected = (
+                sum(
+                    weight
+                    * max(float((0.9 - reward) ** 2), float((0.6 - reward) ** 2))
+                    * sum(critic["loss_masks"][index])
+                    for weight, reward, index in zip(weights, rewards, indices, strict=True)
+                )
+                * 0.5
+                / count
+            )
+            torch.testing.assert_close(loss.detach(), expected)
             loss.backward()
-            optimizer.step(clip_grad=0.25)
-        trained = train_memory_minibatches(
-            model,
-            _optimizer(model.parameters()),
-            episodes,
-            minibatch_indices=critic["critic_minibatch_indices"],
-            loss_weights=critic["critic_loss_weights"],
-            mode=mode,
-            device="cpu",
-            value_clip=0.2,
-            loss_coef=0.5,
-            learning_rate=0.03,
-            warmup_steps=0,
-            optimizer_steps=0,
-            clip_grad=0.25,
-        )
-        assert trained.optimizer_steps == 2
-        for actual, expected in zip(model.parameters(), reference.parameters(), strict=True):
-            torch.testing.assert_close(actual, expected, atol=2e-4, rtol=3e-3)
-        flattened = [
-            flatten_episode_values(episode, values) for episode, values in zip(episodes, trained.values, strict=True)
-        ]
-        shipped = [flattened[index][start : start + length] for index, start, length in critic["value_slices"]]
-        local = {rollout: index for index, rollout in enumerate(critic["rollout_ids"])}
-        segments_by_actor = {
-            (sample.rollout_id, tuple(sample.tokens)): sample.metadata["segment"] for sample in samples
-        }
-        for rollout, tokens, value in zip(actor["rollout_ids"], actor["tokens"], shipped, strict=True):
-            segment = segments_by_actor[rollout, tuple(tokens)]
-            torch.testing.assert_close(value, frozen[local[rollout]][segment], atol=0, rtol=0)
+            assert all(value.grad is not None and torch.isfinite(value.grad).all() for value in current)
 
 
 @pytest.mark.asyncio
@@ -294,9 +296,11 @@ async def test_all_truncated_warmup_preserves_all_critic_episodes_for_training(m
         with result:
             assert all(critic["truncated"])
             assert all(any(mask) for mask in critic["loss_masks"])
-            assert [len(batch) for batch in critic["critic_minibatch_indices"]] == [32] * 4
+            assert [
+                len(_step_groups(critic, batch)) for batch in _critic_steps(monkeypatch, executor.args, critic)
+            ] == [32] * 4
             assert all(weight > 0 for weight in critic["critic_loss_weights"])
-            seen.extend(critic["rollout_ids"])
+            seen.extend(set(critic["rollout_ids"]))
     assert sorted(seen) == list(range(1000, 1512))
     assert executor.args.filter_truncated_in_actor_loss  # Warmup cannot change future actor conversions.
 

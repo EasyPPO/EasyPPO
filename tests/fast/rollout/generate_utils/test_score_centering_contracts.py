@@ -185,6 +185,88 @@ def test_zero_token_completion_accepts_missing_candidate_fields(mode: str) -> No
     assert sample.rollout_topk_log_probs.shape == (0, 3)
 
 
+def test_selected_candidates_keep_framework_truncation_and_numpy_integer_contract() -> None:
+    sample = Sample()
+    append_rollout_topk_logprobs(
+        sample,
+        {
+            "output_token_logprobs": [(-0.5, np.int64(7))],
+            "output_top_logprobs": [[(-0.5, np.int32(7)), (-2.0, 8), (float("nan"), True)]],
+        },
+        2,
+    )
+    np.testing.assert_array_equal(sample.rollout_topk_token_ids, [[7, 8]])
+    np.testing.assert_allclose(sample.rollout_topk_log_probs, [[-0.5, -2.0]])
+    assert sample.rollout_topk_token_ids.dtype == np.int32
+    assert sample.rollout_topk_log_probs.dtype == np.float32
+
+
+@pytest.mark.parametrize("mode", ["selected", "support"])
+@pytest.mark.parametrize(
+    "token,logp,match",
+    [
+        (True, -0.5, "invalid token ID"),
+        (np.bool_(True), -0.5, "invalid token ID"),
+        (7.0, -0.5, "invalid token ID"),
+        (-1, -0.5, "invalid token ID"),
+        (2**31, -0.5, "invalid token ID"),
+        (7, True, "invalid log probability"),
+        (7, float("nan"), "invalid log probability"),
+        (7, float("inf"), "invalid log probability"),
+        (7, 0.1, "invalid log probability"),
+        (7, -1e100, "invalid log probability"),
+    ],
+)
+def test_candidate_wire_values_are_checked_before_packing(mode: str, token, logp, match: str) -> None:
+    meta = {"output_token_logprobs": [(-0.5, 7)]}
+    if mode == "support":
+        meta.update(output_token_sampling_mask=[[token]], output_token_sampling_logprobs=[[logp]])
+    else:
+        meta["output_top_logprobs"] = [[(logp, token)]]
+    sample = Sample()
+    with pytest.raises(ValueError, match=match):
+        append_rollout_topk_logprobs(sample, meta, 2, sampling_logprobs_mode=mode)
+    assert sample.rollout_topk_token_ids is None
+    assert sample.rollout_topk_log_probs is None
+
+
+@pytest.mark.parametrize("token", [True, np.bool_(True), 7.0, -1, 2**31])
+def test_sampled_wire_ids_are_not_silently_coerced(token) -> None:
+    with pytest.raises(ValueError, match="invalid token ID"):
+        append_rollout_topk_logprobs(
+            Sample(),
+            {"output_token_logprobs": [(-0.5, token)], "output_top_logprobs": [[(-0.5, 7)]]},
+            2,
+        )
+
+
+@pytest.mark.parametrize(
+    "ids,logps,match",
+    [
+        ([[7.0, -1.0]], [[-0.5, -np.inf]], "int32 IDs"),
+        ([[7, -2]], [[-0.5, -np.inf]], "int32 IDs"),
+        ([[7, 2**31]], [[-0.5, -2.0]], "int32 IDs"),
+        ([[7, -1]], [[-0.5, 0.0]], "padding"),
+        ([[7, 8]], [[-0.5, np.nan]], "finite"),
+        ([[7, 8]], [[-0.5, -np.inf]], "finite"),
+        ([[7, 8]], [[-0.5, 0.1]], "nonpositive"),
+        ([[7, 8]], [[-0.5, -1e100]], "float32"),
+        ([[7, 8]], [[-0.5, -0.5]], "probability mass"),
+    ],
+)
+def test_ci_validation_checks_restored_candidate_values(ids, logps, match: str) -> None:
+    sample = Sample(
+        tokens=[0, 7],
+        response_length=1,
+        loss_mask=[1],
+        rollout_log_probs=[-0.5],
+        rollout_topk_token_ids=np.asarray(ids),
+        rollout_topk_log_probs=np.asarray(logps),
+    )
+    with pytest.raises(ValueError, match=match):
+        validate_rollout_topk_logprobs_sample(sample, 2)
+
+
 @pytest.mark.parametrize("support", [False, True])
 @pytest.mark.parametrize("candidates", [[2, 2, -1], [-1, 3, 3], [2, 3, 2]])
 def test_duplicate_candidates_are_rejected(support: bool, candidates: list[int]) -> None:

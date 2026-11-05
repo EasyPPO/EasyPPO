@@ -14,6 +14,7 @@ pytest.importorskip("harbor")
 
 from agentic_critic import harbor_terminal, miles_terminal
 from agentic_critic.terminal_env import Completion, TerminalAgent, TerminalConfig, TerminalTrace
+from miles.rollout.generate_utils import rollout_topk_logprobs
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils import http_utils
 from miles.utils.types import Sample
@@ -99,6 +100,11 @@ def _assert_candidates(sample: Sample, k: int = 3):
 @pytest.mark.asyncio
 async def test_topk_survives_real_wrapper_summary_and_masked_glue(monkeypatch, tmp_path):
     _task(tmp_path)
+    monkeypatch.setattr(
+        rollout_topk_logprobs,
+        "validate_rollout_topk_logprobs_sample",
+        lambda *args: pytest.fail("Production terminal generation must defer full distribution checks to CI"),
+    )
     replies = [
         _reply("```bash\ninspect\n```"),
         _reply("Progress: inspected. Next submit."),
@@ -225,16 +231,13 @@ def test_training_rejects_support_mode_and_nonunit_temperature(tmp_path):
     [
         (None, "output_top_logprobs"),
         ([], "output_top_logprobs"),
-        ([[]], "Every trained token"),
-        ([[(-0.5, 7), (-1.5, 7)]], "Duplicate"),
         ([[(-0.5, 7.0)]], "invalid.*token ID"),
         ([[(-0.5, -2)]], "invalid.*token ID"),
         ([[(float("nan"), 7)]], "invalid.*log probability"),
         ([[(float("inf"), 7)]], "invalid.*log probability"),
         ([[(0.1, 7)]], "invalid.*log probability"),
-        ([[(-0.7, 7)]], "same sampler"),
-        ([[(-0.5, 7), (-2.0, 8), (-3.0, 9)]], "more top-k"),
         ([[(-0.5, True)]], "invalid.*token ID"),
+        ([[(-1e100, 7)]], "invalid.*log probability"),
     ],
 )
 def test_malformed_candidate_side_channels_fail(rows, match):
@@ -250,7 +253,7 @@ def test_malformed_candidate_side_channels_fail(rows, match):
         miles_terminal._completion_from_output(output, candidate_count=2)
 
 
-def test_trace_refuses_missing_changed_or_invalid_candidate_arrays():
+def test_trace_refuses_missing_or_misaligned_candidate_arrays():
     valid = Completion(
         [7],
         [-0.5],
@@ -264,15 +267,39 @@ def test_trace_refuses_missing_changed_or_invalid_candidate_arrays():
         replace(valid, topk_token_ids=None, topk_log_probs=None),
         replace(valid, topk_log_probs=None),
         replace(valid, topk_token_ids=np.asarray([[7, 8, -1]]), topk_log_probs=np.asarray([[-0.5, -2.0, -np.inf]])),
-        replace(valid, topk_log_probs=np.asarray([[-0.5, 0.0]])),
-        replace(valid, topk_token_ids=np.asarray([[7, 8]]), topk_log_probs=np.asarray([[-0.5, -0.5]])),
-        replace(valid, topk_token_ids=np.asarray([[7.0, -1.0]])),
-        replace(valid, topk_token_ids=np.asarray([[7, 8]]), topk_log_probs=np.asarray([[-0.5, -1e100]])),
+        replace(valid, topk_token_ids=np.asarray([[7], [8]]), topk_log_probs=np.asarray([[-0.5], [-2.0]])),
+        replace(valid, topk_log_probs=np.asarray([[-0.5]])),
     ):
         with pytest.raises(ValueError):
             trace.record([1, 7, 2], invalid, kind="summary")
     assert trace.segments[0].tokens == [1, 7]
     assert trace.generated_tokens == 1
+
+
+@pytest.mark.parametrize(
+    "rows,match",
+    [
+        ([[]], "Every trained token"),
+        ([[(-0.5, 7), (-1.5, 7)]], "Duplicate"),
+        ([[(-0.7, 7)]], "same sampler"),
+        ([[(-0.5, 7), (-0.5, 8)]], "probability mass"),
+    ],
+)
+def test_distribution_checks_are_deferred_to_shared_ci_validation(rows, match):
+    output = {
+        "text": "x",
+        "meta_info": {
+            "output_token_logprobs": [(-0.5, 7, None)],
+            "output_top_logprobs": rows,
+            "finish_reason": {"type": "stop"},
+        },
+    }
+    reply = miles_terminal._completion_from_output(output, candidate_count=2)
+    trace = TerminalTrace()
+    trace.record([1], reply, kind="action")
+    sample = Sample.from_dict({"status": "completed", **trace.sample_fields()[0]})
+    with pytest.raises(ValueError, match=match):
+        validate_rollout_topk_logprobs_sample(sample, 2)
 
 
 def test_sampled_token_outside_topk_is_not_added_to_candidates():

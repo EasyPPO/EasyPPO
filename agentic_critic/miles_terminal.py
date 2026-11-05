@@ -132,45 +132,15 @@ def _validate_topk_sampling(sampling: dict) -> None:
 
 def _completion_from_output(output: dict, *, candidate_count: int) -> Completion:
     info = output["meta_info"]
-    items = info.get("output_token_logprobs") or []
-    tokens, logprobs = [x[1] for x in items], [x[0] for x in items]
     candidates = {}
     if candidate_count:
         # Optional framework imports are needed only for the candidate feature.
-        from miles.rollout.generate_utils.rollout_topk_logprobs import (
-            append_rollout_topk_logprobs,
-            validate_rollout_topk_logprobs_sample,
-        )
-        from miles.utils.types import Sample
+        from miles.rollout.generate_utils.rollout_topk_logprobs import extract_rollout_topk_logprobs
 
-        # Validate the wire values before the production helper packs them into
-        # int32/float32 arrays; packing must not silently coerce invalid IDs.
-        rows = info.get("output_top_logprobs")
-        if rows is not None and not isinstance(rows, (list, tuple)):
-            raise ValueError("Terminal server returned an invalid top-k candidate array")
-        if any(type(token) is not int or not 0 <= token < 2**31 for token in tokens):
-            raise ValueError("Terminal server returned an invalid sampled token ID")
-        if any(type(logp) not in (int, float) or not math.isfinite(logp) or logp > 0 for logp in logprobs):
-            raise ValueError("Terminal server returned an invalid sampled-token log probability")
-        for entries in rows or []:
-            if not isinstance(entries, (list, tuple)) or len(entries) > candidate_count:
-                raise ValueError("Terminal server returned more top-k candidates than requested")
-            for entry in entries:
-                if (
-                    not isinstance(entry, (list, tuple))
-                    or len(entry) < 2
-                    or type(entry[1]) is not int
-                    or not 0 <= entry[1] < 2**31
-                ):
-                    raise ValueError("Terminal server returned an invalid top-k candidate token ID")
-                if type(entry[0]) not in (int, float) or not math.isfinite(entry[0]) or entry[0] > 0:
-                    raise ValueError("Terminal server returned an invalid top-k candidate log probability")
-        sample = Sample(
-            tokens=tokens, response_length=len(tokens), loss_mask=[1] * len(tokens), rollout_log_probs=logprobs
-        )
-        append_rollout_topk_logprobs(sample, info, candidate_count)
-        validate_rollout_topk_logprobs_sample(sample, candidate_count)
-        candidates = {"topk_token_ids": sample.rollout_topk_token_ids, "topk_log_probs": sample.rollout_topk_log_probs}
+        ids, logps = extract_rollout_topk_logprobs(info, candidate_count)
+        candidates = {"topk_token_ids": ids, "topk_log_probs": logps}
+    items = info.get("output_token_logprobs") or []
+    tokens, logprobs = [x[1] for x in items], [x[0] for x in items]
     return Completion(
         tokens=tokens,
         logprobs=logprobs,
@@ -294,10 +264,6 @@ async def generate(input):
             raise ValueError("Terminal rollouts require a sample index or rollout_id")
         for name, value in sample_fields.items():
             setattr(sample, name, value)
-        if candidate_count:
-            from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-
-            validate_rollout_topk_logprobs_sample(sample, candidate_count)
         sample.response = input.state.tokenizer.decode(sample.tokens[-sample.response_length :])
         sample.reward = reward
         sample.status = Sample.Status.TRUNCATED if trace.truncated else Sample.Status.COMPLETED

@@ -12,11 +12,14 @@ from transformers.activations import ACT2FN
 
 try:
     from fla.modules import FusedRMSNormGated, ShortConvolution
+    from fla.modules.conv import causal_conv1d
 except ImportError:
     pass
 
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
+from miles_plugins.models.detached_memory import detached_stateful_segments, memory_segments
+from miles_plugins.models.qwen3_5_memory import DetachedMemoryDotProductAttention
 
 from .hf_attention import HuggingfaceAttention
 from .qwen_gdn_backend import get_chunk_gated_delta_rule
@@ -101,6 +104,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor = None,
+        packed_seq_params=None,
     ):
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -113,6 +117,39 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
+        segments = memory_segments(packed_seq_params, seq_len)
+        if segments is None:
+            core_attn_out = self._core_forward(mixed_qkv, a, b, cu_seqlens, cp_context)
+        else:
+            if batch_size != 1 or cp_context is not None:
+                raise ValueError("Detached critic GDN requires a packed batch with CP=1")
+            if self.gdn_backend != "fla":
+                raise ValueError("Detached critic GDN requires the FLA backend")
+            core_attn_out = self._memory_core(mixed_qkv, a, b, segments)
+
+        z_shape_og = z.shape
+        # reshape input data into 2D tensor
+        core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
+        z = z.reshape(-1, z.shape[-1])
+        core_attn_out = self.norm(core_attn_out, z)
+        core_attn_out = core_attn_out.reshape(z_shape_og)
+        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+
+        output = self.out_proj(core_attn_out)
+        return output
+
+    def _split_qkv(self, mixed_qkv):
+        batch_size, seq_len, _ = mixed_qkv.shape
+        query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
+        query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
+        key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
+        value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
+        if self.num_v_heads // self.num_k_heads > 1:
+            query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+            key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+        return query, key, value
+
+    def _core_forward(self, mixed_qkv, a, b, cu_seqlens, cp_context):
         # Convolution on the flat QKV (pass cp_context for boundary handling)
         conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
         mixed_qkv, _ = self.conv1d(
@@ -121,22 +158,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             cp_context=cp_context,
         )
 
-        # Split into Q, K, V (flat split, matching HF layout)
-        query, key, value = torch.split(
-            mixed_qkv,
-            [self.key_dim, self.key_dim, self.value_dim],
-            dim=-1,
-        )
-        query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
-        key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
-        value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
+        query, key, value = self._split_qkv(mixed_qkv)
 
         beta = b.sigmoid()
         # If the model is loaded in fp16, without the .float() here, A might be -inf
         g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
-        if self.num_v_heads // self.num_k_heads > 1:
-            query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
-            key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         if cp_context is not None:
             if self.gdn_backend != "fla":
@@ -172,16 +198,43 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 cu_seqlens=cu_seqlens,
             )
 
-        z_shape_og = z.shape
-        # reshape input data into 2D tensor
-        core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
-        z = z.reshape(-1, z.shape[-1])
-        core_attn_out = self.norm(core_attn_out, z)
-        core_attn_out = core_attn_out.reshape(z_shape_og)
-        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+        return core_attn_out
 
-        output = self.out_proj(core_attn_out)
-        return output
+    def _memory_core(self, mixed_qkv, a, b, segments):
+        if self.conv1d.backend != "triton":
+            raise ValueError("Detached critic convolution requires FLA_CONV_BACKEND=triton")
+        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+        beta = b.sigmoid()
+
+        def step(start, end, state):
+            conv_state, recurrent_state = (None, None) if state is None else state
+            # Use FLA's training convolution directly: ShortConvolution.forward
+            # dispatches a one-token segment to its in-place decode/update path.
+            # The Triton training op supports initial-state gradients and leaves
+            # the supplied detached state unchanged during checkpoint replay.
+            own_qkv, conv_state = causal_conv1d(
+                x=mixed_qkv[:, start:end],
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                initial_state=conv_state,
+                output_final_state=True,
+                activation=self.conv1d.activation,
+                backend="triton",
+            )
+            query, key, value = self._split_qkv(own_qkv)
+            output, recurrent_state = self.chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g[:, start:end],
+                beta=beta[:, start:end],
+                initial_state=recurrent_state,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=True,
+            )
+            return output, (conv_state, recurrent_state)
+
+        return detached_stateful_segments(segments, step)
 
 
 class Attention(HuggingfaceAttention):
@@ -223,6 +276,7 @@ class Attention(HuggingfaceAttention):
         hidden_states = self.linear_attn(
             hidden_states=hidden_states,
             cu_seqlens=packed_seq_params.cu_seqlens_q,
+            packed_seq_params=packed_seq_params,
         )
         return hidden_states
 
@@ -264,5 +318,13 @@ def get_qwen3_5_spec(args, config, vp_stage):
                 module=Attention,
                 params={"args": args},
             )
+            transformer_layer_spec.layer_specs[layer_id] = layer_specs
+        elif getattr(args, "critic_context_mode", "shared") == "full_detach":
+            layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
+            attention_spec = layer_specs.submodules.self_attention.submodules
+            if isinstance(attention_spec.core_attention, ModuleSpec):
+                attention_spec.core_attention.module = DetachedMemoryDotProductAttention
+            else:
+                attention_spec.core_attention = DetachedMemoryDotProductAttention
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
     return transformer_layer_spec

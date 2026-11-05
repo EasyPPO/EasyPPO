@@ -13,7 +13,7 @@ specifies the current training behavior shared by those commands.
 | [`run_qwen3_5_27b_sync_frontiersmith.py`](run_qwen3_5_27b_sync_frontiersmith.py) | [`train.py`](../../train.py), synchronous | Clipped PPO; FrontierSmith → Frontier-CS |
 | [`run_qwen3_5_27b_sync_tmax.py`](run_qwen3_5_27b_sync_tmax.py) | [`train.py`](../../train.py), synchronous | Clipped PPO; TMAX → TB2.1 |
 
-All four launchers use an independent HF memory critic and accept
+All four launchers use an independent Megatron critic and accept
 `--critic-context-mode full_detach|actor-summary`. A run trains one critic in
 one selected mode. They share data preparation, rewards, batching, optimizer,
 token budgets, validation, and checkpoint conventions. Async defaults to
@@ -24,8 +24,9 @@ The launch interface is the same shape, with the dataset selected by filename.
 
 The model is `Qwen/Qwen3.5-27B`, pinned to HF revision
 `fc05daec18b0a78c049392ed2e771dde82bdf654`. The Megatron actor uses the converted
-checkpoint. The critic starts from its text backbone and a separate scalar
-value head. Its parameters, optimizer, and memory are independent of the actor.
+checkpoint. The critic loads the same converted reference backbone through the
+native model loader and uses a separate scalar value head. Its parameters,
+optimizer, scheduler, and memory are independent of the actor.
 
 | Dataset | Training | Full evaluation | Source version |
 |---|---:|---:|---|
@@ -56,7 +57,7 @@ with one optimizer update per mini-batch. A prompt group stays within one
 critic update. Its episodes can occupy different DP shards; each episode's
 segments retain matching actor/value placement.
 
-With PP=CP=1, let `D=trainer_GPUs/actor_TP`, `P` be accepted prompt groups,
+With PP=CP=1, let `D=trainer_GPUs/TP`, `P` be accepted prompt groups,
 `n` episodes per group, and `K` critic steps. The batch constraints are:
 
 ```text
@@ -72,6 +73,11 @@ are independent of the total GPU count and number of rollout engines.
 An episode can produce multiple physical actor samples after compaction.
 Those segments share one terminal reward, episode identity, and critic weight.
 They do not increase the logical batch or count as independent return samples.
+
+Episode ownership and the four prompt-group mini-batches are expressed through
+the existing `micro_batch_indices`, `num_microbatches`, and `num_rollouts`
+schedule fields. Actor and critic segments of one episode share DP placement;
+`value_slices` maps the native critic outputs back to the actor response spans.
 
 The default run contains 200 outer rounds. Rounds 1–30 train only the critic;
 the first actor update is round 31. This gives **800 critic updates and 170 actor
@@ -193,14 +199,23 @@ gradient-norm clipping at 1. Dropout is zero.
 ## Critic memory and token alignment
 
 **`actor-summary`** reads the actor's actual context for each segment: the task,
-current summary, and local conversation. Attention KV, recurrent state, and
-convolution state are reset between segments.
+current summary, and local conversation. Each segment is a separate native
+packed-sequence row, with its own attention and GDN sequence boundaries.
+Segments from one episode occupy the same micro-batch, and attention KV,
+convolution state, and recurrent state start fresh for each segment.
 
-**`full_detach`** retains the critic's own attention KV, recurrent state, and
-convolution state across segments. All three are detached at the segment
-boundary. Later segments can use earlier information without backpropagating
-through earlier segments. The backbone and value head remain trainable within
-each segment.
+**`full_detach`** reads the critic's chronological episode stream as one native
+packed sequence. Its `critic_segment_lengths` describe the compaction
+boundaries. Qwen3.5 full-attention layers detach the history K/V before each
+segment and call Transformer Engine's existing SBHD bottom-right causal
+attention kernel. The current segment's K/V remain trainable. GDN layers call
+the existing FLA convolution and recurrent kernels, detaching both state tensors
+between segments. Later segments can use earlier information while gradients
+remain within their own segment.
+
+Memory is local to one forward and is reconstructed from that forward's inputs
+and critic weights. The framework's activation recomputation repeats the same
+forward; pre-update scoring and each optimizer step build their own memory.
 
 After explicit actor compaction, the critic's chronological stream uses a
 short continuation instead of a second system/task/summary resume prompt.
@@ -218,6 +233,15 @@ Generated action and summary tokens have mask 1. Tool outputs, template glue,
 and summary copies in subsequent inputs have mask 0. The trace stores exact
 response spans and candidate rows; masked gaps use `-1/-inf` sentinels.
 Candidates are stored in `easyppo-topk.npz` alongside the trajectory JSON.
+
+Both roles use the standard `MegatronTrainRayActor`. Miles/Megatron provide
+the optimizer and scheduler, TP/DP execution, gradient reduction and clipping,
+CPU offload, activation recomputation, `value_loss`, metrics, and checkpoint
+loading/saving. The recipe extensions supply episode samples and value spans,
+the prompt-group schedule and inverse-STD numerator weights, and the detach
+boundaries inside the existing Qwen3.5 layers. Top-k wire validation and
+observation-gap merging use the shared rollout helpers; complete candidate
+distribution validation follows the framework's `--ci-test` gate.
 
 ## Context, summaries, and generation budget
 
@@ -240,9 +264,9 @@ per tool output. Harbor's task-specific agent/verifier timeouts also apply.
 
 The **262144-token training packing budget** checks the critic's history and
 the total actor-segment length for an episode. Tool outputs and repeated actor
-contexts count toward training length. Segments are packed into the same actor
-forward; full-detach memory also grows with episode history. Over-budget
-training episodes raise an explicit error.
+contexts count toward training length. Actor segments of one episode are
+packed into the same micro-batch; full-detach memory also grows with episode
+history. Over-budget training episodes raise an explicit error.
 
 At K128, the candidate IDs and FP32 log-probs occupy about 1 KiB per response
 position. A batch with 512 episodes generating 120000 tokens each needs about
@@ -251,7 +275,7 @@ and logs. Plan shared storage and host memory for the actual response length.
 
 ## GPU allocation and offload
 
-| Recipe / allocation | Actor training | Rollout |
+| Recipe / allocation | Actor and critic training pool | Rollout |
 |---|---|---|
 | Async default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
 | Sync default: 4 nodes × 8 B200 | 8 GPUs, TP4 × DP2, PP=CP=1 | 24 GPUs, 6 TP4 engines |
@@ -265,18 +289,19 @@ The global actor batch remains 512 episodes and each critic mini-batch remains
 128 episodes in both defaults. Async DP4 assigns 128 actor episodes per
 logical DP shard per round and 32 per critic step. Sync DP2 assigns 256 actor
 episodes per logical DP shard per round and 64 per critic step. TP siblings
-replicate the shard's data.
+consume matching shard inputs.
 
-The independent HF critic runs sequentially on the training GPUs. Each rank
-holds a full BF16 forward model and gradients; `A_log` stays FP32 from load.
-FP32 master weights and Adam moments are sharded on CPU. Gradient reduction
-uses bounded FP32 chunks, followed by global clipping, owner updates, and
-parameter broadcasts. Actor TP siblings duplicate the critic forward;
-gradient and token-count normalization account for that duplication.
+Actor and critic both use native Megatron TP4, with DP4 for async and DP2 for
+sync. Each layer follows the framework's existing tensor-parallel behavior,
+including the Qwen3.5 GDN module. The two roles alternate residency on the
+shared training pool through native CPU offload.
 
-Actor training uses sequence parallelism, a distributed optimizer, and
-full-layer recomputation. Actor/critic CPU offload alternates their GPU
-residency. Each training node should budget roughly 1.5–2 TB host RAM.
+Training uses sequence parallelism, a distributed optimizer, full-layer
+activation recomputation, and the native CPU optimizer settings
+`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
+Host-memory requirements depend on the model, optimizer, offload configuration,
+and episode lengths.
+
 SGLang uses a static memory fraction of .7 and concurrency 128 per engine.
 Docker sandboxes and judges consume additional CPU/RAM on rollout hosts.
 
@@ -309,18 +334,24 @@ returned episodes, and `eval/<name>/num_training_samples`, the number of physica
 segments. The top-level `eval/<name>` is a row mean, and
 `eval/<name>-none_reward_ratio` records missing row rewards.
 
-Actor and critic checkpoints are separate. Native critic checkpoints include
-model/head, FP32 CPU master/Adam state, RNG, outer/update counters, and context
-mode/topology. Resume uses the same run ID plus its explicit `--critic-load`,
-with unchanged trainer world size, actor TP, and critic mode. A fresh run can
-load critic weights with `--critic-weights-only`; this refreshes master weights
-and starts new optimizer/step state. See the [resume commands](../../README.md#6-evaluate-and-resume).
+Actor and critic use separate native Megatron checkpoint directories,
+`checkpoints` and `checkpoints_critic`, with model/head, optimizer, scheduler,
+RNG, and iteration state managed by the framework. Resume uses the same run ID,
+trainer topology, and critic mode; both roles resolve their own checkpoint
+directory automatically. When no saved iteration exists, native loading falls
+back to the converted reference checkpoint for initialization.
+
+For a new run, `--critic-load <source-run>/checkpoints_critic --critic-weights-only`
+loads the critic weights through native finetune semantics with fresh
+optimizer/step state. See the [resume commands](../../README.md#6-evaluate-and-resume).
 
 ## Validation status
 
-CPU regression exercises memory/value alignment, four-step critic scheduling,
-CPU optimizer/checkpoint behavior, terminal cleanup, data conversion, and the
+CPU tests cover episode/value alignment, native schedule contracts, detached
+memory gradients with kernel stubs, terminal cleanup, data conversion, and the
 official SC probability/loss pipeline. Long-budget tests exercise the real
-terminal loop with stub decoding. Full 27B GPU forward, target-cluster judges,
-B200 long-sequence capacity, offload timing, and throughput remain cluster
-validation tasks.
+terminal loop with stub decoding.
+
+Full 27B GPU training, native TE/FLA execution and checkpoint reload, offload
+capacity and timing, target-cluster judges, and throughput still require
+validation on the target GPU cluster.

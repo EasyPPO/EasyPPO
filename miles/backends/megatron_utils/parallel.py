@@ -106,6 +106,7 @@ class PackedSeqParamsWithHostCuSeqlens(PackedSeqParams):
     """``PackedSeqParams`` plus the host copy of ``cu_seqlens_q`` that ``get_batch`` already built."""
 
     cu_seqlens_host: tuple[int, ...] = field(kw_only=True)
+    critic_segment_lengths: tuple[tuple[int, ...], ...] | None = field(default=None, kw_only=True)
 
 
 def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> PackedSeqParams:
@@ -117,6 +118,11 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
             max_seqlen_kv=batch["max_seqlen"],
             qkv_format="thd",
             cu_seqlens_host=batch["cu_seqlens_host"],
+            critic_segment_lengths=(
+                tuple(tuple(own) for own in batch["critic_segment_lengths"])
+                if "critic_segment_lengths" in batch
+                else None
+            ),
         )
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params

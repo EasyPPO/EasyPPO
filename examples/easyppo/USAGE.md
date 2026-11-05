@@ -1,7 +1,8 @@
 # EasyPPO on Miles
 
-This branch is a standalone Miles implementation. The root README's verl launch commands apply to the `main` branch. Use
-the commands below for this branch.
+This branch is a standalone Miles implementation. The [root README](../../README.md)
+provides the Qwen3.5-27B terminal training setup and launch commands. This guide
+also covers Frontier-CS episode training and the standalone stored-rollout tools.
 
 ## Included functionality
 
@@ -40,6 +41,9 @@ can instead be selected with `KV_COMPACTION_REPO=/path/to/compaction`.
 For Qwen3.5-27B terminal training with independent `full_detach` /
 `actor-summary` critics, see [RECIPES.md](RECIPES.md). It includes asynchronous
 SC/TIS and synchronous PPO on FrontierSmith → Frontier-CS and TMAX → TB2.1.
+Both training roles use the standard `MegatronTrainRayActor`, native TP4,
+optimizer/scheduler, CPU offload, and checkpoint loading/saving. Resume selects
+the run's `checkpoints` and `checkpoints_critic` directories automatically.
 
 Use the [terminal training guide](TERMINAL.md) for full TMAX training with the
 mini-swe-agent harness, thinking enabled, and official TB2.1 validation.

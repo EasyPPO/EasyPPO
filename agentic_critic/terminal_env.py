@@ -159,65 +159,30 @@ class TerminalTrace:
         ids, logps = np.asarray(ids), np.asarray(logps)
         if ids.ndim != 2 or ids.shape != logps.shape or ids.shape[0] != len(result.tokens) or ids.shape[1] <= 0:
             raise ValueError("Terminal top-k candidate arrays must have shape [generated tokens, candidate count]")
-        if not np.issubdtype(ids.dtype, np.integer) or ((ids < -1) | (ids > np.iinfo(np.int32).max)).any():
-            raise ValueError("Terminal top-k candidate IDs must be nonnegative int32 IDs or -1 padding")
-        if any(
-            isinstance(token, bool)
-            or not isinstance(token, (int, np.integer))
-            or not 0 <= token <= np.iinfo(np.int32).max
-            for token in result.tokens
-        ):
-            raise ValueError("Terminal top-k collection requires nonnegative sampled int32 token IDs")
-        if any(logp > 0 for logp in result.logprobs):
-            raise ValueError("Terminal sampled-token log probabilities must be nonpositive")
-        if not (np.issubdtype(logps.dtype, np.floating) or np.issubdtype(logps.dtype, np.integer)):
-            raise ValueError("Terminal top-k candidate log probabilities must be numeric")
-        valid = ids >= 0
-        if not np.isfinite(logps[valid]).all() or (logps[valid] > 0).any() or not np.isneginf(logps[~valid]).all():
-            raise ValueError(
-                "Terminal top-k candidate log probabilities must be finite and nonpositive; padding is -inf"
-            )
-        if (np.exp(np.where(valid, logps, -np.inf)).sum(-1) > 1.00001).any():
-            raise ValueError("Terminal top-k candidate probability mass exceeds one")
         if self.topk_token_ids is not None and ids.shape[1] != self.topk_token_ids[0].shape[1]:
             raise ValueError("Terminal top-k candidate count changed during the episode")
-        # The candidate path is a Miles training feature. Keep its optional
-        # framework dependency out of standalone terminal use when disabled.
-        from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-        from miles.utils.types import Sample
-
-        validate_rollout_topk_logprobs_sample(
-            Sample(
-                tokens=result.tokens,
-                response_length=len(result.tokens),
-                loss_mask=[1] * len(result.tokens),
-                rollout_log_probs=result.logprobs,
-                rollout_topk_token_ids=ids,
-                rollout_topk_log_probs=logps,
-            ),
-            ids.shape[1],
-        )
-        with np.errstate(over="ignore"):
-            packed_logps = logps.astype(np.float32, copy=True)
-        if not np.isfinite(packed_logps[valid]).all():
-            raise ValueError("Terminal top-k candidate log probabilities must be representable in float32")
-        return ids.astype(np.int32, copy=True), packed_logps
+        # Shared wire extraction checks raw values before packing. Full candidate
+        # distribution checks run in Miles' existing --ci-test conversion path.
+        return ids, logps
 
     def _record_topk(self, candidates: tuple[np.ndarray, np.ndarray] | None, *, gap: int | None) -> None:
         if candidates is None:
             return
-        import numpy as np
+        # Candidate collection is optional for standalone terminal use.
+        from miles.rollout.generate_utils.rollout_topk_logprobs import merge_rollout_topk_logprobs_arrays
 
         if self.topk_token_ids is None:
             self.topk_token_ids, self.topk_log_probs = [], []
-        for segments, values, fill in zip(
-            (self.topk_token_ids, self.topk_log_probs), candidates, (-1, -np.inf), strict=True
+        for segments, values, name in zip(
+            (self.topk_token_ids, self.topk_log_probs),
+            candidates,
+            ("rollout_topk_token_ids", "rollout_topk_log_probs"),
+            strict=True,
         ):
             if gap is None:
                 segments.append(values)
             else:
-                padding = np.full((gap, values.shape[1]), fill, dtype=values.dtype)
-                segments[-1] = np.concatenate((segments[-1], padding, values))
+                segments[-1] = merge_rollout_topk_logprobs_arrays(segments[-1], values, field=name, gap=gap)
 
     def record(self, prompt: list[int], result: Completion, *, kind: str):
         if len(result.tokens) != len(result.logprobs) or not result.tokens:

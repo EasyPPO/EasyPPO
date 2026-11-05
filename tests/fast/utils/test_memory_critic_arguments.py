@@ -43,6 +43,9 @@ def _args(**overrides):
         actor_num_nodes=2,
         actor_num_gpus_per_node=8,
         tensor_model_parallel_size=4,
+        spec=["miles_plugins.models.qwen3_5", "get_qwen3_5_spec"],
+        qkv_format="thd",
+        linear_attention_backend="fla",
     )
     values.update(overrides)
     return Namespace(**values)
@@ -93,4 +96,33 @@ def test_critic_minibatch_episode_count_must_divide_actor_dp():
 )
 def test_memory_critic_topology_must_form_complete_tp_groups(overrides):
     with pytest.raises(ValueError, match="complete tensor-parallel groups"):
+        _validate_easyppo_args(_args(**overrides))
+
+
+@pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+def test_native_optimizer_schedule_and_checkpoint_options_are_available(mode):
+    _validate_easyppo_args(
+        _args(
+            critic_context_mode=mode,
+            offload_train=False,
+            optimizer="sgd",
+            lr_decay_style="cosine",
+            async_save=True,
+            use_fault_tolerance=True,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"qkv_format": "sbhd"}, "THD"),
+        ({"linear_attention_backend": "flashinfer"}, "FLA"),
+        ({"spec": None}, "model spec"),
+        ({"megatron_to_hf_mode": "bridge"}, "native Qwen3.5 layers"),
+        ({"custom_model_provider_path": "custom.model"}, "native Qwen3.5 layers"),
+    ],
+)
+def test_full_detach_requires_the_native_state_carrying_layers(overrides, message):
+    with pytest.raises(ValueError, match=message):
         _validate_easyppo_args(_args(**overrides))

@@ -331,9 +331,17 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
-    # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
-    if args.megatron_config is not None:
+    # Each critic resolves its own checkpoint and fresh-initialization fallback.
+    # The actor's load path has already been resolved by argument validation.
+    if args.megatron_config is not None or trainer.role == CRITIC_ROLE:
         resolve_args_checkpoint_load(ans)
+    if trainer.role == CRITIC_ROLE:
+        # Reference checkpoints contain the actor's vocabulary head. A fresh
+        # critic keeps its newly initialized scalar head; critic checkpoints,
+        # including weights-only warm starts, restore their own value head.
+        ans._initialize_critic_value_head = bool(
+            ans.finetune and ans.ref_load is not None and ans.load == ans.ref_load
+        )
 
     return ans
 

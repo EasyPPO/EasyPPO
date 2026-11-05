@@ -42,6 +42,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
   --critic-save /root/shared_data/260101-000000-000/checkpoints_critic
+  --critic-load /root/shared_data/260101-000000-000/checkpoints_critic
   --save-interval 10
   --prompt-data /root/datasets/frontiersmith.train.jsonl
   --input-key prompt
@@ -60,7 +61,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-max-response-len 8192
   --rollout-max-context-len 32768
   --update-weights-interval 1
-  --eval-config base64:eyJkYXRhc2V0cyI6IFt7Im5hbWUiOiAiZmNzIiwgInBhdGgiOiAiL3Jvb3QvZGF0YXNldHMvZmNzLmV2YWwuanNvbmwiLCAibWF4X3NhbXBsZXMiOiBudWxsLCAic2FtcGxlX3NlZWQiOiA0Mn1dfQ==
+  --eval-config 'base64:<frozen-pseudo-file-1>'
   --eval-interval 10
   --no-eval-on-epoch
   --no-save-on-epoch
@@ -134,6 +135,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --pipeline-model-parallel-size 1
   --context-parallel-size 1
   --use-distributed-optimizer
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer
   --offload-train
   --use-dynamic-batch-size
   --max-tokens-per-gpu 262144
@@ -151,3 +155,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --wandb-key frozen-wandb-api-key
   --disable-wandb-random-suffix
   --deploy-component all
+
+### pseudo file 1
+{"datasets": [{"name": "fcs", "path": "/root/datasets/fcs.eval.jsonl", "max_samples": null, "sample_seed": 42}]}

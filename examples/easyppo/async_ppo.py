@@ -4,7 +4,6 @@ Dataset-specific run_* wrappers own the CLI. Synchronous launch helpers reuse
 these parameter blocks while choosing the synchronous driver and PPO actor loss.
 """
 
-import base64
 import json
 import math
 import shlex
@@ -310,11 +309,11 @@ def _checkpoint_args(args: ScriptArgs) -> list[str]:
         args.checkpoint_root,
         "--critic-save",
         args.checkpoint_root + "_critic",
+        "--critic-load",
+        args.critic_load or args.checkpoint_root + "_critic",
         "--save-interval",
         str(args.save_interval),
     ]
-    if args.critic_load:
-        fields += ["--critic-load", args.critic_load]
     if args.critic_weights_only:
         fields += ["--finetune", "--no-load-optim", "--no-load-rng"]
     return fields
@@ -366,7 +365,7 @@ def _rollout_args(args: ScriptArgs) -> list[str]:
         "--update-weights-interval",
         "1",
         "--eval-config",
-        "base64:" + base64.b64encode(json.dumps(eval_config).encode()).decode(),
+        U.encode_pseudo_file(json.dumps(eval_config)),
         "--eval-interval",
         str(args.eval_interval),
         "--no-eval-on-epoch",
@@ -540,6 +539,9 @@ def _resource_args(args: ScriptArgs) -> list[str]:
         "--context-parallel-size",
         "1",
         "--use-distributed-optimizer",
+        "--optimizer-cpu-offload",
+        "--overlap-cpu-optimizer-d2h-h2d",
+        "--use-precision-aware-optimizer",
         "--offload-train",
         "--use-dynamic-batch-size",
         "--max-tokens-per-gpu",

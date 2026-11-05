@@ -1596,10 +1596,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "rollout's samples as `critic_tokens`, `critic_response_length`, `critic_loss_mask` and, per sample, "
                 "`critic_span` (where that sample's response region sits in the critic sample). The critic's values "
                 "are cut back into per-sample vectors before they reach the actor, whose data does not change. "
-                "full_detach: an independent HF critic retains detached KV/recurrent/conv memory across "
-                "explicit actor compactions, without repeating the resume prompt. actor-summary: the same "
-                "independent HF critic resets memory and reads the actor's task/summary context per segment. "
-                "Both memory modes currently require PP=CP=1, CPU train offload, gamma=lambda=1, "
+                "full_detach: the native critic retains detached KV/recurrent/conv memory across "
+                "explicit actor compactions, without repeating the resume prompt. actor-summary: the native "
+                "critic reads each actor task/summary segment with independent attention boundaries. "
+                "Both memory modes currently require PP=CP=1, gamma=lambda=1, "
                 "one actor optimizer step per rollout and token-mean value loss; "
                 "--critic-num-steps-per-rollout controls prompt-group-aligned critic mini-batches.",
             )
@@ -1607,9 +1607,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--critic-load",
                 type=str,
                 default=None,
-                help="Critic checkpoint. Memory modes default to --hf-checkpoint for initialization; "
-                "set this to a native memory-critic save directory to restore it. --finetune or "
-                "--no-load-optim loads only weights and starts a new critic run at step zero.",
+                help="Native critic checkpoint. Defaults to the actor load path. "
+                "Each critic uses the framework checkpoint loader and its pretrained fallback. "
+                "Use --finetune to start from weights at rollout zero; --no-load-optim retains rollout progress.",
             )
             parser.add_argument(
                 "--critic-save",
@@ -3644,9 +3644,7 @@ def miles_validate_args(args):
         args.critic_num_nodes = args.actor_num_nodes
     _validate_easyppo_args(args)
     if args.critic_load is None:
-        args.critic_load = (
-            args.hf_checkpoint if args.critic_context_mode in ("full_detach", "actor-summary") else args.load
-        )
+        args.critic_load = args.load
     if args.critic_lr is None:
         args.critic_lr = args.lr
     if args.critic_save is None and args.save is not None:
@@ -4110,7 +4108,7 @@ def _validate_easyppo_args(args) -> None:
 
 
 def _validate_memory_critic_args(args) -> None:
-    """Reject constraints the independent HF memory critic cannot honor."""
+    """Validate native episode packing and detached-memory model support."""
     if not args.use_critic or args.train_backend != "megatron":
         raise ValueError("Memory critic modes require Megatron actor PPO")
     for field in ("pipeline_model_parallel_size", "context_parallel_size"):
@@ -4118,22 +4116,25 @@ def _validate_memory_critic_args(args) -> None:
             raise ValueError(f"Memory critic requires {field}=1")
     if (getattr(args, "virtual_pipeline_model_parallel_size", None) or 1) != 1:
         raise ValueError("Memory critic does not support virtual pipeline parallelism")
-    if not (args.offload_train or args.offload) or args.offload_train_target != "cpu":
-        raise ValueError("Memory critic requires --offload-train with CPU offload")
     if args.gamma != 1 or args.lambd != 1 or args.kl_coef != 0:
         raise ValueError("Memory critic currently requires gamma=lambda=1 and reward KL=0")
     if args.num_steps_per_rollout not in (None, 1):
         raise ValueError("Memory critic currently requires one actor optimizer step per rollout")
     if not args.calculate_per_token_loss:
         raise ValueError("Memory critic requires token-mean loss")
-    if args.optimizer != "adam" or args.lr_decay_style != "constant":
-        raise ValueError("Memory critic currently requires Adam and a constant learning-rate schedule")
     if args.delay_split_train_data_by_dp or not args.use_dynamic_batch_size:
         raise ValueError("Memory critic requires rollout-side dynamic episode sharding")
     if args.multi_lora or args.megatron_config is not None or args.indep_dp or args.enable_witness:
         raise ValueError("Memory critic does not support multi-LoRA, multi-policy, independent DP or witnesses")
-    if args.async_save or args.use_fault_tolerance:
-        raise ValueError("Memory critic requires synchronous checkpoints without trainer fault tolerance")
+    if args.critic_context_mode == "full_detach":
+        if getattr(args, "qkv_format", "thd") != "thd":
+            raise ValueError("full_detach requires native THD packed sequences")
+        if getattr(args, "linear_attention_backend", "fla") != "fla":
+            raise ValueError("full_detach requires the FLA state-carrying GDN backend")
+        if tuple(getattr(args, "spec", None) or ()) != ("miles_plugins.models.qwen3_5", "get_qwen3_5_spec"):
+            raise ValueError("full_detach requires the native Qwen3.5 model spec")
+        if getattr(args, "megatron_to_hf_mode", None) == "bridge" or getattr(args, "custom_model_provider_path", None):
+            raise ValueError("full_detach requires native Qwen3.5 layers, not a bridge or custom model provider")
     _validate_memory_critic_batching(args)
 
 

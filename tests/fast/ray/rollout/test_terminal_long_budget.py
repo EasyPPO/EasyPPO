@@ -75,8 +75,10 @@ async def test_cumulative_budget_and_training_pack_include_different_tokens(monk
     with actor_result, critic_result:
         assert sum(sum(mask) for mask in actor["loss_masks"]) == 120000
         assert sum(sum(mask) for mask in critic["loss_masks"]) == 120000
-        response = critic["tokens"][0][-critic["response_lengths"][0] :]
-        shipped = [response[start : start + length] for _, start, length in critic["value_slices"]]
+        responses = [
+            tokens[-length:] for tokens, length in zip(critic["tokens"], critic["response_lengths"], strict=True)
+        ]
+        shipped = [responses[row][start : start + length] for row, start, length in critic["value_slices"]]
         assert shipped == [
             tokens[-length:] for tokens, length in zip(actor["tokens"], actor["response_lengths"], strict=True)
         ]

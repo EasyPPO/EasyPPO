@@ -14,6 +14,9 @@ critic. It includes one-step asynchronous Score Centering/TIS training and
 synchronous clipped PPO. Each recipe supports `full_detach` and `actor-summary`
 critic contexts.
 
+Actor and critic use the standard Miles `MegatronTrainRayActor`, with independent
+weights and native optimizer, scheduler, tensor parallelism, offload, and checkpoints.
+
 | Launcher | Training → evaluation | Actor objective |
 |---|---|---|
 | [`run_qwen3_5_27b_async_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py) | FrontierSmith → Frontier-CS | Official Miles Score Centering + TIS |
@@ -38,8 +41,8 @@ Use the [Miles NVIDIA image](docs/getting-started/installation.md),
 [`docker/Dockerfile`](docker/Dockerfile). Use the same image digest on every
 node. The GPU stack includes patched SGLang and Megatron-LM, Transformer Engine,
 and CUDA kernels; terminal packages require **Python 3.12+** and
-**Transformers 5.12.1**. Training nodes should provision roughly 1.5–2 TB of
-host RAM for offloaded models and optimizer state.
+**Transformers 5.12.1**. Size training-host memory for the native offload
+configuration and the observed workload.
 
 The examples use `/shared` at the **same absolute path** on every worker and
 Docker daemon host. Clone once on that shared filesystem:
@@ -207,6 +210,12 @@ To run async on a **32-GPU allocation**, add
 `--num-nodes 4 --trainer-num-nodes 1`; sync already uses these defaults.
 For sync on a 64-GPU allocation, set `--num-nodes 8 --trainer-num-nodes 2`.
 Use a matching Ray allocation for the chosen resource settings.
+
+Both actor and critic use native TP4 with PP=CP=1, giving DP2 on 8 training
+GPUs and DP4 on 16. The launchers enable sequence parallelism, full-layer
+activation recomputation, and the native CPU optimizer options
+`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
+
 For a short integration run, use a fresh run ID and add:
 
 ```bash
@@ -243,27 +252,31 @@ Outputs for a run are organized as:
 
 ```text
 /shared/runs/<run-id>/
-  checkpoints/          # Megatron actor
-  checkpoints_critic/   # Native HF memory critic, optimizer and RNG state
+  checkpoints/          # Native Megatron actor checkpoint
+  checkpoints_critic/   # Native Megatron critic checkpoint
   trials/               # Harbor trajectories, candidates and verifier results
 ```
 
 Resume with the **same launcher, dataset, context mode, run ID, and trainer
-topology**, loading the matching critic checkpoint explicitly:
+topology**:
 
 ```bash
 MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
   --action train --critic-context-mode full_detach \
   --run-id async-fs-full_detach \
-  --critic-load /shared/runs/async-fs-full_detach/checkpoints_critic \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 ```
 
-The actor checkpoint is selected from that run's `checkpoints` directory. To
-start a **new** run from critic weights alone, choose a new run ID and add
+The actor and critic automatically load from that run's `checkpoints` and
+`checkpoints_critic` directories through the native checkpoint loader. A fresh
+run initializes both backbones from the converted reference checkpoint when
+its checkpoint directories have no saved iteration. Checkpoints include native
+model, optimizer, scheduler, and RNG state.
+
+To start a **new** run from critic weights alone, choose a new run ID and add
 `--critic-load <source-run>/checkpoints_critic --critic-weights-only`. This starts
-fresh optimizer/step state. The same resume and warm-start options apply to the
-other launchers.
+fresh optimizer/step state through native finetune loading. The same resume
+and warm-start options apply to the other launchers.
 
 ## Recipe reference and validation
 
@@ -274,8 +287,13 @@ key parameters. [ASYNC_PPO.md](examples/easyppo/ASYNC_PPO.md),
 SC integration, and data preparation. Each launcher exposes its full options
 through `--help`.
 
-CPU regression covers memory/value alignment, critic scheduling, optimizer and
-checkpoint behavior, terminal cancellation, data conversion, and the official
-SC probability/loss pipeline. Full 27B training, Docker judge execution on the
-target cluster, B200 long-sequence capacity, and throughput require cluster
-validation; the resource and token budgets are configured targets.
+Episode conversion supplies critic boundaries, value alignment, prompt-group
+schedules, and inverse-STD loss weights; Miles/Megatron own the training
+lifecycle, value loss, metrics, and persistence. The Qwen3.5 memory extension
+uses the existing Transformer Engine attention and FLA convolution/recurrent
+kernels. See [RECIPES.md](examples/easyppo/RECIPES.md#critic-memory-and-token-alignment)
+for the detach and reset boundaries.
+
+Full 27B GPU training, native TE/FLA execution and checkpoint reload, offload
+capacity and timing, target-cluster judges, and throughput still require
+validation on the target GPU cluster.

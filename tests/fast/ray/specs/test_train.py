@@ -110,6 +110,12 @@ def _unavailable_fp8_probe() -> str:
 
 
 class TestSpecSet:
+    @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+    def test_memory_contexts_use_the_native_megatron_worker_for_both_roles(self, mode):
+        specs = specs_trainer(_make_args(use_critic=True, critic_context_mode=mode))
+        assert len(specs) == 2
+        assert {spec.worker_class for spec in specs} == {"miles.backends.megatron_utils.actor.MegatronTrainRayActor"}
+
     def test_only_the_actor_is_declared_without_a_critic(self):
         """Most runs have no critic, so no idle critic workers may be scheduled."""
         specs = specs_trainer(_make_args())
