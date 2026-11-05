@@ -227,10 +227,10 @@ ten rounds, including the final round. By default, `--eval-max-tasks 0` selects
 the **full validation set** and `--eval-samples-per-prompt 5` runs five independent
 episodes per task at temperature/top-p/top-k `1/1/-1`.
 
-| Dataset | Trials per validation point | Trials over 13 points in a fresh 120-round run |
+| Dataset | Trials per validation point | Trials over 21 points in a fresh 200-round run |
 |---|---:|---:|
-| Frontier-CS | 179 × 5 = **895** | **11,635** |
-| Terminal-Bench 2.1 | 89 × 5 = **445** | **5,785** |
+| Frontier-CS | 179 × 5 = **895** | **18,795** |
+| Terminal-Bench 2.1 | 89 × 5 = **445** | **9,345** |
 
 Full-set results use `fcs` or `tb21`. For an explicit quick subset, add
 `--eval-max-tasks 16`; selection and order are fixed with seed 42, and result

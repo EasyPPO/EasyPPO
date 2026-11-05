@@ -25,7 +25,7 @@ critic-memory options.
 | Actor / critic LR | `1e-6` / `5e-6` |
 | Adam / weight decay | `(0.9, 0.999)`, epsilon `1e-8`, decay `0.01` |
 | Critic-only phase | 30 outer rounds |
-| Training duration | 120 outer rounds |
+| Training duration | 200 outer rounds |
 | Actor context / action / summary | 32768 / 8192 / 2048 tokens |
 | Compaction threshold | 24576 context tokens, subject to remaining-window reserve |
 | Cumulative generation | 120000 tokens per episode, including summaries |
@@ -51,7 +51,7 @@ See [Score Centering](PPO_SCORE_CENTERING.md) for the actor loss and
 
 Validation defaults are `--eval-max-tasks 0 --eval-samples-per-prompt 5`.
 Each validation point runs 895 Frontier-CS trials or 445 TB2.1 trials. Initial
-validation plus rounds 10..120 gives 13 points: 11,635 or 5,785 trials per
+validation plus rounds 10..200 gives 21 points: 18,795 or 9,345 trials per
 experiment. Full-set result names are `fcs` / `tb21`.
 
 An explicit positive `--eval-max-tasks N` selects a seed-42 fixed subset with

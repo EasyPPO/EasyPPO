@@ -49,7 +49,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --custom-generate-function-path agentic_critic.miles_terminal.generate
   --rollout-shuffle
   --seed 1234
-  --num-rollout 120
+  --num-rollout 200
   --rollout-batch-size 32
   --over-sampling-batch-size 35
   --n-samples-per-prompt 16

@@ -75,7 +75,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--critic-num-steps-per-rollout": "4",
         "--critic-return-std-floor": "0.075",
         "--num-critic-only-steps": "30",
-        "--num-rollout": "120",
+        "--num-rollout": "200",
         "--lr": "1e-06",
         "--critic-lr": "5e-06",
         "--adam-beta1": "0.9",

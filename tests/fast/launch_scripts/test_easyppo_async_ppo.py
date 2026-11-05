@@ -101,6 +101,7 @@ def test_one_step_async_recipe(launcher, monkeypatch, tmp_path, mode, centering)
     assert value("--critic-return-std-floor") == "0.075"
     assert "--filter-truncated-in-actor-loss" in argv
     assert value("--num-critic-only-steps") == "30"
+    assert value("--num-rollout") == "200"
     assert value("--kl-coef") == "0"
     if centering:
         assert value("--loss-type") == "score_centering"
@@ -140,7 +141,7 @@ def test_one_step_async_recipe(launcher, monkeypatch, tmp_path, mode, centering)
         {"eval_max_tasks": -1},
         {"eval_samples_per_prompt": 0},
         {"eval_samples_per_prompt": -1},
-        {"num_critic_only_steps": 121},
+        {"num_critic_only_steps": 201},
         {"num_critic_only_steps": -1},
         {"critic_context_mode": "full_history"},
         {"max_tokens_per_gpu": 100},

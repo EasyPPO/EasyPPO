@@ -50,7 +50,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     critic_context_mode: Literal["full_detach", "actor-summary"] = "full_detach"
     critic_load: str = ""
     critic_weights_only: bool = False
-    num_rollout: int = 120
+    num_rollout: int = 200
     num_critic_only_steps: int = 30
     samples_per_prompt: int = 16
     critic_steps_per_rollout: int = 4

@@ -73,10 +73,10 @@ An episode can produce multiple physical actor samples after compaction.
 Those segments share one terminal reward, episode identity, and critic weight.
 They do not increase the logical batch or count as independent return samples.
 
-The default run contains 120 outer rounds. Rounds 1–30 train only the critic;
-the first actor update is round 31. This gives **480 critic updates and 90 actor
+The default run contains 200 outer rounds. Rounds 1–30 train only the critic;
+the first actor update is round 31. This gives **800 critic updates and 170 actor
 updates**, including 120 critic updates during warmup. LR warmup is separately
-set to zero. Accepted training volume is nominally 61,440 episodes; actual trial
+set to zero. Accepted training volume is nominally 102,400 episodes; actual trial
 starts include oversampling and any additional collection.
 
 ## Synchronous training
@@ -294,9 +294,9 @@ episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
 runs **179 × 5 = 895 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
 result names `fcs` / `tb21`.
 
-A fresh 120-round run evaluates initially and at rounds 10 through 120: 13
-points, **11,635 Frontier-CS trials** or **5,785 TB2.1 trials per experiment**.
-Checkpoints are saved at rounds 10 through 120, giving 12 points.
+A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
+points, **18,795 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.
+Checkpoints are saved at rounds 10 through 200, giving 20 points.
 Epoch-triggered extra eval/save is disabled.
 
 For a quick subset, set `--eval-max-tasks N` with positive N. Selection and order
