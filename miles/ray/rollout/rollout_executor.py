@@ -169,7 +169,11 @@ class RolloutExecutor:
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
         )
-        full_history = getattr(self.args, "critic_context_mode", "shared") == "full_history"
+        full_history = getattr(self.args, "critic_context_mode", "shared") in (
+            "full_history",
+            "full_detach",
+            "actor-summary",
+        )
         if full_history:
             # The critic gets its own samples (one per rollout: the whole episode) and its own shards.
             assert (
@@ -178,9 +182,20 @@ class RolloutExecutor:
             assert (
                 self.custom_convert_samples_to_train_data_func is None
             ), "--critic-context-mode full_history does not support a custom sample conversion"
-            critic_samples, spans = build_critic_samples(data)
+            critic_samples, spans = build_critic_samples(data, context_mode=self.args.critic_context_mode)
+        actor_args = self.args
+        if (
+            getattr(self.args, "use_critic", False)
+            and rollout_id < getattr(self.args, "num_critic_only_steps", 0)
+            and self.args.filter_truncated_in_actor_loss
+        ):
+            # No actor update runs during critic warmup. Its all-truncated
+            # refusal must not prevent the critic from learning these episodes.
+            # The rollout ID is explicit because async generation prefetches.
+            actor_args = copy.copy(self.args)
+            actor_args.filter_truncated_in_actor_loss = False
         data = convert_samples_to_train_data(
-            self.args,
+            actor_args,
             data,
             metadata=metadata,
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
@@ -188,9 +203,15 @@ class RolloutExecutor:
         )
         sample_indices = data.get("sample_indices")
         if full_history:
-            # The all-truncated refusal of the actor-only filter is about the actor's batch, checked above.
+            # Only active actor updates reject an all-truncated batch above;
+            # the critic always retains those episodes and their loss tokens.
             critic_args = copy.copy(self.args)
             critic_args.filter_truncated_in_actor_loss = False
+            # Candidate probabilities and sampling supports describe the actor's
+            # behavior policy. build_critic_samples deliberately removes those
+            # records; critic value regression must not require or replay them.
+            critic_args.rollout_top_logprobs_num = 0
+            critic_args.use_sampling_support_replay = False
             critic_data = convert_samples_to_train_data(
                 critic_args,
                 critic_samples,
