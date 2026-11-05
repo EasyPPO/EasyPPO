@@ -17,6 +17,14 @@ policy objective, and KL regularization.
 See the [terminal training guide](examples/easyppo/TERMINAL.md) for TMAX training
 with automatic Terminal-Bench 2.1 validation on the `miles` branch.
 
+For Qwen3.5-27B asynchronous terminal training, use the
+[async actor-critic guide](examples/easyppo/ASYNC_PPO.md). It covers
+FrontierSmith → Frontier-CS and TMAX-15K → Terminal-Bench 2.1, with independent
+`full_detach` / `actor-summary` critics. This recipe uses the existing Miles
+Score Centering/TIS actor objective, 32 prompt groups × 16 episodes, four critic
+updates, and a 120000-token cumulative generation budget. Its default resource
+candidate is 64 B200s (16 training + 48 rollout), with a 32-GPU option (8 + 24).
+
 ## Method
 
 EasyPPO combines three changes:

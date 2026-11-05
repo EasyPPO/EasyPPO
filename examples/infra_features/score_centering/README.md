@@ -23,6 +23,12 @@ Add these arguments to an existing text-only GRPO training recipe:
 
 Keep reward mean subtraction enabled. Disabling standard-deviation normalization gives the paper's group-centered rewards. This is a separate REINFORCE-style loss: PPO clipping parameters do not apply. Existing batch size and update scheduling still control how many updates consume a rollout batch; choose them explicitly when reproducing an experiment.
 
+This fork also accepts `--advantage-estimator ppo` to supply detached critic/GAE
+advantages to the same score-centering loss. Use `--use-rollout-logprobs`; the
+existing PPO setup constructs the critic. GRPO group reward centering does not
+apply to this mode. The actor still uses the SC objective, so PPO clipping flags
+do not take effect. See the [terminal actor-critic recipe](https://github.com/dyxg/EasyPPO/blob/miles/examples/easyppo/PPO_SCORE_CENTERING.md).
+
 Choose `--score-centering-is tis` for weights clipped at `--score-centering-tis-clip` (default 2). Choose `mis` to retain ratios in `[--score-centering-mis-low, --score-centering-mis-high]` (defaults 0.5 and 5), setting other weights to zero. These weights are centered together with the score. Use these options instead of `--use-tis` or a custom TIS function.
 
 The existing entropy and reference-KL loss options remain available. They are separate regularizers; the score-centering identity applies to the policy-gradient term.
@@ -90,7 +96,7 @@ Custom rollout producers must supply these fields with probabilities from the ac
 - Sampling requires a fixed positive temperature and `min_p=0` on every call. Filtered sampling, including top-p filtering, automatically uses support mode and requires a positive `top_k`, for example `--rollout-top-p 0.9 --rollout-top-k 64 --rollout-top-logprobs-num 128`. Global filtered rollout settings automatically enable sampling-support replay; per-request overrides are checked when each request is built. See the [sampling-support replay guide](../../../docs/advanced/sampling-support-replay.md) for its request and server requirements.
 - Filtered sampling requires SGLang with support log probabilities (SGLang PR [#40932](https://github.com/sgl-project/sglang/pull/40932), included in the `sglang-miles` branch by [#41047](https://github.com/sgl-project/sglang/pull/41047), merge commit [`ae04cb14046896b6d453758c5769d639deedd353`](https://github.com/sgl-project/sglang/commit/ae04cb14046896b6d453758c5769d639deedd353) or a descendant containing it). External servers must set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` like Miles-managed workers. OpenAI session responses must expose the SGLang fields above in `choices[0].meta_info`; a generic OpenAI-compatible server without that metadata is insufficient.
 - The SGLang router must include [sgl-router-for-miles #21](https://github.com/radixark/sgl-router-for-miles/pull/21) (`df2c790`; see `Git Commit` in `smg --version-verbose`), which raises the chat `top_logprobs` limit from 20 to 128 and forwards `sampling_logprobs_mode`.
-- Constrained/custom sampling, speculative decoding, true-on-policy mode, OPD, multi-LoRA/Tinker losses, sequence masking, custom policy-loss reducers, custom train-data converters, and logprob recomputation via prefill are rejected. Multimodal token expansion is not supported. The initial advantage estimator is GRPO.
+- Constrained/custom sampling, speculative decoding, true-on-policy mode, OPD, multi-LoRA/Tinker losses, sequence masking, custom policy-loss reducers, custom train-data converters, and logprob recomputation via prefill are rejected. Multimodal token expansion is not supported. The upstream initial advantage estimator is GRPO; this fork additionally accepts PPO critic/GAE advantages.
 - Retaining `k=128` uses about 1 KiB per response position for the two arrays, before transport overhead. Eligible support-mode training batches replace the duplicate ID array with one int32 count per response position, saving `4 * (k - 1)` bytes per position in training transport and storage. Source Samples and session payloads keep the original storage cost. Larger `k` improves the unfiltered tail approximation at additional storage and compute cost.
 
 ## Metrics and verification

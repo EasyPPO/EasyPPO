@@ -1,8 +1,11 @@
+import copy
 import logging
 from typing import Any
 
 import torch
 
+from agentic_critic.critic_input import Segment
+from agentic_critic.miles_samples import critic_episode
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
@@ -41,11 +44,13 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "prompt_group_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
+    "critic_segments": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
@@ -53,6 +58,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "num_microbatches": ValueSpec(codec="auto"),
     "micro_batch_indices": ValueSpec(codec="auto"),
     "num_rollouts": ValueSpec(codec="auto"),
+    "critic_minibatch_indices": ValueSpec(codec="auto"),
 }
 
 
@@ -90,6 +96,12 @@ def convert_samples_to_train_data(
         "sample_indices": [sample.index for sample in samples],
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
+    if getattr(args, "critic_context_mode", "shared") in ("full_detach", "actor-summary") and all(
+        sample.group_index is not None for sample in samples
+    ):
+        # A prompt's responses can contain different numbers of compacted rows.
+        # Preserve their source identity instead of inferring groups from row counts.
+        train_data["prompt_group_ids"] = [sample.group_index for sample in samples]
 
     if getattr(args, "filter_truncated_in_actor_loss", False) and samples and all(train_data["truncated"]):
         # Same refusal as the EasyPPO reference: an actor step without a single loss token is not a no-op
@@ -114,6 +126,8 @@ def convert_samples_to_train_data(
             sample.loss_mask = [0] * sample.response_length
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
+    if any(getattr(sample, "memory_critic_sample", False) for sample in samples):
+        train_data["critic_segments"] = [getattr(sample, "critic_segments", None) for sample in samples]
 
     train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
 
@@ -435,11 +449,12 @@ def split_full_history_shards(
     """Keep each complete critic episode and all its actor segments on the same DP rank.
 
     Adapted from EasyPPO/EasyPPO's actor-summary-compact branch (72fa1ce).
-    Unlike that branch, this never changes the shared-context split or critic
-    mini-batch scheduler. One episode per forward micro-batch keeps collective
-    counts equal even when ranks receive different numbers of actor segments.
+    The shared-context split remains unchanged. Memory critics keep whole prompt
+    groups in each optimizer mini-batch, then reuse the episode planner inside it.
+    One episode per forward micro-batch keeps collective counts equal even when
+    ranks receive different numbers of actor segments.
     """
-    if getattr(args, "critic_context_mode", "shared") != "full_history":
+    if getattr(args, "critic_context_mode", "shared") not in ("full_history", "full_detach", "actor-summary"):
         raise ValueError("Episode-aligned actor/critic sharding requires --critic-context-mode full_history")
     if not args.use_dynamic_batch_size:
         raise ValueError("full_history episode packing requires --use-dynamic-batch-size")
@@ -483,7 +498,12 @@ def split_full_history_shards(
 
     # The critic's episode ownership wins over independent actor length balancing:
     # all sibling values must be available locally for the existing value_slices.
-    partitions = _full_history_episode_partitions(args, critic_lengths, batch_size=batch_size, dp_size=dp_size)
+    memory_critic = args.critic_context_mode in ("full_detach", "actor-summary")
+    critic_batch_size = num_episodes // critic_steps if memory_critic else batch_size
+    episode_order = _memory_critic_episode_order(args, critic_data, critic_steps) if memory_critic else None
+    partitions = _full_history_episode_partitions(
+        args, critic_lengths, batch_size=critic_batch_size, dp_size=dp_size, episode_order=episode_order
+    )
     actor_partitions = [[i for episode in part for i in siblings[episode]] for part in partitions]
     shards = _package_shards(args, {**data, "total_lengths": actor_lengths}, actor_partitions)
     critic_shards = _package_shards(args, {**critic_data, "total_lengths": critic_lengths}, partitions)
@@ -499,28 +519,104 @@ def split_full_history_shards(
             shard["micro_batch_indices"] = indices
             shard["num_microbatches"] = [batch_size // dp_size] * len(num_rollouts)
             shard["num_rollouts"] = list(num_rollouts)
+        if memory_critic:
+            local_batch_size = critic_batch_size // dp_size
+            critic["critic_minibatch_indices"] = [
+                list(range(start, start + local_batch_size)) for start in range(0, len(episodes), local_batch_size)
+            ]
+            critic["num_microbatches"] = [local_batch_size] * critic_steps
+            critic["num_rollouts"] = [critic_batch_size] * critic_steps
     attach_value_slices(shards, critic_shards, spans)
     return shards, critic_shards
 
 
-def _full_history_episode_partitions(args, lengths: list[int], *, batch_size: int, dp_size: int) -> list[list[int]]:
+def _memory_critic_episode_order(args, data: dict[str, Any], critic_steps: int) -> list[int]:
+    """Order complete prompt groups into equally sized critic optimizer batches."""
+    num_episodes = len(data["tokens"])
+    if critic_steps == 1:
+        return list(range(num_episodes))
+    group_ids = data.get("prompt_group_ids")
+    if group_ids is None or len(group_ids) != num_episodes:
+        raise ValueError("Memory critic mini-batches require a prompt group identity for every episode")
+    groups: dict[int, list[int]] = {}
+    for episode, group_id in enumerate(group_ids):
+        groups.setdefault(group_id, []).append(episode)
+    if len(groups) % critic_steps:
+        raise ValueError("Memory critic prompt group count must be divisible by critic mini-batch steps")
+    expected_fanout = getattr(args, "n_samples_per_prompt", None)
+    if expected_fanout is not None and any(len(group) != expected_fanout for group in groups.values()):
+        raise ValueError("Memory critic mini-batches require complete n_samples_per_prompt response groups")
+    groups_per_step = len(groups) // critic_steps
+    ordered_groups = list(groups.values())
+    minibatches = [
+        [episode for group in ordered_groups[start : start + groups_per_step] for episode in group]
+        for start in range(0, len(groups), groups_per_step)
+    ]
+    if any(len(batch) != num_episodes // critic_steps for batch in minibatches):
+        raise ValueError("Memory critic prompt groups must form equally sized critic mini-batches")
+    return [episode for batch in minibatches for episode in batch]
+
+
+def _full_history_episode_partitions(
+    args, lengths: list[int], *, batch_size: int, dp_size: int, episode_order: list[int] | None = None
+) -> list[list[int]]:
     partitions: list[list[int]] = [[] for _ in range(dp_size)]
+    episode_order = list(range(len(lengths))) if episode_order is None else episode_order
     for start in range(0, len(lengths), batch_size):
+        episodes = episode_order[start : start + batch_size]
+        episode_lengths = [lengths[episode] for episode in episodes]
         if getattr(args, "balance_by_flops", False):
             # Use the same workload estimator as the standard rollout scheduler.
-            costs = [calculate_fwd_flops([length], args) for length in lengths[start : start + batch_size]]
+            costs = [calculate_fwd_flops([length], args) for length in episode_lengths]
         else:
-            costs = lengths[start : start + batch_size]
+            costs = episode_lengths
         if args.balance_data or getattr(args, "balance_by_flops", False):
             step = get_seqlen_balanced_partitions(costs, dp_size, equal_size=True)
         else:
             step = [list(range(rank, batch_size, dp_size)) for rank in range(dp_size)]
         for partition, indices in zip(partitions, step, strict=True):
-            partition.extend(start + index for index in indices)
+            partition.extend(episodes[index] for index in indices)
     return partitions
 
 
-def build_critic_samples(samples) -> tuple[list[Sample], list[tuple[int, int, int]]]:
+def _memory_critic_sample(sample: Sample, siblings: list[Sample], *, context_mode: str):
+    siblings = sorted(siblings, key=lambda s: s.metadata["segment"])
+    if [s.metadata["segment"] for s in siblings] != list(range(len(siblings))):
+        raise ValueError("Memory critic requires complete, consecutively numbered episode segments")
+    if context_mode == "full_detach":
+        if not all(getattr(s, "critic_memory_exact", False) for s in siblings):
+            raise ValueError(
+                "full_detach requires exact prefixes or explicit compaction boundaries; "
+                "a template/retokenization break could repeat historical context"
+            )
+        raw_segments = getattr(sample, "critic_segments", None)
+        if raw_segments is None:
+            raise ValueError("full_detach requires explicit critic_segments from the rollout producer")
+        segments = [Segment(**part) for part in raw_segments]
+    else:
+        segments = [Segment(list(s.tokens), s.response_length, list(s.loss_mask)) for s in siblings]
+    if len(segments) != len(siblings):
+        raise ValueError("Memory critic segments must match the actor's segment count")
+    for actor, segment in zip(siblings, segments, strict=True):
+        if (
+            segment.response_length != actor.response_length
+            or segment.tokens[segment.response_start :] != actor.tokens[-actor.response_length :]
+            or segment.loss_mask != actor.loss_mask
+        ):
+            raise ValueError("Memory critic response tokens and masks must exactly match the actor")
+    episode, spans = critic_episode(segments)
+    own = copy.copy(sample)
+    own.tokens, own.response_length, own.loss_mask = episode.tokens, episode.response_length, episode.loss_mask
+    own.critic_segments = [
+        dict(tokens=s.tokens, response_length=s.response_length, loss_mask=s.loss_mask) for s in segments
+    ]
+    own.memory_critic_sample = True
+    return own, {id(s): span for s, span in zip(siblings, spans, strict=True)}
+
+
+def build_critic_samples(
+    samples, *, context_mode: str = "full_history"
+) -> tuple[list[Sample], list[tuple[int, int, int]]]:
     """The critic's own samples under --critic-context-mode full_history, and where each actor sample's values sit.
 
     A rollout function may attach an episode-level critic sample to the samples of one rollout: `critic_tokens`,
@@ -531,24 +627,35 @@ def build_critic_samples(samples) -> tuple[list[Sample], list[tuple[int, int, in
     Returns one critic sample per rollout (a sample without `critic_tokens` is its own critic sample) and, per
     actor sample in batch order, `(critic sample index, start, length)`.
     """
-    import copy
-
     flat = [s for group in samples for s in group] if samples and isinstance(samples[0], list) else samples
     critic: list[Sample] = []
     spans: list[tuple[int, int, int]] = []
     index_of_rollout: dict = {}
+    memory_spans: dict = {}
+    sibling_positions: dict = {}
+    if context_mode in ("full_detach", "actor-summary"):
+        for sample in flat:
+            rollout = sample.rollout_id if sample.rollout_id is not None else sample.index
+            sibling_positions.setdefault(rollout, []).append(sample)
     for sample in flat:
         tokens = getattr(sample, "critic_tokens", None)
         if tokens is None:
+            if context_mode in ("full_detach", "actor-summary"):
+                raise ValueError("Memory critic modes require episode-aware rollout samples")
             critic.append(copy.copy(sample))
             spans.append((len(critic) - 1, 0, sample.response_length))
             continue
         rollout = sample.rollout_id if sample.rollout_id is not None else sample.index
         if rollout not in index_of_rollout:
             own = copy.copy(sample)
-            own.tokens = tokens
-            own.response_length = sample.critic_response_length
-            own.loss_mask = list(sample.critic_loss_mask)
+            if context_mode in ("full_detach", "actor-summary"):
+                own, memory_spans[rollout] = _memory_critic_sample(
+                    sample, sibling_positions[rollout], context_mode=context_mode
+                )
+            else:
+                own.tokens = tokens
+                own.response_length = sample.critic_response_length
+                own.loss_mask = list(sample.critic_loss_mask)
             # per-token rollout records belong to the actor's samples; the critic does not use them
             own.rollout_log_probs = None
             own.rollout_topk_token_ids = own.rollout_topk_log_probs = own.rollout_sampling_mask = None
@@ -556,9 +663,11 @@ def build_critic_samples(samples) -> tuple[list[Sample], list[tuple[int, int, in
             index_of_rollout[rollout] = len(critic)
             critic.append(own)
         own = critic[index_of_rollout[rollout]]
+        if sample.group_index != own.group_index:
+            raise ValueError("All segments of one critic episode must belong to the same prompt group")
         if sample.status == Sample.Status.TRUNCATED:
             own.status = Sample.Status.TRUNCATED
-        start, length = sample.critic_span
+        start, length = memory_spans[rollout][id(sample)] if rollout in memory_spans else sample.critic_span
         region_start = len(own.tokens) - own.response_length
         assert length == sample.response_length, "critic_span must cover the sample's response region"
         assert (
@@ -667,8 +776,10 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "critic_loss_weights",
             "truncated",
             "loss_masks",
+            "critic_segments",
             "round_number",
             "sample_indices",
+            "prompt_group_ids",
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",

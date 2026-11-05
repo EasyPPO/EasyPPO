@@ -160,7 +160,12 @@ async def _run_policy(
             )
 
         if is_leader:
-            if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+            if should_run_periodic_action(
+                rollout_id,
+                args.eval_interval,
+                num_rollout_per_epoch if getattr(args, "eval_on_epoch", True) else None,
+                args.num_rollout,
+            ):
                 async with eval_parker.with_all_parked():
                     await inference_controller.prepare_eval()
                     await rollout_executor.eval(rollout_id)
@@ -189,7 +194,10 @@ async def _maybe_save_globally(
 ) -> None:
     external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
     if not external_save and not should_run_periodic_action(
-        rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
+        rollout_id,
+        args.save_interval,
+        num_rollout_per_epoch if getattr(args, "save_on_epoch", True) else None,
+        args.num_rollout,
     ):
         return
 

@@ -198,6 +198,10 @@ def _compute_spec_trainer(
 ) -> ServeWorkerSpec:
     trainer_id = config.trainer_id
     total_gpus = num_nodes * num_gpus_per_node
+    memory_critic = config.role == CRITIC_ROLE and getattr(args, "critic_context_mode", "shared") in (
+        "full_detach",
+        "actor-summary",
+    )
     num_cells = compute_trainer_num_cells(args, role=config.role)
     assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
     gpus_per_cell = total_gpus // num_cells
@@ -213,7 +217,7 @@ def _compute_spec_trainer(
         category=POOL_CATEGORY_TRAINER_ENGINE,
         deploy_component=DeployComponent.TRAINER,
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
-        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
+        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales, memory_critic=memory_critic),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=gpus_per_cell,
@@ -225,9 +229,13 @@ def _compute_spec_trainer(
             pg_slot_offset=pg_slot_offset,
         ),
         worker_class=(
-            "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
-            if args.train_backend == "megatron" and config.role == ACTOR_ROLE and is_multi_lora_enabled(args)
-            else _TRAINER_ACTOR_CLASSES[args.train_backend]
+            "agentic_critic.miles_memory_critic.HFMemoryCriticTrainRayActor"
+            if memory_critic
+            else (
+                "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
+                if args.train_backend == "megatron" and config.role == ACTOR_ROLE and is_multi_lora_enabled(args)
+                else _TRAINER_ACTOR_CLASSES[args.train_backend]
+            )
         ),
         ctor_kwargs=lambda ctx: dict(
             args=args,
@@ -241,7 +249,9 @@ def _compute_spec_trainer(
     )
 
 
-def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
+def compute_trainer_env_vars(
+    args, ctx: WorkerLaunchContext, *, fp8_scales: str, memory_critic: bool = False
+) -> dict[str, str]:
     env_vars = {
         # because sglang will always set NCCL_CUMEM_ENABLE to 0
         # we need also set it to 0 to prevent nccl error.
@@ -256,7 +266,7 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
     if source_patcher_config := args.dumper_source_patcher_config_train:
         env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
 
-    if args.offload_train and args.train_backend == "megatron":
+    if args.offload_train and args.train_backend == "megatron" and not memory_critic:
         from torch_memory_saver.utils import get_binary_path_from_package
 
         dynlib_path = str(get_binary_path_from_package("torch_memory_saver_hook_mode_preload"))

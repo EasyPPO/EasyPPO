@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import re
 from string import Formatter
@@ -1399,6 +1400,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
             # change the default value of eval_interval from Megatron to None
             reset_arg(parser, "--eval-interval", type=int, default=None)
+            parser.add_argument(
+                "--eval-on-epoch",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Also evaluate at dataset epoch boundaries, in addition to the step interval and final step.",
+            )
+            parser.add_argument(
+                "--save-on-epoch",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Also save at dataset epoch boundaries, in addition to the step interval and final step.",
+            )
 
             parser.add_argument(
                 "--eval-prompt-data",
@@ -1576,15 +1589,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--critic-context-mode",
                 type=str,
-                choices=["shared", "full_history"],
+                choices=["shared", "full_history", "full_detach", "actor-summary"],
                 default="shared",
                 help="What the critic reads. shared: the same tokens as the actor (default, unchanged behaviour). "
                 "full_history: the critic trains on one sample per rollout, attached by the rollout function to the "
                 "rollout's samples as `critic_tokens`, `critic_response_length`, `critic_loss_mask` and, per sample, "
                 "`critic_span` (where that sample's response region sits in the critic sample). The critic's values "
-                "are cut back into per-sample vectors before they reach the actor, whose data does not change.",
+                "are cut back into per-sample vectors before they reach the actor, whose data does not change. "
+                "full_detach: an independent HF critic retains detached KV/recurrent/conv memory across "
+                "explicit actor compactions, without repeating the resume prompt. actor-summary: the same "
+                "independent HF critic resets memory and reads the actor's task/summary context per segment. "
+                "Both memory modes currently require PP=CP=1, CPU train offload, gamma=lambda=1, "
+                "one actor optimizer step per rollout and token-mean value loss; "
+                "--critic-num-steps-per-rollout controls prompt-group-aligned critic mini-batches.",
             )
-            parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
+            parser.add_argument(
+                "--critic-load",
+                type=str,
+                default=None,
+                help="Critic checkpoint. Memory modes default to --hf-checkpoint for initialization; "
+                "set this to a native memory-critic save directory to restore it. --finetune or "
+                "--no-load-optim loads only weights and starts a new critic run at step zero.",
+            )
             parser.add_argument(
                 "--critic-save",
                 type=str,
@@ -3618,7 +3644,9 @@ def miles_validate_args(args):
         args.critic_num_nodes = args.actor_num_nodes
     _validate_easyppo_args(args)
     if args.critic_load is None:
-        args.critic_load = args.load
+        args.critic_load = (
+            args.hf_checkpoint if args.critic_context_mode in ("full_detach", "actor-summary") else args.load
+        )
     if args.critic_lr is None:
         args.critic_lr = args.lr
     if args.critic_save is None and args.save is not None:
@@ -4071,10 +4099,61 @@ def _validate_easyppo_args(args) -> None:
     assert args.use_critic or not enabled, f"{', '.join(enabled)} require --advantage-estimator ppo"
 
     if args.critic_return_std_floor is not None:
-        assert args.critic_return_std_floor > 0, "--critic-return-std-floor must be positive"
+        assert (
+            math.isfinite(args.critic_return_std_floor) and args.critic_return_std_floor > 0
+        ), "--critic-return-std-floor must be finite and positive"
     if args.critic_num_steps_per_rollout is not None:
         assert args.critic_num_steps_per_rollout >= 1, "--critic-num-steps-per-rollout must be at least 1"
         assert not args.multi_lora, "--critic-num-steps-per-rollout does not support multi-LoRA"
+    if args.critic_context_mode in ("full_detach", "actor-summary"):
+        _validate_memory_critic_args(args)
+
+
+def _validate_memory_critic_args(args) -> None:
+    """Reject constraints the independent HF memory critic cannot honor."""
+    if not args.use_critic or args.train_backend != "megatron":
+        raise ValueError("Memory critic modes require Megatron actor PPO")
+    for field in ("pipeline_model_parallel_size", "context_parallel_size"):
+        if getattr(args, field, 1) != 1:
+            raise ValueError(f"Memory critic requires {field}=1")
+    if (getattr(args, "virtual_pipeline_model_parallel_size", None) or 1) != 1:
+        raise ValueError("Memory critic does not support virtual pipeline parallelism")
+    if not (args.offload_train or args.offload) or args.offload_train_target != "cpu":
+        raise ValueError("Memory critic requires --offload-train with CPU offload")
+    if args.gamma != 1 or args.lambd != 1 or args.kl_coef != 0:
+        raise ValueError("Memory critic currently requires gamma=lambda=1 and reward KL=0")
+    if args.num_steps_per_rollout not in (None, 1):
+        raise ValueError("Memory critic currently requires one actor optimizer step per rollout")
+    if not args.calculate_per_token_loss:
+        raise ValueError("Memory critic requires token-mean loss")
+    if args.optimizer != "adam" or args.lr_decay_style != "constant":
+        raise ValueError("Memory critic currently requires Adam and a constant learning-rate schedule")
+    if args.delay_split_train_data_by_dp or not args.use_dynamic_batch_size:
+        raise ValueError("Memory critic requires rollout-side dynamic episode sharding")
+    if args.multi_lora or args.megatron_config is not None or args.indep_dp or args.enable_witness:
+        raise ValueError("Memory critic does not support multi-LoRA, multi-policy, independent DP or witnesses")
+    if args.async_save or args.use_fault_tolerance:
+        raise ValueError("Memory critic requires synchronous checkpoints without trainer fault tolerance")
+    _validate_memory_critic_batching(args)
+
+
+def _validate_memory_critic_batching(args) -> None:
+    """Reject impossible prompt-group/DP schedules before launching rollouts."""
+    critic_steps = args.critic_num_steps_per_rollout or 1
+    if args.rollout_batch_size is None or args.rollout_batch_size <= 0 or args.n_samples_per_prompt <= 0:
+        raise ValueError("Memory critic requires positive rollout prompt and response counts")
+    if args.rollout_batch_size % critic_steps:
+        raise ValueError("Memory critic prompt group count must be divisible by critic mini-batch steps")
+    trainer_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
+    tp_size = args.tensor_model_parallel_size
+    if trainer_gpus <= 0 or tp_size <= 0 or trainer_gpus % tp_size:
+        raise ValueError("Memory critic trainer GPUs must form complete tensor-parallel groups")
+    dp_size = trainer_gpus // tp_size
+    episodes_per_step = args.rollout_batch_size * args.n_samples_per_prompt // critic_steps
+    # Whole prompt groups share a global critic optimizer step; their responses
+    # may be split across DP ranks by the existing episode placement planner.
+    if episodes_per_step % dp_size:
+        raise ValueError("Memory critic mini-batch episode count must be divisible by the actor DP size")
 
 
 def validate_async_off_policy_correction(args) -> None:

@@ -53,6 +53,14 @@ python scripts/run_qwen3_dense.py --model-name Qwen3.5-4B        # or Qwen3.5-9B
 
 All three variants are 1 node × 8 GPU. The launcher reads checkpoints from `--model-dir` (default `/root/models`) and datasets from `--data-dir` (default `/root/datasets`), and writes checkpoints under `--output-dir` (default `/root/shared_data`).
 
+For **Qwen3.5-27B asynchronous terminal actor-critic**, use
+[`examples/easyppo/run_qwen3_5_27b_async_ppo.py`](../../../examples/easyppo/run_qwen3_5_27b_async_ppo.py).
+The [recipe and parameter guide](../../../examples/easyppo/ASYNC_PPO.md) covers
+FrontierSmith → Frontier-CS, TMAX-15K → TB2.1, and independent
+`full_detach` / `actor-summary` critics.
+The default candidate allocation is 64 B200s (16 training + 48 rollout);
+32 GPUs (8 + 24) are supported. GPU capacity and throughput require validation.
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism

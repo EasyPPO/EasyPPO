@@ -37,6 +37,10 @@ can instead be selected with `KV_COMPACTION_REPO=/path/to/compaction`.
 
 ## Terminal training
 
+For Qwen3.5-27B one-step async actor-critic with independent
+`full_detach` / `actor-summary` critics, see [ASYNC_PPO.md](ASYNC_PPO.md).
+It includes FrontierSmith → Frontier-CS and TMAX-15K → TB2.1 recipes.
+
 Use the [terminal training guide](TERMINAL.md) for full TMAX training with the
 mini-swe-agent harness, thinking enabled, and official TB2.1 validation.
 The launcher reuses the EasyPPO settings below.

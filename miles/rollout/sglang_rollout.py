@@ -636,7 +636,7 @@ async def eval_rollout_single_dataset(
     tasks = []
     # do multiple samples for eval prompts
     sample_index = 0
-    for _i, prompt_sample in enumerate(dataset.samples):
+    for _i, prompt_sample in enumerate(dataset_cfg.select_samples(dataset.samples)):
         for j in range(dataset_cfg.n_samples_per_eval_prompt):
             # use the same prompt for multiple samples
             sample = copy.deepcopy(prompt_sample)
