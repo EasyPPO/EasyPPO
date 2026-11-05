@@ -619,7 +619,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     def _train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:
-        # Create data iterator for log_probs and train.
+        # Read the complete batch's fixed pre-update values before any optimizer
+        # step, including when its critic schedule already contains mini-batches.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         rollout_data.update(
             forward_only(
@@ -639,7 +640,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
         if getattr(self.args, "critic_num_steps_per_rollout", None) is not None:
-            # Only the optimizer steps are re-split; the value forward above keeps the shared schedule.
+            # Consume the prompt-group plan when supplied; ordinary critic
+            # shards retain their existing per-rank shuffled mini-batches.
             data_iterator, num_microbatches, num_rollouts = get_critic_train_schedule(
                 self.args, rollout_data, rollout_id=rollout_id, num_rollouts=num_rollouts
             )
@@ -663,8 +665,8 @@ class MegatronTrainRayActor(TrainRayActor):
             # Ship by object reference
             shipped = [value.detach().cpu() for value in rollout_data["values"]]
             if (slices := rollout_data.get("value_slices")) is not None:
-                # --critic-context-mode full_history: the critic trained on one sample per episode. Cut its values
-                # into the per-sample vectors of the actor's shard (same rank, the actor's sample order).
+                # The episode planner maps critic rows back to actor response
+                # positions on this rank, in the actor's sample order.
                 shipped = [shipped[i][start : start + length] for i, start, length in slices]
             values = object_store.get_instance().put(
                 value={"values": shipped},

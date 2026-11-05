@@ -84,8 +84,9 @@ async def train(args, *, disposer: Disposer):
             if args.use_critic and args.offload_train:
                 await model.offload()
 
-        if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
-            await save_training_model(actor_model)
+        # A frozen actor still needs the matching rollout checkpoint so that
+        # joint actor/critic resume can recover during critic-only warmup.
+        await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
         await rollout_executor.save(rollout_id)
@@ -131,14 +132,22 @@ async def train(args, *, disposer: Disposer):
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
-            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
+            rollout_id,
+            args.save_interval,
+            num_rollout_per_epoch if getattr(args, "save_on_epoch", True) else None,
+            args.num_rollout,
         ):
             await save(rollout_id, force_sync=external_save)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
         # One predicate for both blocks: the handoff below exists to feed this eval on the last rollout.
-        eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)
+        eval_due = should_run_periodic_action(
+            rollout_id,
+            args.eval_interval,
+            num_rollout_per_epoch if getattr(args, "eval_on_epoch", True) else None,
+            args.num_rollout,
+        )
         if rollout_id + 1 < args.num_rollout or eval_due:
             if args.colocate_memory_peak_device == "gpu":
                 await actor_model.clear_memory()

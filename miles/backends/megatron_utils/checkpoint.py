@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch.distributed as dist
@@ -119,13 +119,18 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
-        result = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-        )
+        initialize_value_head = getattr(args, "_initialize_critic_value_head", False)
+        # Use the existing pretrained-load exclusion for the native format as
+        # well: an actor vocabulary projection is not a critic value head.
+        head_context = _hide_critic_value_head(ddp_model) if initialize_value_head else nullcontext()
+        with head_context:
+            result = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     else:
         result = _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -192,20 +197,26 @@ def _is_megatron_checkpoint(path: str | Path) -> bool:
 
 
 @contextmanager
-def _hide_critic_value_head_from_hf_load(ddp_model):
+def _hide_critic_value_head(ddp_model):
     value_heads = [
-        (chunk, name, head)
+        (chunk, name, head, getattr(chunk, "post_process", None))
         for chunk in unwrap_model(ddp_model)
         for name, head in chunk.named_children()
         if isinstance(head, LinearForLastLayer)
     ]
-    for chunk, name, _ in value_heads:
+    for chunk, name, _, post_process in value_heads:
         delattr(chunk, name)
+        if post_process is not None:
+            # LanguageModule.sharded_state_dict expects an output weight on
+            # post-process stages. Exclude that branch with the head itself.
+            chunk.post_process = False
     try:
         yield
     finally:
-        for chunk, name, head in value_heads:
+        for chunk, name, head, post_process in value_heads:
             setattr(chunk, name, head)
+            if post_process is not None:
+                chunk.post_process = post_process
 
 
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
@@ -214,7 +225,7 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
 
-    with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
+    with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head(ddp_model):
         bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
         bridge.load_hf_weights(ddp_model)
 

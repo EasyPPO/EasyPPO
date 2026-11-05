@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from random import Random
 from typing import Any
 
 _MISSING = object()
 
 # TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)
 DATASET_RUNTIME_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
+    "max_samples": {
+        "dataset_keys": ("max_samples",),
+        "default_keys": ("max_samples",),
+        "arg_attrs": (),
+    },
+    "sample_seed": {
+        "dataset_keys": ("sample_seed",),
+        "default_keys": ("sample_seed",),
+        "arg_attrs": ("rollout_seed",),
+    },
     "n_samples_per_eval_prompt": {
         "dataset_keys": ("n_samples_per_eval_prompt",),
         "default_keys": ("n_samples_per_eval_prompt",),
@@ -106,6 +117,8 @@ class EvalDatasetConfig:
     metadata_key: str | None = None
 
     n_samples_per_eval_prompt: int | None = None
+    max_samples: int | None = None
+    sample_seed: int | None = None
 
     temperature: float | None = None
     top_p: float | None = None
@@ -122,6 +135,19 @@ class EvalDatasetConfig:
 
     def __post_init__(self) -> None:
         self.metadata_overrides = _ensure_metadata_overrides(self.metadata_overrides)
+        if self.max_samples is not None and (type(self.max_samples) is not int or self.max_samples <= 0):
+            raise ValueError("Evaluation max_samples must be a positive integer or null for the full dataset")
+        if self.sample_seed is None:
+            self.sample_seed = 42
+        if type(self.sample_seed) is not int or self.sample_seed < 0:
+            raise ValueError("Evaluation sample_seed must be a nonnegative integer")
+
+    def select_samples(self, samples: list[Any]) -> list[Any]:
+        """Use a fixed seeded task subset without changing the cached dataset."""
+        if self.max_samples is None or len(samples) <= self.max_samples:
+            return samples
+        indices = sorted(Random(self.sample_seed).sample(range(len(samples)), self.max_samples))
+        return [samples[index] for index in indices]
 
     @property
     def cache_key(self) -> tuple[Any, ...]:

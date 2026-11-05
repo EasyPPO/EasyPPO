@@ -6,14 +6,36 @@ in-process episode; no global registry or external agent server is needed.
 
 import asyncio
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
+from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 from harbor.agents.base import BaseAgent
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
 from harbor.trial.trial import Trial
 
-from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
+
+def _write_trajectory(trace: TerminalTrace, messages: list[dict], logs_dir: Path) -> None:
+    # Avoid asdict() deep-copying potentially large top-k arrays. Persist them
+    # losslessly in a compact sidecar and keep only field references in JSON.
+    payload = asdict(replace(trace, topk_token_ids=None, topk_log_probs=None))
+    payload.pop("topk_token_ids")
+    payload.pop("topk_log_probs")
+    if trace.topk_token_ids is not None:
+        # NumPy is only needed when the optional candidate feature is active.
+        import numpy as np
+
+        archive, segments = {}, []
+        for i, (ids, logps) in enumerate(zip(trace.topk_token_ids, trace.topk_log_probs, strict=True)):
+            ids_key, logps_key = f"segment_{i}_token_ids", f"segment_{i}_log_probs"
+            archive[ids_key], archive[logps_key] = ids, logps
+            segments.append({"token_ids": ids_key, "log_probs": logps_key, "shape": list(ids.shape)})
+        path = logs_dir / "easyppo-topk.npz"
+        np.savez_compressed(path, **archive)
+        payload["topk_candidates"] = {"path": path.name, "segments": segments}
+    (logs_dir / "easyppo-trajectory.json").write_text(
+        json.dumps({"trace": payload, "messages": messages}, ensure_ascii=False)
+    )
 
 
 class MiniSweTerminalAgent(BaseAgent):
@@ -66,9 +88,7 @@ class MiniSweTerminalAgent(BaseAgent):
             context.n_input_tokens = sum(c["prompt_tokens"] for c in self.trace.calls)
             context.n_output_tokens = self.trace.generated_tokens
             self.logs_dir.mkdir(parents=True, exist_ok=True)
-            (self.logs_dir / "easyppo-trajectory.json").write_text(
-                json.dumps({"trace": asdict(self.trace), "messages": agent.messages}, ensure_ascii=False)
-            )
+            _write_trajectory(self.trace, agent.messages, self.logs_dir)
 
 
 async def run_trial(*, task_path: Path, trials_dir: Path, environment: str, tokenizer, decode, config):

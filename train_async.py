@@ -83,7 +83,7 @@ async def train(args, *, disposer: Disposer):
             rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if args.use_critic:
-            values = await critic_model.train(rollout_id, rollout_data_curr_ref)
+            values = await critic_model.train(rollout_id, rollout_data_curr_ref.for_critic())
             if args.offload_train:
                 await critic_model.offload()
             if rollout_id >= args.num_critic_only_steps:
@@ -97,7 +97,10 @@ async def train(args, *, disposer: Disposer):
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
-            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
+            rollout_id,
+            args.save_interval,
+            num_rollout_per_epoch if getattr(args, "save_on_epoch", True) else None,
+            args.num_rollout,
         ):
             force_sync = external_save or rollout_id == args.num_rollout - 1
             await save_training_model(actor_model, rollout_id, force_sync)
@@ -116,7 +119,12 @@ async def train(args, *, disposer: Disposer):
             if defer_next_drain:
                 rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
-        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+        if should_run_periodic_action(
+            rollout_id,
+            args.eval_interval,
+            num_rollout_per_epoch if getattr(args, "eval_on_epoch", True) else None,
+            args.num_rollout,
+        ):
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 

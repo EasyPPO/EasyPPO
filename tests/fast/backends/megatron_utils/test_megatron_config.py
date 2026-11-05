@@ -763,13 +763,16 @@ class TestSynthesizedCriticTrainer:
         assert (critic.trainer_id, critic.model_id, critic.role) == ("alpha-critic", "alpha", "critic")
         assert critic.overrides["eps_clip"] == 0.3
 
-    def test_the_synthesized_critic_reproduces_the_legacy_worker_swap(self):
+    def test_the_synthesized_critic_reproduces_the_legacy_worker_swap(self, tmp_path):
         """The worker no longer remaps critic_* onto the standard fields, so the overlay must do it."""
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "latest_checkpointed_iteration.txt").write_text("39")
         args = _make_args(
             use_critic=True,
             save="/ckpt/run",
             load="/ckpt/run",
-            critic_load="/ckpt/critic",
+            critic_load=str(critic_load),
             critic_save="/ckpt/run_critic",
             critic_lr=2e-6,
             critic_lr_warmup_iters=3,
@@ -783,11 +786,69 @@ class TestSynthesizedCriticTrainer:
             False,
         )
         assert (critic_args.load, critic_args.save, critic_args.lr, critic_args.lr_warmup_iters) == (
-            "/ckpt/critic",
+            str(critic_load),
             "/ckpt/run_critic",
             2e-6,
             3,
         )
+
+    def test_a_fresh_critic_resolves_its_own_pretrained_fallback(self, tmp_path):
+        args = _make_args(
+            use_critic=True,
+            load="/existing-actor",
+            critic_load=str(tmp_path / "new-critic"),
+            ref_load="/pretrained",
+            ref_ckpt_step=1,
+            start_rollout_id=39,
+        )
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[1])
+
+        assert critic_args.requested_load == str(tmp_path / "new-critic")
+        assert critic_args.load == "/pretrained"
+        assert critic_args.finetune and critic_args.no_load_optim and critic_args.no_load_rng
+        assert critic_args.ckpt_step == 1 and critic_args.start_rollout_id == 0
+        assert critic_args._initialize_critic_value_head
+        assert args.load == "/existing-actor" and args.start_rollout_id == 39
+
+    @pytest.mark.parametrize("no_load_optim", [False, True])
+    def test_a_critic_checkpoint_keeps_its_native_progress_and_value_head(self, tmp_path, no_load_optim):
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "latest_checkpointed_iteration.txt").write_text("39")
+        args = _make_args(
+            use_critic=True,
+            critic_load=str(critic_load),
+            ref_load="/pretrained",
+            no_load_optim=no_load_optim,
+            start_rollout_id=39,
+            ckpt_step=39,
+        )
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[1])
+
+        assert critic_args.load == str(critic_load)
+        assert critic_args.start_rollout_id == critic_args.ckpt_step == 39
+        assert critic_args.no_load_optim == no_load_optim and not critic_args.finetune
+        assert not critic_args._initialize_critic_value_head
+
+    def test_a_weights_only_critic_warm_start_restores_its_trained_head(self, tmp_path):
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "latest_checkpointed_iteration.txt").write_text("39")
+        args = _make_args(
+            use_critic=True,
+            critic_load=str(critic_load),
+            ref_load="/pretrained",
+            finetune=True,
+            no_load_optim=True,
+            no_load_rng=True,
+        )
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[1])
+
+        assert critic_args.load == str(critic_load) and critic_args.finetune
+        assert not critic_args._initialize_critic_value_head
 
     def test_the_actor_of_a_critic_run_keeps_its_own_checkpoint_and_schedule(self):
         """The two trainers share one command line, so a leaked critic override would retrain the actor."""

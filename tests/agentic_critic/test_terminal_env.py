@@ -98,6 +98,15 @@ async def test_summary_keeps_all_generated_tokens_and_masks_observations():
         assert all(
             lp == (0.0 if mask == 0 else -0.5) for lp, mask in zip(f["rollout_log_probs"], f["loss_mask"], strict=True)
         )
+    critic_text = Tokenizer().decode([token for segment in trace.critic_segments for token in segment.tokens])
+    assert critic_text.count("Fix the task") == 1
+    assert critic_text.count("File /tmp/work changed; next submit.") == 1
+    assert critic_text.count("You are a helpful assistant") == 1
+    assert trace.critic_memory_exact
+    assert all(
+        a.tokens[-a.response_length :] == c.tokens[-c.response_length :]
+        for a, c in zip(trace.segments, trace.critic_segments, strict=True)
+    )
 
 
 @pytest.mark.asyncio
@@ -135,6 +144,9 @@ async def test_keep_last_turns_drops_only_whole_turns():
     assert len(trace.calls) == 3 and all(c["kind"] == "action" for c in trace.calls)
     resumed = Tokenizer().decode(trace.segments[-1].tokens)
     assert "first" not in resumed and "second" in resumed
+    critic_text = Tokenizer().decode([token for segment in trace.critic_segments for token in segment.tokens])
+    assert critic_text.count("```bash\nfirst") == 1 and critic_text.count("```bash\nsecond") == 1
+    assert critic_text.count("x" * 650) == 2  # includes the not-yet-recorded final observation
 
 
 @pytest.mark.asyncio

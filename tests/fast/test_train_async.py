@@ -18,6 +18,7 @@ from miles.ray import placement_group as placement_group_mod
 from miles.ray import wiring
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
+from miles.utils.data import RolloutDataPack
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -200,6 +201,30 @@ class TestPipelinedGeneration:
 
 
 class TestCriticValuesHandoff:
+    async def test_episode_critic_receives_its_own_shards(self, monkeypatch):
+        events = []
+        args = _make_args(num_rollout=1, use_critic=True, keep_old_actor=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        store = FakeObjectStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+        actor_ref, critic_ref = store.put("actor-shard"), store.put("critic-episode-shard")
+        pack = RolloutDataPack(sample_indices=[0], data_ref=[actor_ref], critic_data_ref=[critic_ref])
+        components.rollout_executor.generation_packs.append(pack)
+        captured = {}
+
+        async def critic_train(rollout_id, data):
+            captured["critic"] = data
+            return []
+
+        async def actor_train(rollout_id, data, external_data):
+            captured["actor"] = data
+
+        monkeypatch.setattr(components.critic_model, "train", critic_train)
+        monkeypatch.setattr(components.actor_model, "train", actor_train)
+        await with_disposer(train_async_driver.train, args)
+        assert captured["critic"].data_ref == [critic_ref]
+        assert captured["actor"] is pack and captured["actor"].data_ref == [actor_ref]
+
     async def test_async_critic_outputs_reach_the_actor_and_are_released_after_training(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
