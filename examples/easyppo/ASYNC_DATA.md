@@ -1,6 +1,6 @@
-# Data for asynchronous terminal PPO
+# Terminal actor-critic datasets
 
-Run two separate experiments, with the same bash/mini-swe-agent harness:
+The asynchronous and synchronous recipes use the same bash/mini-swe-agent harness and dataset pairs:
 
 | Recipe | Training corpus | Evaluation corpus | Prepared inputs |
 | --- | --- | --- | --- |
@@ -10,8 +10,7 @@ Run two separate experiments, with the same bash/mini-swe-agent harness:
 The source release explicitly identifies 10 synthetic parity problems as
 aliases of Frontier-CS IDs 306–315. The preparation script removes these
 10 problems **from training**, preserving the full selected Frontier-CS
-evaluation set. This is an explicit alias exclusion; it does not establish
-exhaustive semantic deduplication of the remaining synthetic corpus.
+evaluation set.
 [Alias manifest](https://github.com/FrontierCS/FrontierSmith/blob/ac3046cce7a270e3177cbb41376f36e03de1d518/data/sample_lists/frontiersmith_parity_10.json).
 
 The fixed Frontier-CS version contains 180 algorithmic directories. Its

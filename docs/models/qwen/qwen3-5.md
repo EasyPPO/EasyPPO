@@ -55,9 +55,10 @@ All three variants are 1 node × 8 GPU. The launcher reads checkpoints from `--m
 
 For **Qwen3.5-27B asynchronous terminal actor-critic**, use
 [`examples/easyppo/run_qwen3_5_27b_async_ppo.py`](../../../examples/easyppo/run_qwen3_5_27b_async_ppo.py).
-The [recipe and parameter guide](../../../examples/easyppo/ASYNC_PPO.md) covers
+The [recipe and parameter guide](../../../examples/easyppo/RECIPES.md) covers
 FrontierSmith → Frontier-CS, TMAX-15K → TB2.1, and independent
 `full_detach` / `actor-summary` critics.
+It includes asynchronous SC/TIS and synchronous clipped-PPO entry points.
 The default candidate allocation is 64 B200s (16 training + 48 rollout);
 32 GPUs (8 + 24) are supported. GPU capacity and throughput require validation.
 
