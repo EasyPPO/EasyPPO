@@ -40,8 +40,21 @@ We use **200 synthetic open-ended coding problems** from
 [FrontierSmith](https://github.com/FrontierCS/FrontierSmith) for training and
 **172 [Frontier-CS](https://github.com/FrontierCS/Frontier-CS) algorithmic problems**
 for validation. Generated C++ solutions
-are evaluated by the problem-specific checkers. The FrontierSmith repository
-provides the training data, data preparation scripts, and judge setup.
+are evaluated by the problem-specific checkers.
+
+The 200 FrontierSmith problems (`frontiersmith_0` through `frontiersmith_199`)
+and `data/frontiercs/train_synthetic_200.parquet` are pinned to
+[FrontierSmith commit 166c8be](https://github.com/FrontierCS/FrontierSmith/commit/166c8be14a62b013ef78e6868e4355421c8c6456).
+Each Smith problem contains its final statement, checker, judge configuration,
+and test inputs/answers. Generation traces, draft statements, and candidate
+solutions are not included.
+The bundled `Frontier-CS/algorithmic/` judge and 172 Frontier-CS validation
+problems (`frontiercs_val_*` IDs) are pinned to
+[FrontierReward commit 0b379d7](https://github.com/dyxg/FrontierReward/commit/0b379d769aec019f591d8e163a10be04489e6507).
+The prepared Parquet files include the prompts and judge IDs.
+
+For judge setup, local training, W&B, and evaluation commands, see
+[Local Frontier training](#local-frontier-training).
 
 ### DAPO-Math-17k / AIME24
 
@@ -78,6 +91,214 @@ bash scripts/run_aime_ours.sh \
 Hydra overrides can be appended to the command, for example
 `trainer.total_training_steps=150`. Checkpoints, rollouts, and validation results
 are saved under `$EASYPPO_OUTPUT_DIR/aime-ours/` (default: `outputs/aime-ours/`).
+
+## Local Frontier training
+
+This workflow trains on **FrontierSmith** and evaluates on the **172 held-out
+Frontier-CS problems**. The judge runs as a separate CPU service; training uses
+one Linux node with **8 GPUs**. The default initialization is
+[`HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1`](https://huggingface.co/HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1).
+Run all commands from the repository root.
+
+### Checkout and training environment
+
+Until this branch is merged, use the checkout containing the Frontier files:
+
+```bash
+git clone --branch FCS https://github.com/EasyPPO/EasyPPO.git EasyPPO-frontier
+cd EasyPPO-frontier
+python3 -m pip install --no-deps -e .
+```
+
+Use an activated Python 3.12 GPU environment matching
+[`docker/requirements-easyppo.txt`](docker/requirements-easyppo.txt), with
+FlashAttention built for its PyTorch/CUDA version. Editable installation above
+installs this checkout, not its dependencies. The [Docker instructions](#docker)
+provide a prebuilt B200 environment; the Frontier container command is below.
+The GRPO recipes use 8192 prompt tokens, 32768 response tokens, 32 training
+responses per prompt, and 5 validation responses per prompt.
+
+The data is already committed; no download or regeneration is needed:
+
+| Purpose | File | Rows |
+| --- | --- | ---: |
+| Default Smith training | `data/frontiercs/train_synthetic_200.parquet` | 200 |
+| Held-out FCS validation | `data/frontiercs/frontiercs_val.parquet` | 172 |
+
+### Start and check the judge
+
+Docker must be running on the judge host. Build and start the bundled service:
+
+```bash
+docker build -t frontiercs-judge Frontier-CS/algorithmic
+JUDGE_WORKERS=8 GJ_PARALLELISM=8 bash Frontier-CS/algorithmic/run_judge.sh
+export FRONTIERCS_JUDGE_URL=http://127.0.0.1:8082
+curl --fail --retry 10 --retry-connrefused --retry-delay 2 "$FRONTIERCS_JUDGE_URL/health"
+```
+
+The health response should be `{"ok":true}`. The launcher uses a privileged
+container named `Competitive-Programming` and replaces an existing container
+with that name. Problem files, judge state, and submissions are mounted from
+`Frontier-CS/algorithmic/`.
+
+Check the complete submission/checker path before training. This valid vertex
+cover includes every vertex and should receive a positive partial score:
+
+```bash
+python3 - <<'PY'
+import os
+from verl.utils.reward_score.frontiercs import compute_score
+
+code = '#include <iostream>\nint main(){int n,m;std::cin>>n>>m;for(int i=0;i<n;i++)std::cout<<1<<"\\n";}'
+result = compute_score(
+    "frontiercs", code, "frontiercs_val_182",
+    judge_url=os.environ["FRONTIERCS_JUDGE_URL"],
+)
+print(result)
+assert result["score"] > 0, "Check the judge URL, problem files, and container logs"
+PY
+```
+
+For a remote judge, set `FRONTIERCS_JUDGE_URL` to its reachable host/IP and port.
+Check `/health` from every reward-worker host. In a container, `127.0.0.1`
+refers to that container unless it uses host networking.
+
+```bash
+docker logs --tail 100 Competitive-Programming
+# Stop the judge after the training/evaluation job finishes:
+# docker stop Competitive-Programming
+```
+
+The adapter extracts C++, submits to `/submit`, and polls `/result/<sid>`.
+`score` is normalized to 0–1; `acc`, `raw_score`, and `judge_raw_score` retain
+the 0–100 scale. Submission failures and a 300-second polling timeout return
+zero reward, so a successful health check alone does not replace the smoke test.
+
+### W&B logging
+
+The YAML files default to console-only logging. To upload training metrics,
+authenticate and set the environment **before launching training/local Ray**:
+
+```bash
+wandb login
+export WANDB_ENTITY=your-user-or-team
+export WANDB_MODE=online
+export WANDB_DIR="$PWD/outputs/wandb"
+mkdir -p "$WANDB_DIR"
+```
+
+For unattended jobs, provide `WANDB_API_KEY` through the job's environment instead
+of interactive login. Select the backend with `'trainer.logger=[console,wandb]'`.
+The W&B project and run name come from `trainer.project_name` and
+`trainer.experiment_name`; setting only `WANDB_PROJECT` does not override them.
+For an existing remote Ray cluster, its worker environment must also have the
+W&B credentials/settings. See [W&B settings](https://github.com/wandb/wandb/blob/main/wandb/sdk/wandb_settings.py)
+for the supported environment settings.
+
+For local offline logs, use `WANDB_MODE=offline` with the W&B backend enabled;
+for console-only runs, use `'trainer.logger=[console]'`. The repository's training
+Dockerfile defaults `WANDB_MODE=disabled`, so explicitly override it for W&B runs.
+
+### Choose a configuration and train
+
+| Config name | Algorithm | Response overlong filtering |
+| --- | --- | --- |
+| `grpo_frontiersmith` | GRPO | Enabled |
+| `dr_grpo_frontiersmith` | Dr. GRPO | Enabled |
+| `grpo_frontiersmith_no_overlong_filter` | GRPO | Disabled |
+| `dr_grpo_frontiersmith_no_overlong_filter` | Dr. GRPO | Disabled |
+
+All four configs filter overlong prompts. All responses retain their original
+judge rewards and participate in GRPO/Dr. GRPO advantage estimation and group
+reward statistics. With response filtering enabled, overlong responses are
+masked only during actor updates. With filtering disabled, they also participate
+in actor updates. Response filtering applies only to training.
+
+For a local GRPO run with W&B:
+
+```bash
+export MODEL_PATH=HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1
+export TRAIN_DATA="$PWD/data/frontiercs/train_synthetic_200.parquet"
+export VAL_DATA="$PWD/data/frontiercs/frontiercs_val.parquet"
+export OUTPUT_DIR="$PWD/outputs/frontier-grpo-run1"
+export FRONTIERCS_JUDGE_URL=http://127.0.0.1:8082
+
+python3 -m verl.trainer.main_ppo \
+  --config-path "$PWD/configs" --config-name grpo_frontiersmith \
+  reward.custom_reward_function.reward_kwargs.judge_url="$FRONTIERCS_JUDGE_URL" \
+  'trainer.logger=[console,wandb]' \
+  trainer.project_name=EasyPPO-Frontier \
+  trainer.experiment_name=frontier-grpo-run1
+```
+
+Choose any config name in the table for the other variants. Set `MODEL_PATH` to
+a local model directory if desired. `TRAIN_DATA` defaults to the released
+200-problem Smith training Parquet.
+The explicit `judge_url` override sends the address to reward workers; the YAML's
+literal default remains `http://127.0.0.1:8082`, independent of the shell variable.
+For a configuration preview without starting training, append `--cfg job --resolve`.
+
+Checkpoints, rollouts, and validation results go to `$OUTPUT_DIR/checkpoints`,
+`$OUTPUT_DIR/rollouts`, and `$OUTPUT_DIR/validation`. The default training length
+is 240 steps; validation runs before training and every 5 steps, and checkpoints
+are saved every 10 steps. `resume_mode=auto` resumes from checkpoints in that
+output directory; use a new directory for a new experiment.
+
+The PPO recipe is also available:
+
+```bash
+export EASYPPO_OUTPUT_DIR="$PWD/outputs/frontier-ppo-run1"
+bash scripts/run_frontiersmith.sh \
+  actor_rollout_ref.model.path="$MODEL_PATH" \
+  'trainer.logger=[console,wandb]' \
+  trainer.project_name=EasyPPO-Frontier \
+  trainer.experiment_name=frontier-ppo-run1
+```
+
+This launcher reads `FRONTIERCS_JUDGE_URL` on the launch host and passes it
+explicitly. It uses a critic, a 12000-token response limit, and the 200/172 splits;
+its outputs go under `$EASYPPO_OUTPUT_DIR/frontiersmith/`. It reads `MODEL_PATH`
+with the same SFT default as the GRPO configs. Use CLI overrides for its data
+paths; `TRAIN_DATA` and `VAL_DATA` are defaults for the GRPO YAMLs, not inputs
+read by the PPO shell launcher.
+
+### Evaluation only
+
+With the judge still running, evaluate model weights without training:
+
+```bash
+python3 -m verl.trainer.main_ppo \
+  --config-path "$PWD/configs" --config-name grpo_frontiersmith \
+  trainer.val_only=true trainer.resume_mode=disable \
+  actor_rollout_ref.model.path=/path/to/huggingface-model \
+  'data.val_files=[data/frontiercs/frontiercs_val.parquet]' \
+  reward.custom_reward_function.reward_kwargs.judge_url="$FRONTIERCS_JUDGE_URL" \
+  'trainer.logger=[console,wandb]' \
+  trainer.project_name=EasyPPO-Frontier \
+  trainer.experiment_name=frontier-eval
+```
+
+The model path must contain Hugging Face-compatible model weights and tokenizer
+files, not an unmerged distributed checkpoint. To evaluate Smith, change
+`data.val_files` to `[data/frontiercs/train_synthetic_200.parquet]`.
+
+### Run the training process in Docker
+
+On a Linux host with 8 B200 GPUs, start the judge on the host as above, then use
+host networking for the training container to reach `127.0.0.1:8082`:
+
+```bash
+docker run --rm -it --gpus all --network host --shm-size=16g \
+  --mount "type=bind,source=$PWD,target=/workspace/EasyPPO" \
+  -w /workspace/EasyPPO -e WANDB_MODE=online \
+  --entrypoint bash ghcr.io/easyppo/easyppo-b200:20260926
+```
+
+Inside the container, run `wandb login`, export the W&B/model/data/output variables,
+and run the training command above. Host shell exports are not automatically
+passed to Docker. If using local model files outside the checkout, mount their
+directory into the container as well. Set paths to their container locations;
+outputs under `/workspace/EasyPPO/outputs` persist in the host checkout.
 
 ## Docker
 
