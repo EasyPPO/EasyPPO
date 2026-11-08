@@ -1,0 +1,293 @@
+```markdown
+# Yae Village Defense Network
+
+## Problem
+
+The ancient village of Yae has `n` houses, numbered `1..n`. House `1` is the Grand Shrine, where Sakura starts and ends every day.
+
+There are `m` candidate bidirectional roads. Road `i` connects two houses `u_i, v_i`, has:
+
+- build cost `c_i`
+- travel time `d_i`
+
+Before the first day begins, Sakura may choose a subset of roads to build, with total build cost at most `B`. Built roads remain available for all days.
+
+Over `D` days, Collapse beasts will appear. Attack `j` is described by:
+
+- house `h_j`
+- release day `a_j`
+- deadline day `b_j` (`a_j <= b_j`)
+- energy `w_j`
+
+An attack is **active** on every day `t` with `a_j <= t <= b_j`. If Sakura visits `h_j` on any active day, that attack is cleared and causes no damage. Otherwise, if it is still uncleared after day `b_j`, it causes damage `w_j`.
+
+On each day `t`, Sakura starts at house `1`, walks along built roads, and must return to house `1` by the end of the day. The total travel time used that day must not exceed `L_t`.
+
+If Sakura visits a house on a day, then **all attacks active at that house on that day** are cleared immediately.
+
+Your task is to output:
+
+1. which roads to build;
+2. one patrol walk for each day;
+
+so as to minimize total damage from uncleared attacks.
+
+This is an optimization problem: many outputs may be feasible, and better outputs receive higher scores.
+
+---
+
+## Input
+
+The input describes one instance.
+
+```text
+n m D A B
+u_1 v_1 c_1 d_1
+u_2 v_2 c_2 d_2
+...
+u_m v_m c_m d_m
+L_1 L_2 ... L_D
+h_1 a_1 b_1 w_1
+h_2 a_2 b_2 w_2
+...
+h_A a_A b_A w_A
+```
+
+### Meaning
+
+- `n`: number of houses
+- `m`: number of candidate roads
+- `D`: number of days
+- `A`: number of attacks
+- `B`: total road-building budget
+
+For each road `i`:
+
+- `u_i, v_i`: endpoints
+- `c_i`: build cost
+- `d_i`: travel time
+
+For each day `t`:
+
+- `L_t`: maximum total travel time allowed on day `t`
+
+For each attack `j`:
+
+- `h_j`: attacked house
+- `a_j`: release day
+- `b_j`: deadline day
+- `w_j`: damage if not cleared in time
+
+All roads are bidirectional. Multiple roads between the same pair of houses may exist.
+
+---
+
+## Output
+
+Your output must have exactly `D + 1` lines.
+
+### Line 1: built roads
+
+```text
+k e_1 e_2 ... e_k
+```
+
+- `k` is the number of roads you build.
+- `e_1, ..., e_k` are distinct road indices in `[1, m]`.
+
+Their total build cost must satisfy:
+
+```text
+sum(c_{e_i}) <= B
+```
+
+### Lines 2 to D+1: daily patrols
+
+For each day `t = 1..D`, output one line:
+
+```text
+p_t f_{t,1} f_{t,2} ... f_{t,p_t}
+```
+
+- `p_t` is the number of road traversals on day `t`
+- each `f_{t,s}` is a built road index
+
+The patrol is interpreted as follows:
+
+- Sakura starts at house `1`
+- for each listed road index, she traverses that road
+- at every step, the chosen road must be incident to Sakura’s current house
+- traversing road `i` moves Sakura to its other endpoint
+- after all `p_t` traversals, Sakura must be back at house `1`
+
+The total travel time on day `t` is:
+
+```text
+sum(d_{f_{t,s}})
+```
+
+and must satisfy:
+
+```text
+sum(d_{f_{t,s}}) <= L_t
+```
+
+`p_t = 0` is allowed; this means Sakura stays at house `1` all day.
+
+### Feasibility requirements
+
+A submission is **feasible** iff all of the following hold:
+
+1. all road indices are valid;
+2. built road indices are distinct;
+3. total build cost does not exceed `B`;
+4. every traversed road was built;
+5. each daily patrol starts at house `1`, follows valid adjacent roads, and ends at house `1`;
+6. each daily patrol respects that day's travel limit.
+
+If any condition fails, the submission is infeasible.
+
+---
+
+## Objective
+
+For each attack `j`, let it be **cleared** if there exists a day `t` such that:
+
+- `a_j <= t <= b_j`, and
+- house `h_j` is visited by Sakura on day `t`
+
+A house is considered visited on a day if Sakura is there at the start of the day, after any traversal, or at the end of the day.
+
+The objective value is the total damage:
+
+```text
+Damage = sum(w_j for all attacks j that are not cleared)
+```
+
+Your goal is to **minimize** `Damage`.
+
+If your output is infeasible, it is treated as having infinite damage.
+
+---
+
+## Scoring
+
+For each test file, define the **baseline** solution as:
+
+- build no roads;
+- on every day, output `0` (stay at house `1`).
+
+Let `BaseDamage` be the damage of that baseline on the test file.
+
+Let your feasible damage be `YourDamage`.
+
+The score for one test file is:
+
+```text
+Score = floor(1,000,000 * min(10, (BaseDamage + 1) / (YourDamage + 1)))
+```
+
+If your output is infeasible, the score for that test file is `0`.
+
+- The baseline always scores exactly `1,000,000`.
+- Better solutions score more than `1,000,000`.
+- Worse feasible solutions score less than `1,000,000`.
+
+Your final score is the arithmetic mean of the per-file scores over all official test files.
+
+---
+
+## Constraints
+
+- `2 <= n <= 400`
+- `1 <= m <= 3000`
+- `1 <= D <= 60`
+- `1 <= A <= 4000`
+- `1 <= u_i, v_i <= n`
+- `1 <= c_i <= 10^6`
+- `1 <= d_i <= 10^6`
+- `1 <= B <= 10^9`
+- `0 <= L_t <= 10^9`
+- `1 <= h_j <= n`
+- `1 <= a_j <= b_j <= D`
+- `1 <= w_j <= 10^12`
+
+The total damage fits in signed 64-bit integer.
+
+### Notes
+
+- All attack information is known in advance.
+- There may be days with `L_t = 0`.
+- Attacks at house `1` can be cleared even by staying at the shrine.
+- Exact optimization is expected to be hard; heuristic methods are encouraged.
+
+- Time limit: 3 seconds
+- Memory limit: 256 MB
+
+---
+
+## Example
+
+### Sample Input
+
+```text
+4 4 3 4 4
+1 2 2 2
+2 3 2 2
+1 4 4 3
+3 4 3 2
+4 8 0
+2 1 2 5
+3 2 3 8
+4 1 1 6
+1 3 3 4
+```
+
+### Sample Output
+
+```text
+2 1 2
+2 1 1
+4 1 2 2 1
+0
+```
+
+### Explanation
+
+Built roads:
+
+- road 1: `1-2`, cost 2, time 2
+- road 2: `2-3`, cost 2, time 2
+
+Total build cost is `4`, within budget.
+
+Patrols:
+
+- Day 1: traverse road 1 out and back, visiting house 2
+- Day 2: traverse `1 -> 2 -> 3 -> 2 -> 1`, visiting house 3
+- Day 3: stay at house 1
+
+This clears:
+
+- attack at house 2, days 1..2, energy 5
+- attack at house 3, days 2..3, energy 8
+- attack at house 1, day 3, energy 4
+
+The attack at house 4 on day 1 is missed, so:
+
+```text
+Damage = 6
+```
+
+The baseline builds no roads and only clears attacks at house 1, so:
+
+```text
+BaseDamage = 5 + 8 + 6 = 19
+```
+
+Thus the sample output would receive:
+
+```text
+floor(1,000,000 * min(10, (19 + 1) / (6 + 1))) = 2,857,142
+```
+```

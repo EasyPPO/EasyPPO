@@ -1,0 +1,270 @@
+```markdown
+# Majority Marketing Campaign
+
+## Problem
+
+A company operates a line of `n` storefronts. Storefront `i` currently promotes product `a_i`, where each product is an integer in `[1, C]`.
+
+There are `m` customer groups. Group `j` visits all storefronts in the contiguous interval `[l_j, r_j]` and only makes a purchase if **more than half** of the storefronts in that interval promote the same product.
+
+If product `c` is the strict majority in that interval, the group generates revenue
+
+\[
+w_j \cdot p_c
+\]
+
+where:
+
+- `w_j` is the importance of the group,
+- `p_c` is the profit factor of product `c`.
+
+If no product has a strict majority in `[l_j, r_j]`, the revenue from that group is `0`.
+
+Before the groups arrive, you may run at most `K` repaint campaigns.
+
+A campaign chooses a **contiguous interval** `[L, R]` and a product `c`, and changes every storefront in that interval to product `c`.
+
+To keep logistics realistic:
+
+- the chosen campaign intervals must be **pairwise disjoint**,
+- each campaign costs
+
+\[
+F + (R-L+1)
+\]
+
+- the total cost of all campaigns must not exceed `B`.
+
+Your goal is to design the campaigns to maximize the total revenue from all customer groups.
+
+This is an optimization problem: any feasible solution is accepted, and better solutions receive higher scores.
+
+---
+
+## Input
+
+The input contains a single test case.
+
+The first line contains six integers:
+
+\[
+n,\ C,\ m,\ K,\ B,\ F
+\]
+
+The second line contains `C` integers:
+
+\[
+p_1, p_2, \dots, p_C
+\]
+
+where `p_c` is the profit factor of product `c`.
+
+The third line contains `n` integers:
+
+\[
+a_1, a_2, \dots, a_n
+\]
+
+The next `m` lines each contain three integers:
+
+\[
+l_j,\ r_j,\ w_j
+\]
+
+describing one customer group.
+
+---
+
+## Output
+
+On the first line, output a single integer `s` — the number of campaigns you use.
+
+Then output `s` lines. Each line must contain three integers:
+
+\[
+L_t,\ R_t,\ c_t
+\]
+
+meaning that campaign `t` repaints every storefront in interval `[L_t, R_t]` to product `c_t`.
+
+### Feasibility requirements
+
+Your output is **feasible** iff all of the following hold:
+
+- `0 <= s <= K`
+- `1 <= L_t <= R_t <= n`
+- `1 <= c_t <= C`
+- the intervals `[L_t, R_t]` are pairwise disjoint
+- \(\sum_{t=1}^{s} \bigl(F + (R_t-L_t+1)\bigr) \le B\)
+
+If the output is malformed or infeasible, the objective value for that test is defined to be `0`.
+
+---
+
+## Objective
+
+Let the final product assignment after applying all campaigns be `x_1, x_2, ..., x_n`.
+
+For a customer group `j`, define the count of product `c` in its interval as:
+
+\[
+\mathrm{cnt}(j,c)=\left|\{\, i \mid l_j \le i \le r_j,\ x_i=c \,\}\right|
+\]
+
+A product `c` is a **strict majority** on `[l_j, r_j]` if
+
+\[
+2\cdot \mathrm{cnt}(j,c) > r_j-l_j+1
+\]
+
+Because the majority is strict, there can be at most one such product.
+
+The revenue of group `j` is:
+
+- \(w_j \cdot p_c\), if some product `c` is a strict majority on `[l_j, r_j]`
+- `0`, otherwise
+
+Your objective is to **maximize**
+
+\[
+\mathrm{Revenue}=\sum_{j=1}^{m} \mathrm{revenue}_j
+\]
+
+---
+
+## Scoring
+
+For each test case:
+
+- Let `Your` be your objective value.
+- Let `Base` be the objective value of the **baseline solution** that uses no campaigns at all (`s = 0`).
+- Let
+
+\[
+P_{\max} = \max_{1 \le c \le C} p_c
+\]
+
+- Let
+
+\[
+Upper = \sum_{j=1}^{m} w_j \cdot P_{\max}
+\]
+
+This is a simple universal upper bound: every group earns at most `w_j * P_max`.
+
+The normalized score for the test case is:
+
+- `1`, if `Upper = Base`
+- otherwise
+
+\[
+\mathrm{score}=\operatorname{clamp}\left(0,\ 1,\ \frac{Your-Base}{Upper-Base}\right)
+\]
+
+where
+
+\[
+\operatorname{clamp}(0,1,x)=\max(0,\min(1,x))
+\]
+
+The final score is:
+
+\[
+\left\lfloor 10^6 \cdot \frac{1}{T}\sum_{t=1}^{T} \mathrm{score}_t \right\rfloor
+\]
+
+where `T` is the number of hidden test cases.
+
+### Baseline
+A valid baseline submission is simply:
+
+```text
+0
+```
+
+which performs no repaint campaigns.
+
+---
+
+## Constraints
+
+- `1 <= n <= 200000`
+- `1 <= C <= 200000`
+- `1 <= m <= 200000`
+- `1 <= K <= 200`
+- `1 <= B <= 400000`
+- `1 <= F <= 200000`
+- `1 <= p_c <= 10^6`
+- `1 <= a_i <= C`
+- `1 <= l_j <= r_j <= n`
+- `1 <= w_j <= 10^6`
+
+### Limits
+- Time limit: 4 seconds
+- Memory limit: 512 MB
+
+---
+
+## Example
+
+### Sample Input
+```text
+6 3 3 2 6 1
+4 7 10
+1 2 2 1 3 3
+1 4 5
+2 6 2
+5 6 3
+```
+
+### Sample Output
+```text
+1
+1 3 2
+```
+
+### Explanation
+
+The single campaign repaints storefronts `1..3` to product `2`.
+
+Final array:
+
+```text
+2 2 2 1 3 3
+```
+
+Customer groups:
+
+1. `[1,4]`, weight `5`  
+   Product `2` appears `3` times out of `4`, so it is a strict majority.  
+   Revenue: `5 * p_2 = 5 * 7 = 35`
+
+2. `[2,6]`, weight `2`  
+   Counts are: product `2` = 2, product `3` = 2, product `1` = 1  
+   No strict majority.  
+   Revenue: `0`
+
+3. `[5,6]`, weight `3`  
+   Product `3` appears `2` times out of `2`, so it is a strict majority.  
+   Revenue: `3 * p_3 = 3 * 10 = 30`
+
+Total objective:
+
+```text
+35 + 0 + 30 = 65
+```
+
+The baseline (`0` campaigns) yields revenue `30`, and here `P_max = 10`, so
+
+\[
+Upper = (5+2+3)\cdot 10 = 100
+\]
+
+Thus the normalized score for this test case is
+
+\[
+\frac{65-30}{100-30} = 0.5
+\]
+
+which would contribute `500000` points if this were the only test case.
+```

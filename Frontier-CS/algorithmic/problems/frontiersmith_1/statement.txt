@@ -1,0 +1,209 @@
+```markdown
+# Sparse Prefix/Suffix Calibration
+
+## Problem
+
+A laboratory is calibrating a line of `n` storage cells.  
+Cell `i` will finally contain an **integer** load `a_i` with `-m <= a_i <= m`.
+
+The lab has `q` noisy meter readings. Reading `j` is attached to a position `p_j` and can observe either:
+
+- a **prefix sum**: `a_1 + a_2 + ... + a_{p_j}`, or
+- a **suffix sum**: `a_{p_j} + a_{p_j+1} + ... + a_n`.
+
+Some meters are fixed to one direction; others can be rewired.
+
+Additionally, due to maintenance cost, at most `k` cells may be non-zero.
+
+Your task is to output:
+
+1. an integer array `a_1, ..., a_n`,
+2. for every reading, whether it is interpreted as prefix (`P`) or suffix (`S`),
+
+so as to maximize the total calibration reward.
+
+---
+
+For reading `j`, the input gives:
+
+- position `p_j`,
+- type `c_j` in `{P, S, ?}`,
+- target value `b_j`,
+- importance weight `w_j`,
+- tolerance `d_j`.
+
+If you assign this reading direction:
+
+- `P`, its predicted value is `sum(a_1 ... a_{p_j})`,
+- `S`, its predicted value is `sum(a_{p_j} ... a_n)`.
+
+If `c_j` is `P` or `S`, you must keep that direction.  
+If `c_j` is `?`, you may choose either `P` or `S`.
+
+The reward of reading `j` is
+
+`reward_j = w_j * max(0, d_j + 1 - |pred_j - b_j|)`.
+
+So:
+
+- exact match gives `w_j * (d_j + 1)`,
+- being off by `1` loses `w_j`,
+- ...
+- being off by more than `d_j` gives `0`.
+
+Your goal is to maximize the sum of rewards over all readings.
+
+## Input
+
+The first line contains one integer `t` — the number of test cases.
+
+Each test case begins with a line containing four integers:
+
+`n q k m`
+
+- `n` — number of cells,
+- `q` — number of readings,
+- `k` — maximum allowed number of non-zero cells,
+- `m` — bound on `|a_i|`.
+
+Then follow `q` lines, one per reading:
+
+`p_j c_j b_j w_j d_j`
+
+where:
+
+- `1 <= p_j <= n`,
+- `c_j` is `P`, `S`, or `?`,
+- `b_j` is the target sum,
+- `w_j` is the importance weight,
+- `d_j` is the tolerance.
+
+## Output
+
+For each test case, output **two lines**:
+
+1. `n` integers: `a_1 a_2 ... a_n`
+2. a string `o` of length `q`, consisting only of `P` and `S`
+
+Feasibility rules:
+
+- `|a_i| <= m` for every `i`,
+- at most `k` values among `a_1, ..., a_n` may be non-zero,
+- if `c_j = P`, then `o_j` must be `P`,
+- if `c_j = S`, then `o_j` must be `S`,
+- if `c_j = ?`, then `o_j` may be either `P` or `S`.
+
+If your output for a test case is infeasible, that test case receives objective value `0`.
+
+## Objective
+
+For a feasible output, define:
+
+- `pref_i = a_1 + ... + a_i`
+- `suff_i = a_i + ... + a_n`
+
+For reading `j`:
+
+- if `o_j = P`, then `pred_j = pref_{p_j}`,
+- if `o_j = S`, then `pred_j = suff_{p_j}`.
+
+Its reward is
+
+`reward_j = w_j * max(0, d_j + 1 - |pred_j - b_j|)`.
+
+The objective value for the test case is
+
+`OBJ = sum(reward_j for all readings j)`.
+
+Higher is better.
+
+## Scoring
+
+For each test case, let `B` be the objective value of the following **baseline**:
+
+- consider the all-zero array, and
+- for every position `x` from `1` to `n`, also consider the arrays with exactly one non-zero entry:
+  - `a_x = +m`, all others `0`
+  - `a_x = -m`, all others `0`
+
+For each of these candidate arrays:
+
+- fixed readings keep their fixed direction,
+- each `?` reading chooses whichever of `P` or `S` gives larger reward for that candidate.
+
+`B` is the maximum objective among all these candidates.
+
+If your objective on the test case is `OBJ`, then the test-case score is
+
+`score = floor(1_000_000 * min(5, (OBJ + 1) / (B + 1)))`.
+
+Notes:
+
+- A submission matching the baseline gets approximately `1,000,000` points on that test.
+- Better-than-baseline solutions get more.
+- The factor is capped at `5`.
+
+The final score is the arithmetic mean of test-case scores over all test cases in the input file.
+
+## Constraints
+
+- `1 <= t <= 20`
+- `2 <= n <= 5000`
+- `1 <= q <= 50000`
+- `0 <= k <= min(n, 60)`
+- `2 <= m <= 10^9`
+- `|b_j| <= m * n`
+- `1 <= w_j <= 1000`
+- `0 <= d_j <= 1000`
+- Sum of `n` over all test cases `<= 15000`
+- Sum of `q` over all test cases `<= 200000`
+
+- Time limit: 5 seconds
+- Memory limit: 512 MB
+
+## Example
+
+### Input
+```text
+1
+5 4 4 10
+3 P 4 5 0
+2 ? 1 3 1
+4 S 3 2 0
+5 ? 7 4 2
+```
+
+### Output
+```text
+1 0 3 2 1
+PPSP
+```
+
+### Explanation
+The array has 4 non-zero entries, so it is feasible.
+
+Its prefix sums are:
+- `1, 1, 4, 6, 7`
+
+Its suffix sums are:
+- `7, 6, 6, 3, 1`
+
+Reading-by-reading:
+
+1. `(p=3, P, b=4, w=5, d=0)`  
+   predicted `4`, exact match, reward `5 * (0+1) = 5`.
+
+2. `(p=2, ?, b=1, w=3, d=1)` with chosen `P`  
+   predicted `1`, exact match, reward `3 * (1+1) = 6`.
+
+3. `(p=4, S, b=3, w=2, d=0)`  
+   predicted `3`, exact match, reward `2`.
+
+4. `(p=5, ?, b=7, w=4, d=2)` with chosen `P`  
+   predicted `7`, exact match, reward `4 * (2+1) = 12`.
+
+So `OBJ = 5 + 6 + 2 + 12 = 25`.
+
+The judge also computes the baseline `B` from the zero array and all single-spike arrays `(+10)` / `(-10)`.  
+Your score for this test is then computed from `OBJ` and `B` using the scoring formula above.
+```

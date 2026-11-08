@@ -1,0 +1,174 @@
+```markdown
+# Elevator Factor Notebook
+
+## Problem
+Before each class trial, Zu Yuan has time to memorize only a few **seed integers** during the elevator ride.
+
+A target value \(c\) is considered **reconstructible** if, from the memorized seeds, Zu Yuan can recover a primitive reciprocal identity of the form
+
+\[
+\frac{1}{a}-\frac{1}{b}=\frac{1}{c}, \qquad \gcd(a,b,c)=1.
+\]
+
+A useful fact is:
+
+If there exist memorized integers \(x<y\) such that
+
+- \(x \cdot y = c\), and
+- \(\gcd(x,y)=1\),
+
+then setting
+
+\[
+a=x(y-x), \qquad b=y(y-x)
+\]
+
+gives
+
+\[
+\frac{1}{a}-\frac{1}{b}=\frac{1}{c}
+\]
+
+and automatically \(\gcd(a,b,c)=1\).
+
+So in this challenge, you do **not** need to output \(a\) or \(b\).  
+You only choose which seed integers to memorize.
+
+You are given \(M\) target values \(c_i\), each with importance weight \(w_i\).  
+Your goal is to choose at most \(K\) distinct seed integers so that the total weight of reconstructible targets is as large as possible.
+
+A target \(i\) is reconstructible if there exist two chosen seeds \(x<y\) with \(xy=c_i\) and \(\gcd(x,y)=1\).
+
+If the same value \(c\) appears multiple times in the input, each occurrence contributes its own weight once that value becomes reconstructible.
+
+## Input
+The input contains a single instance.
+
+- The first line contains two integers \(M, K\).
+- The next \(M\) lines each contain two integers \(c_i, w_i\).
+
+## Output
+Output a feasible set of memorized seeds.
+
+- The first line contains one integer \(S\) — the number of chosen seeds.
+- The second line contains \(S\) distinct integers \(p_1, p_2, \dots, p_S\).
+
+Feasibility requirements:
+
+- \(0 \le S \le K\)
+- all \(p_j\) are distinct
+- \(1 \le p_j \le C_{\max}\), where \(C_{\max} = \max_i c_i\)
+
+If \(S=0\), the second line may be empty or omitted.
+
+Any infeasible output receives objective value \(0\).
+
+## Objective
+For a feasible output, define the chosen seed set as \(P\).
+
+Target \(i\) is **covered** if there exist \(x,y \in P\) such that:
+
+- \(x<y\)
+- \(xy=c_i\)
+- \(\gcd(x,y)=1\)
+
+The objective value is
+
+\[
+R = \sum_{i \text{ covered}} w_i
+\]
+
+Your task is to **maximize** \(R\).
+
+## Scoring
+For each test file, the judge also computes a deterministic baseline value \(B\):
+
+1. Let
+   \[
+   W(c)=\sum_{i: c_i=c} w_i
+   \]
+   be the total weight of each distinct target value.
+2. If \(K=0\), the baseline chooses no seeds and \(B=0\).
+3. Otherwise, the baseline chooses seed \(1\), and then chooses up to \(K-1\) distinct target values \(c\) with largest \(W(c)\)  
+   (ties broken by smaller \(c\)).
+4. Since \(1 \cdot c = c\) and \(\gcd(1,c)=1\), this covers exactly those chosen target values, so
+   \[
+   B = \sum W(c)
+   \]
+   over the selected values.
+
+For a submission with objective value \(R\), the score on that test file is
+
+\[
+\text{score} =
+\begin{cases}
+100, & B=0 \\
+100 \cdot \min\!\left(1,\frac{R}{2B}\right), & B>0
+\end{cases}
+\]
+
+Thus:
+
+- scoring \(R=0\) gives \(0\) points,
+- matching the baseline (\(R=B\)) gives \(50\) points,
+- reaching \(R \ge 2B\) gives \(100\) points.
+
+If multiple secret test files are used, the final score is the arithmetic mean of the per-file scores.
+
+## Constraints
+- \(1 \le M \le 200000\)
+- \(0 \le K \le 4000\)
+- \(2 \le c_i \le 2 \times 10^6\)
+- \(0 \le w_i \le 10^9\)
+- \(\sum w_i\) fits in signed 64-bit integer
+
+- Time limit: 4 seconds
+- Memory limit: 512 MB
+
+## Example
+### Sample Input
+```text
+5 3
+6 10
+10 8
+15 7
+7 6
+21 9
+```
+
+### Sample Output
+```text
+3
+2 3 5
+```
+
+### Explanation
+Chosen seeds are \(\{2,3,5\}\).
+
+Covered targets:
+
+- \(6 = 2 \cdot 3\), \(\gcd(2,3)=1\)
+- \(10 = 2 \cdot 5\), \(\gcd(2,5)=1\)
+- \(15 = 3 \cdot 5\), \(\gcd(3,5)=1\)
+
+So the objective value is
+
+\[
+R = 10 + 8 + 7 = 25.
+\]
+
+The baseline uses \(K=3\) seeds:
+
+- always choose seed \(1\)
+- then choose the two target values with largest total weights: \(6\) (weight \(10\)) and \(21\) (weight \(9\))
+
+So \(B = 19\).
+
+Therefore the sample output gets
+
+\[
+100 \cdot \frac{25}{2 \cdot 19} \approx 65.79
+\]
+
+points on this test file.
+```

@@ -1,0 +1,229 @@
+```markdown
+# Warehouse Label Repair Rulebook
+
+## Problem
+
+A warehouse stores numeric labels as strings of digits. Historical data contains many recurring corruption patterns: missing carries, swapped chunks, duplicated digits, and so on.  
+You are given a weighted list of observed labels and the canonical label each should become. Your task is to write **one ordered rulebook** of local rewrite commands that will be applied independently to every observed label.
+
+A rewrite command has one of the following forms:
+
+- `L->R` : replace and continue
+- `L=>R` : replace and stop
+
+Here:
+
+- `L` is a non-empty template of length at most `8`
+- `R` is a template of length at most `8`, or the single character `_` meaning the empty string
+- templates use characters:
+  - digits `0`…`9`
+  - variables `A`, `B`, `C`, `D`
+
+### Template matching
+
+A template `L` matches a substring of the current string if:
+
+- every digit in `L` matches the same digit in the substring
+- each variable matches exactly one digit
+- repeated occurrences of the same variable must match the same digit
+
+Examples:
+
+- `A3A` matches `535`, `232`
+- `A3A` does **not** match `537`
+- `AB1` matches `001`, `791`
+- `AA` matches `00`, `77`, but not `12`
+
+### Replacement
+
+If `L` matches and the chosen command is applied:
+
+- each variable in `R` is replaced by the digit it matched in `L`
+- if `R` is `_`, it becomes the empty string
+
+Example:
+
+- command `A9->A0` applied to substring `79` produces `70`
+- command `AB=>BA` applied to `42` produces `24`
+
+### Execution on one label
+
+Given a current string `x`:
+
+1. Scan commands from first to last and find the **smallest index** command whose left template `L` matches **some** substring of `x`.
+2. If no command matches, execution stops.
+3. For that command, replace the **leftmost** matching substring.
+4. If the command was `=>`, execution stops; otherwise continue from step 1.
+
+To guarantee deterministic evaluation, execution is also forcibly stopped if either:
+
+- more than `200` commands have been executed on this label, or
+- the current string length becomes greater than `80`
+
+In that case, the current string at the moment of stopping is considered the output.
+
+Your goal is to produce a rulebook with low total cost on the whole dataset.
+
+---
+
+## Input
+
+The first line contains an integer `n` — the number of training records.
+
+Each of the next `n` lines contains:
+
+`w s t`
+
+where:
+
+- `w` is a positive integer weight
+- `s` is the observed label (a non-empty string of digits)
+- `t` is the target canonical label (a non-empty string of digits)
+
+### Limits
+
+- `1 <= n <= 20000`
+- `1 <= w <= 10^6`
+- `1 <= |s|, |t| <= 40`
+
+All strings consist only of digits.
+
+---
+
+## Output
+
+On the first line, print an integer `m` — the number of commands in your rulebook.
+
+Then print `m` command lines, each in one of the exact forms:
+
+- `L->R`
+- `L=>R`
+
+### Feasibility requirements
+
+A submission is considered **valid** for a test if all of the following hold:
+
+- `0 <= m <= 100`
+- every `L` has length `1..8`
+- every `R` has length `1..8`, or is exactly `_`
+- `L` and `R` use only digits and variables `A`–`D`
+- every variable used in `R` also appears in `L`
+
+If the output is invalid, the score on that test is `0`.
+
+---
+
+## Objective
+
+For each record `(w_i, s_i, t_i)`:
+
+- run your rulebook on `s_i`, obtaining output `o_i`
+- let `steps_i` be the number of executed commands before stopping
+- let `dist_i` be the Levenshtein edit distance between `o_i` and `t_i`
+
+Define:
+
+- **weighted error**
+  `E = sum(w_i * dist_i)`
+- **weighted execution cost**
+  `T = sum(w_i * steps_i)`
+- **description length**
+  `D = total number of characters in all printed command lines`
+  
+The objective value to minimize is:
+
+`C = 1000 * E + T + D`
+
+Lower is better.
+
+---
+
+## Scoring
+
+For each test, define the **baseline rulebook** as the empty rulebook (`m = 0`).
+
+Its cost is:
+
+`B = 1000 * sum(w_i * edit_distance(s_i, t_i))`
+
+because no commands are executed and no command text is printed.
+
+Your score on a test is:
+
+- if `B = 0`:
+  - `1_000_000` if `C = 0`
+  - `0` otherwise
+- else:
+
+`score = round(1_000_000 * max(0, (B - C) / B))`
+
+So:
+
+- matching the baseline gets score `0`
+- improving on the baseline gives a positive score
+- reaching cost `0` gets the full `1_000_000`
+
+The final score is the sum of scores over all tests.
+
+---
+
+## Constraints
+- Time limit: 3 seconds
+- Memory limit: 512 MB
+
+---
+
+## Example
+
+### Input
+```text
+4
+5 10 11
+1 79 80
+3 109 110
+2 999 1000
+```
+
+### Output
+```text
+2
+10=>11
+79=>80
+```
+
+### Explanation
+
+This rulebook fixes the first two labels exactly:
+
+- `10 -> 11`
+- `79 -> 80`
+
+The other two labels remain unchanged because no rule matches them:
+
+- `109 -> 109`
+- `999 -> 999`
+
+So the weighted edit error is:
+
+- `5 * 0 + 1 * 0 + 3 * 1 + 2 * 1 = 5`
+
+The weighted number of executed commands is:
+
+- `5 * 1 + 1 * 1 + 3 * 0 + 2 * 0 = 6`
+
+The description length is:
+
+- `|10=>11| + |79=>80| = 6 + 6 = 12`
+
+Therefore:
+
+- `C = 1000 * 5 + 6 + 12 = 5018`
+
+The baseline leaves every string unchanged, so:
+
+- `B = 1000 * (5*1 + 1*1 + 3*1 + 2*1) = 11000`
+
+Thus the score for this test is approximately:
+
+- `1_000_000 * (11000 - 5018) / 11000 ≈ 543818`
+```

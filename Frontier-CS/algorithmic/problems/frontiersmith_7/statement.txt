@@ -1,0 +1,207 @@
+```markdown
+# Mars Rover: Hazard-Aware Sample Hunt
+
+## Problem
+
+A research rover is deployed on a rectangular Mars field with `n` rows and `m` columns.  
+The rover starts at cell `(1, 1)` and must finish at cell `(n, m)`.
+
+The rover may move one cell at a time in the four cardinal directions:
+
+- `U`: `(r, c) -> (r-1, c)`
+- `D`: `(r, c) -> (r+1, c)`
+- `L`: `(r, c) -> (r, c-1)`
+- `R`: `(r, c) -> (r, c+1)`
+
+The rover starts with `s` units of battery.
+
+Your task is to output **any feasible route** from start to finish that maximizes the scientific value collected.
+
+### Battery rules
+
+- Every move costs exactly `1` unit of battery.
+- If the battery would become negative after paying the move cost, the route is infeasible.
+- Some cells contain **anomalies**. Each time the rover enters such a cell, its current battery becomes `floor(b / 2)`, where `b` is the battery after paying the move cost.
+- Some cells contain **solar caches**. On the **first** visit to such a cell, the rover gains `g` battery units. On later visits, that cell gives nothing.
+- A cell may simultaneously contain an anomaly, a solar cache, and/or a sample.
+
+### Sample collection
+
+Some cells contain scientific **samples**.  
+On the **first** visit to such a cell, the rover collects the sample and gains its value `v`.  
+Revisiting the same sample cell gives no additional value.
+
+### Order of effects
+
+When the rover starts on `(1,1)`, apply the cell effects in this order:
+
+1. anomaly (if present),
+2. solar cache (if present and unused),
+3. sample collection (if present and uncollected).
+
+For every later move into a cell, apply effects in the same order after paying the move cost:
+
+1. pay `1` battery for the move,
+2. anomaly,
+3. solar cache on first visit,
+4. sample collection on first visit.
+
+A route is feasible if:
+
+- it never leaves the grid,
+- battery never becomes negative,
+- it ends exactly at `(n, m)`,
+- its move string length does not exceed the allowed limit.
+
+Your goal is to choose a route that collects valuable samples while managing battery loss from anomalies and gaining battery from solar caches.
+
+---
+
+## Input
+
+A single test file describes one Mars field.
+
+The first line contains five integers:
+
+`n m a c p s`
+
+- `n`, `m` — grid size
+- `a` — number of anomaly cells
+- `c` — number of solar cache cells
+- `p` — number of sample cells
+- `s` — initial battery
+
+The next `a` lines contain anomaly coordinates:
+
+`r_i c_i`
+
+The next `c` lines contain solar cache descriptions:
+
+`r_i c_i g_i`
+
+meaning cell `(r_i, c_i)` contains a solar cache worth `g_i` battery units.
+
+The next `p` lines contain sample descriptions:
+
+`r_i c_i v_i`
+
+meaning cell `(r_i, c_i)` contains a sample worth `v_i`.
+
+Within each list, cell coordinates are distinct.  
+The same cell may appear in multiple lists.
+
+---
+
+## Output
+
+Output a single line containing a string `t` consisting only of the characters `U`, `D`, `L`, `R`.
+
+This string is the rover's route.
+
+### Feasibility requirements
+
+Let `L = |t|`.
+
+Your output is feasible iff all of the following hold:
+
+- `L <= 300000`
+- starting from `(1,1)`, applying the moves in `t` never leaves the grid
+- the battery rules are respected and battery never becomes negative
+- the final cell is exactly `(n,m)`
+
+If the output is infeasible, its objective value is defined as `0`.
+
+---
+
+## Objective
+
+For a feasible route, define:
+
+- `V` = total value of all collected samples
+- `B` = battery remaining when the rover reaches `(n,m)`
+- `H = 1 + s + sum(g_i over all solar caches in the input)`
+
+The objective value is
+
+`OBJ = V * H + B`
+
+This makes sample value the primary goal, with remaining battery as a tiebreaker.
+
+You must **maximize `OBJ`**.
+
+---
+
+## Scoring
+
+Let `BASE` be the objective value of the following baseline route:
+
+- move right exactly `m-1` times,
+- then move down exactly `n-1` times.
+
+All official test files guarantee that this baseline route is feasible.
+
+For each test file, your score is:
+
+`score = floor(500000 * min(2, OBJ / BASE))`
+
+So:
+
+- infeasible output gets `0`,
+- matching the baseline gets `500000`,
+- reaching at least twice the baseline gets `1000000`.
+
+The final score of a submission is the average of `score` over all test files, rounded down.
+
+---
+
+## Constraints
+
+- `1 <= n, m <= 100000`
+- `n + m <= 200000`
+- `0 <= a, c, p <= 2000`
+- total number of distinct special cells over all lists is at most `5000`
+- `1 <= s <= 100000`
+- `1 <= g_i <= 100000`
+- `1 <= v_i <= 100000`
+
+## Constraints
+- Time limit: 3 seconds
+- Memory limit: 256 MB
+
+## Example
+
+### Input
+```text
+3 4 1 1 2 5
+2 2
+1 3 3
+2 3 10
+3 4 7
+```
+
+### Output
+```text
+RRDDR
+```
+
+### Explanation
+The route is:
+
+- `(1,1) -> (1,2)` : battery `5 -> 4`
+- `(1,2) -> (1,3)` : battery `4 -> 3`, then collect solar cache `+3`, so battery `6`
+- `(1,3) -> (2,3)` : battery `6 -> 5`, collect sample value `10`
+- `(2,3) -> (3,3)` : battery `5 -> 4`
+- `(3,3) -> (3,4)` : battery `4 -> 3`, collect sample value `7`
+
+So:
+
+- total sample value `V = 17`
+- final battery `B = 3`
+- `H = 1 + 5 + 3 = 9`
+
+Therefore:
+
+`OBJ = 17 * 9 + 3 = 156`
+
+This route is feasible and finishes at `(3,4)`.
+```

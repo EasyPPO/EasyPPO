@@ -1,0 +1,221 @@
+```markdown
+# Resonator Tuning
+
+## Problem
+Chef has found a hall of unstable number-crystals. Crystal `i` currently stores the positive integer `X_i` and has importance weight `W_i`.
+
+There are `K` resonators. Resonator `j` has:
+- an exponent `c_j`,
+- a capacity `u_j`,
+- an activation cost `F_j`.
+
+Before using resonator `j`, you must choose a **tuning value** `b_j` such that:
+- `1 ≤ b_j ≤ B`,
+- `b_j` is a perfect `c_j`-th power.
+
+Any crystal assigned to resonator `j` is transformed **once** by:
+\[
+Y_i=\frac{\mathrm{lcm}(X_i,b_j)}{\gcd(X_i,b_j)}
+\]
+
+A crystal may also be left unassigned, in which case its final value remains `X_i`.
+
+Each crystal may be assigned to **at most one** resonator.  
+Each resonator `j` may receive **at most** `u_j` assigned crystals.
+
+If at least one crystal is assigned to resonator `j`, you must pay its activation cost `F_j`.
+
+Your goal is to minimize the total instability:
+\[
+\sum_i W_i \cdot \text{finalValue}_i \;+\; \sum_{j \text{ used}} F_j
+\]
+
+You may output **any feasible solution**; better solutions receive better scores.
+
+---
+
+## Input
+A single test file contains one instance.
+
+The first line contains three integers:
+- `N` — number of crystals
+- `K` — number of resonators
+- `B` — maximum allowed tuning value
+
+The next `N` lines each contain two integers:
+- `X_i` — initial value of crystal `i`
+- `W_i` — weight of crystal `i`
+
+The next `K` lines each contain three integers:
+- `c_j` — exponent of resonator `j`
+- `u_j` — capacity of resonator `j`
+- `F_j` — activation cost of resonator `j`
+
+---
+
+## Output
+Output exactly two lines.
+
+### Line 1
+`K` integers:
+\[
+b_1\; b_2\; \dots\; b_K
+\]
+where each `b_j` must satisfy:
+- `1 ≤ b_j ≤ B`
+- `b_j` is a perfect `c_j`-th power
+
+### Line 2
+`N` integers:
+\[
+a_1\; a_2\; \dots\; a_N
+\]
+where:
+- `a_i = 0` means crystal `i` is left unassigned,
+- `1 ≤ a_i ≤ K` means crystal `i` is assigned to resonator `a_i`.
+
+### Feasibility requirements
+Your output is feasible iff all of the following hold:
+1. Every `b_j` is valid.
+2. Every `a_i` is in `[0, K]`.
+3. For every resonator `j`, at most `u_j` indices `i` satisfy `a_i = j`.
+
+If your output is infeasible, the score for that test file is `0`.
+
+---
+
+## Objective
+For a feasible output, define the final value of crystal `i` as:
+- `X_i`, if `a_i = 0`;
+- \[
+  \frac{\mathrm{lcm}(X_i,b_{a_i})}{\gcd(X_i,b_{a_i})}
+  \]
+  otherwise.
+
+The objective value to **minimize** is:
+\[
+C = \sum_{i=1}^{N} W_i \cdot \text{finalValue}_i \;+\; \sum_{j:\exists i,\ a_i=j} F_j
+\]
+
+The judge computes this value exactly.
+
+---
+
+## Scoring
+Let:
+- `C_out` be your objective value,
+- `C_base` be the objective value of the deterministic baseline algorithm below.
+
+Your score on a test file is:
+\[
+\text{score} = 10^6 \cdot \min\left(10,\ \frac{C_{\text{base}}}{C_{\text{out}}}\right)
+\]
+
+If your output is infeasible, the score is `0`.
+
+The final score is the arithmetic mean of scores over all test files.
+
+### Baseline algorithm
+The baseline processes resonators in order `1, 2, ..., K`.
+
+Maintain the set of currently unassigned crystals.
+
+For resonator `j`:
+
+1. Let `P_j` be the sorted list of all perfect `c_j`-th powers in `[1, B]`.
+2. For every currently unassigned crystal `i` and every `b ∈ P_j`, compute the **gain**
+   \[
+   G(i,b,j)=W_i\cdot\left(X_i-\frac{\mathrm{lcm}(X_i,b)}{\gcd(X_i,b)}\right)
+   \]
+3. Find the pair `(i*, b*)` with maximum `G(i,b,j)`.
+   - Break ties by smaller `i`,
+   - then by smaller `b`.
+4. If the maximum gain is `≤ 0`, set `b_j = 1` and assign no crystal to resonator `j`.
+5. Otherwise, set `b_j = b*`.
+6. For every currently unassigned crystal `i` with `G(i,b_j,j) > 0`, compute that gain.
+7. Sort those crystals by decreasing gain, breaking ties by smaller `i`.
+8. Take the first `min(u_j, m)` crystals in that order, where `m` is the number of positive-gain crystals.
+   - Let `S` be the sum of their gains.
+   - If `S > F_j`, assign all of them to resonator `j`.
+   - Otherwise, assign none to resonator `j` and reset `b_j = 1`.
+
+All crystals still unassigned after the last resonator remain unassigned.
+
+---
+
+## Constraints
+- `1 ≤ N ≤ 1500`
+- `1 ≤ K ≤ 60`
+- `1 ≤ B ≤ 10^9`
+- `1 ≤ X_i ≤ 10^9`
+- `1 ≤ W_i ≤ 1000`
+- `2 ≤ c_j ≤ 9`
+- `1 ≤ u_j ≤ N`
+- `0 ≤ F_j ≤ 10^{12}`
+
+The exact optimization problem is intentionally too large for brute force: the number of valid tunings and assignments is enormous, and the assignment/tuning interaction creates a hard combinatorial search space.
+
+- Time limit: 3 seconds
+- Memory limit: 512 MB
+
+---
+
+## Example
+### Sample input
+```text
+4 2 100
+20 1
+27 1
+50 1
+18 2
+2 3 3
+3 2 1
+```
+
+### Sample output
+```text
+100 27
+1 2 1 2
+```
+
+### Explanation
+This is one feasible solution.
+
+- Resonator `1`: `b_1 = 100 = 10^2`
+- Resonator `2`: `b_2 = 27 = 3^3`
+
+Assignments:
+- Crystal `1` (`20`) → resonator `1`:
+  \[
+  \frac{\mathrm{lcm}(20,100)}{\gcd(20,100)}=\frac{100}{20}=5
+  \]
+- Crystal `2` (`27`) → resonator `2`:
+  \[
+  \frac{\mathrm{lcm}(27,27)}{\gcd(27,27)}=1
+  \]
+- Crystal `3` (`50`) → resonator `1`:
+  \[
+  \frac{\mathrm{lcm}(50,100)}{\gcd(50,100)}=\frac{100}{50}=2
+  \]
+- Crystal `4` (`18`) → resonator `2`:
+  \[
+  \frac{\mathrm{lcm}(18,27)}{\gcd(18,27)}=\frac{54}{9}=6
+  \]
+
+Weighted crystal cost:
+\[
+1\cdot5 + 1\cdot1 + 1\cdot2 + 2\cdot6 = 20
+\]
+
+Both resonators are used, so activation cost is:
+\[
+3 + 1 = 4
+\]
+
+Total objective:
+\[
+C = 20 + 4 = 24
+\]
+
+A lower objective yields a higher score.
+```
