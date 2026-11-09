@@ -1,0 +1,93 @@
+# FrontierSmith → Frontier-CS: Dr. GRPO baseline
+
+A Dr. GRPO baseline for the FrontierSmith/Frontier-CS setting of this branch, run with
+`configs/dr_grpo_frontiersmith_no_overlong_filter.yaml`: Dr. GRPO **without** response overlong
+filtering, as in the Dr. GRPO paper ([Liu et al., 2025](https://arxiv.org/abs/2503.20783)).
+
+<!-- status:begin -->
+**Status: in progress** — step 1/240, last validation at step 0. The tables are updated as validations come in.
+<!-- status:end -->
+
+## Setup
+
+Unchanged from the config: `HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1` initialization, the 200
+FrontierSmith training problems, 16 prompts × 32 responses per step, 8192 prompt / 32768 response
+tokens, lr 1e-6, 240 steps, validation on the 172 Frontier-CS problems × 5 samples before training
+and every 5 steps (temperature 1.0).
+
+What differs from a local single-node run:
+
+- **Hardware:** 2 nodes × 8 H200 (`trainer.nnodes=2`); FSDP still shards within each node
+  (`fsdp_size=8`) and replicates across the two nodes, like `modal_launchers/multinode.py`.
+  The global batch, mini-batch and all optimization settings are those of the config.
+  A training step takes about 32 min (≈5 min generation, 2 min log-probs, 25 min actor update).
+- **Software:** the published `ghcr.io/easyppo/easyppo-b200:20260926` image with this branch at
+  `4ee113c` mounted, unmodified.
+- **Judge:** the bundled `Frontier-CS/algorithmic` judge, one instance per node on `127.0.0.1:8082`
+  (each reward worker submits to and polls its own node's judge), `JUDGE_WORKERS=GJ_PARALLELISM=64`.
+  The container gets all capabilities, an unconfined seccomp profile and unmasked `/proc`/`/sys`
+  instead of `--privileged`. Before training, the README's vertex-cover smoke test scores > 0.
+- **Logging:** W&B was not used; per-step metrics come from verl's `file` logger
+  (`metrics.jsonl`, one JSON object per step).
+
+## Results
+
+Frontier-CS validation (170 problems: verl drops `frontiercs_val_156` and `_157`, whose prompts exceed 8192 tokens), 5 samples
+per problem at temperature 1.0, judge score 0-100. **Avg@5** is the mean score over all samples;
+**Best@5** is the mean over problems of the best of the 5 samples. verl's console/W&B `best@5/mean` is a
+bootstrap estimate and comes out lower; it is kept in `val_curve.csv` as `verl_best@5_bootstrap`.
+
+<!-- results:begin -->
+| Step | Avg@5 | Best@5 | Train reward (mean) | Response length (mean) | Truncated |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 4.57 | 13.27 | — | — | — |
+<!-- results:end -->
+
+Step 0 is the initialization (`HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1`). Three independent step-0
+validations on this setup gave Avg@5 4.43, 4.32 and 4.57, which gives a sense of the sampling noise
+(about ±0.15). At step 0, 89% of the samples score 0 and about 19% are cut off at 32768 tokens without
+closing the reasoning block. To rule out a silently failing judge, 32 step-0 responses (24 zero, 8 positive)
+were re-judged on a separate judge instance: all 32 got identical scores.
+
+## Dr. GRPO vs. PPO (EasyPPO) in this repository
+
+Both use the same clipped policy objective (ε_low = 0.2, ε_high = 0.28, dual-clip c = 3), lr 1e-6,
+one PPO epoch per batch, and FSDP + vLLM. They differ in where the advantage comes from and how the
+loss is normalized:
+
+| | Dr. GRPO (`dr_grpo_frontiersmith_no_overlong_filter`) | PPO / EasyPPO (`scripts/run_frontiersmith.sh` → `easyppo_aime.yaml`) |
+|---|---|---|
+| Advantage | Group baseline only: `A_i = r_i − mean(r_group)`, same value on every token of response *i* (`norm_adv_by_std_in_grpo: false`, no division by the group std) | Token-level GAE (γ = λ = 1) from a learned critic: `A_t = r − V(s_t)` |
+| Critic | None | Qwen3.5-9B value model, lr 2e-6, value clip 0.2, 4 critic mini-batches per batch, noise-normalized regression (each prompt weighted by 1 / its group's return std, β = 0.5, floor 0.25); 30 critic-only warm-up steps |
+| Loss aggregation | `seq-mean-token-sum-norm`: sum of token losses per response, divided by the constant 32768 (`loss_scale_factor = max_response_length`), averaged over responses. No length bias from per-response normalization | `token-mean`: average over all tokens of the batch |
+| KL | None (`use_kl_loss: false`) | low-var KL loss to the reference, coefficient 0.001 |
+| Overlong responses | Kept: truncated responses keep their judge reward and are trained on | Actor-only overlong filtering: truncated responses are masked out of the actor loss but kept for GAE and critic training |
+| Samples per prompt | 32 (needed for the group baseline) | 16 |
+| Prompts per step | 16 (512 responses) | 32 (512 responses) |
+| Response length | 32768 | 12000 in `run_frontiersmith.sh` |
+
+In short, Dr. GRPO is the critic-free side of the comparison: its baseline is the empirical mean of
+the 32 sibling responses, and it removes GRPO's two normalizations (per-group std and per-response
+length) so that the gradient is not biased toward low-variance groups or toward short correct /
+long wrong answers. EasyPPO keeps a critic and instead fixes the critic's failure modes on this
+kind of data (truncated rollouts, noisy returns). The no-overlong-filter variant is the paper-faithful
+Dr. GRPO; the filtered variant (`dr_grpo_frontiersmith`) would differ only in masking truncated
+responses and zeroing their reward in the group statistics.
+
+## Files
+
+| File | Content |
+|---|---|
+| `val_curve.csv` | Avg@5 / Best@5 per validation step |
+| `val_per_problem.csv` | the 5 sample scores of every validation problem at every validation step |
+| `train_metrics.csv` | per-step training metrics (train reward, response length and truncation rate, entropy, grad norm, PPO clip fraction / KL, step time) |
+| `summarize.py` | regenerates the three CSVs from verl's validation dumps and `file`-logger metrics |
+
+```bash
+python results/frontiercs_dr_grpo/summarize.py --validation-dir $OUTPUT_DIR/validation \
+  --metrics metrics.jsonl --val-parquet data/frontiercs/frontiercs_val.parquet --out results/frontiercs_dr_grpo
+```
+
+Reproduce the run on one 8-GPU node with the README's GRPO command and
+`--config-name dr_grpo_frontiersmith_no_overlong_filter`; on two nodes, start a Ray cluster over both and add
+`trainer.nnodes=2 +ray_kwargs.ray_init.address=auto`, with a judge reachable from every node.

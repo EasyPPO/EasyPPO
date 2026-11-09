@@ -1,0 +1,2 @@
+step,critic/score/mean,critic/rewards/mean,response_length/mean,response_length/clip_ratio,actor/entropy,actor/grad_norm,actor/pg_clipfrac,actor/ppo_kl,timing_s/step
+1,0.09837149828672409,0.09837149828672409,16825.49609375,0.2109375,0.3923947811126709,0.06730028986930847,0.0,0.0,1926.7861598751042
