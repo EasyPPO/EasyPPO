@@ -5,7 +5,7 @@ A Dr. GRPO baseline for the FrontierSmith/Frontier-CS setting of this branch, ru
 filtering, as in the Dr. GRPO paper ([Liu et al., 2025](https://arxiv.org/abs/2503.20783)).
 
 <!-- status:begin -->
-**Status: in progress** — step 0/240, last validation at step 0. The tables are updated as validations come in.
+**Status: in progress** — step 6/240, last validation at step 5. The tables are updated as validations come in.
 <!-- status:end -->
 
 ## Setup
@@ -51,6 +51,7 @@ bootstrap estimate and comes out lower; it is kept in `val_curve.csv` as `verl_b
 | Step | Avg@5 | Best@5 | Train reward (mean) | Response length (mean) | Truncated |
 |---:|---:|---:|---:|---:|---:|
 | 0 | 4.81 | 12.84 | — | — | — |
+| 5 | 5.52 | 13.35 | 0.054 | 24,346 | 36.3% |
 <!-- results:end -->
 
 Step 0 is the initialization (`HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1`). Four independent step-0
