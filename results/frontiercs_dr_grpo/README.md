@@ -21,8 +21,9 @@ What differs from a local single-node run:
   (`fsdp_size=8`) and replicates across the two nodes, like `modal_launchers/multinode.py`.
   The global batch, mini-batch and all optimization settings are those of the config.
   A training step takes about 32 min (≈5 min generation, 2 min log-probs, 25 min actor update).
-- **Software:** the published `ghcr.io/easyppo/easyppo-b200:20260926` image with this branch at
-  `4ee113c` mounted, unmodified.
+- **Software:** the published `ghcr.io/easyppo/easyppo-b200:20260926` image with this branch mounted,
+  unmodified (started at `4ee113c`; the later overlong-handling revert in `260f7ef` does not change this
+  config, since response filtering is disabled and no sample is tagged).
 - **Judge:** the bundled `Frontier-CS/algorithmic` judge, one instance per node on `127.0.0.1:8082`
   (each reward worker submits to and polls its own node's judge), `JUDGE_WORKERS=GJ_PARALLELISM=64`.
   The container gets all capabilities, an unconfined seccomp profile and unmasked `/proc`/`/sys`
@@ -31,6 +32,12 @@ What differs from a local single-node run:
   (`metrics.jsonl`, one JSON object per step).
 
 ## Results
+
+**Note on speed:** the image has no `flash-linear-attention`, so transformers runs the Gated DeltaNet
+layers of the FSDP actor on its PyTorch fallback (actor MFU 2–3%). A rerun with `flash-linear-attention==0.6.0`
+added (no other change) is in progress: on the same step-1/2 prompts it takes 846/1029 s per step instead of
+1927/2373 s, with the same train–rollout KL, grad norm and train reward. Once it has passed its first
+validations, it replaces the run below.
 
 Frontier-CS validation (170 problems: verl drops `frontiercs_val_156` and `_157`, whose prompts exceed 8192 tokens), 5 samples
 per problem at temperature 1.0, judge score 0-100. **Avg@5** is the mean score over all samples;
@@ -72,8 +79,8 @@ the 32 sibling responses, and it removes GRPO's two normalizations (per-group st
 length) so that the gradient is not biased toward low-variance groups or toward short correct /
 long wrong answers. EasyPPO keeps a critic and instead fixes the critic's failure modes on this
 kind of data (truncated rollouts, noisy returns). The no-overlong-filter variant is the paper-faithful
-Dr. GRPO; the filtered variant (`dr_grpo_frontiersmith`) would differ only in masking truncated
-responses and zeroing their reward in the group statistics.
+Dr. GRPO; the filtered variant (`dr_grpo_frontiersmith`) differs only in masking truncated responses out
+of the actor loss (their judge rewards still enter the group statistics).
 
 ## Files
 
