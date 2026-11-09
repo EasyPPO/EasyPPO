@@ -5,7 +5,7 @@ A Dr. GRPO baseline for the FrontierSmith/Frontier-CS setting of this branch, ru
 filtering, as in the Dr. GRPO paper ([Liu et al., 2025](https://arxiv.org/abs/2503.20783)).
 
 <!-- status:begin -->
-**Status: in progress** — step 19/240, last validation at step 15; about 51 h left (11.8 min per step over the last 5 steps, 10 min per validation), finishing around Nov 11 13:14 PT. The tables and curves are updated at every validation (every 5 steps).
+**Status: in progress** — step 21/240, last validation at step 20; about 47 h left (10.8 min per step over the last 5 steps, 11 min per validation), finishing around Nov 11 10:01 PT. The tables and curves are updated at every validation (every 5 steps).
 <!-- status:end -->
 
 ## Setup
@@ -52,6 +52,7 @@ bootstrap estimate and comes out lower; it is kept in `val_curve.csv` as `verl_b
 | 5 | 4.56 | 11.80 | 0.035 | 26,273 | 54.1% |
 | 10 | 5.12 | 13.52 | 0.041 | 25,664 | 42.0% |
 | 15 | 4.77 | 14.50 | 0.077 | 27,661 | 47.7% |
+| 20 | 5.17 | 15.66 | 0.072 | 23,802 | 29.3% |
 <!-- results:end -->
 
 ![Validation and training curves](curves.png)
