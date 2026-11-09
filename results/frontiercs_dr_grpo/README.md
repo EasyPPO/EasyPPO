@@ -5,7 +5,7 @@ A Dr. GRPO baseline for the FrontierSmith/Frontier-CS setting of this branch, ru
 filtering, as in the Dr. GRPO paper ([Liu et al., 2025](https://arxiv.org/abs/2503.20783)).
 
 <!-- status:begin -->
-**Status: in progress** — step 16/240, last validation at step 15. The tables are updated as validations come in.
+**Status: in progress** — step 19/240, last validation at step 15; about 51 h left (11.8 min per step over the last 5 steps, 10 min per validation), finishing around Nov 11 13:14 PT. The tables and curves are updated at every validation (every 5 steps).
 <!-- status:end -->
 
 ## Setup
