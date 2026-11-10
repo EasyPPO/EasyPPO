@@ -98,7 +98,7 @@ def plot(curve, train, path, title):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--validation-dir", required=True)
-    ap.add_argument("--metrics", nargs="+", required=True)
+    ap.add_argument("--metrics", nargs="+", required=True, help="file-logger outputs, in chronological order")
     ap.add_argument("--val-parquet", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--plot", action="store_true")
@@ -109,9 +109,12 @@ def main():
     df = pd.read_parquet(args.val_parquet)
     problem_of = {r["prompt"][-1]["content"].strip(): r["reward_model"]["ground_truth"] for _, r in df.iterrows()}
 
-    # one JSON object per logged step; a resumed job re-logs steps, the latest record wins
-    train, val_logged = {}, {}
+    # one JSON object per logged step, files in chronological order. A job resumed from an earlier checkpoint
+    # re-logs steps: later records win, and steps beyond the latest job's progress belong to an abandoned
+    # trajectory and are dropped (validation dumps of those steps too).
+    train, val_logged, cut = {}, {}, None
     for path in args.metrics:
+        file_steps = []
         with open(path) as f:
             for line in f:
                 rec = json.loads(line)
@@ -121,9 +124,16 @@ def main():
                     val_logged[int(step)] = data
                 if step is not None and any(k in data for k in TRAIN_KEYS):
                     train[int(step)] = {"step": int(step), **{k: data.get(k) for k in TRAIN_KEYS}}
+                    file_steps.append(int(step))
+        if file_steps:
+            cut = max(file_steps)
+    if cut is not None:
+        train = {k: v for k, v in train.items() if k <= cut}
+        val_logged = {k: v for k, v in val_logged.items() if k <= cut}
 
     curve, per_problem = [], []
     steps = sorted(int(f[:-6]) for f in os.listdir(args.validation_dir) if re.fullmatch(r"\d+\.jsonl", f))
+    steps = [k for k in steps if cut is None or k <= cut]
     for step in steps:
         scores = defaultdict(list)
         with open(os.path.join(args.validation_dir, f"{step}.jsonl")) as f:
