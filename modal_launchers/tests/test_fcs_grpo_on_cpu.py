@@ -9,7 +9,7 @@ import pytest
 from hydra import compose, initialize_config_dir
 
 from modal_launchers import fcs_grpo
-from modal_launchers.config import load_modal_config
+from modal_launchers.config import check_model, load_modal_config
 from modal_launchers.multinode import commit_all_nodes, prepare_output
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,11 +18,13 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_default_only_prints_plan(monkeypatch, capsys):
     launch = Mock(side_effect=AssertionError("No remote resources allowed"))
     monkeypatch.setattr(fcs_grpo.modal.Sandbox, "create", launch)
-    monkeypatch.setattr(fcs_grpo.train, "remote", launch)
+    monkeypatch.setattr(fcs_grpo.cluster_train, "spawn", launch)
     fcs_grpo.main(["--run-name", "cpu-plan"])
     launch.assert_not_called()
     output = capsys.readouterr().out
     assert '"total_gpus": 16' in output and '"launch": false' in output
+    assert "coordinator" not in output
+    assert list(fcs_grpo.app.registered_functions.values()) == [fcs_grpo.cluster_train]
 
 
 @pytest.mark.parametrize("recipe", fcs_grpo.RECIPES)
@@ -88,26 +90,37 @@ def test_resume_rejects_changed_recipe_or_world_size(tmp_path):
             )
 
 
-@pytest.mark.parametrize("outcome", ["success", "bad-judge", "timeout", "training-error", "cancelled"])
-def test_remote_coordinator_preflight_and_cleanup(monkeypatch, outcome):
+@pytest.mark.parametrize(
+    "outcome", ["success", "bad-model", "bad-judge", "timeout", "judge-lifetime", "training-error", "cancelled"]
+)
+def test_local_orchestration_preflight_and_cleanup(monkeypatch, outcome):
     modal = pytest.importorskip("modal")
     events = []
     monkeypatch.setenv("WANDB_API_KEY", "test-only")
-    monkeypatch.setattr(fcs_grpo, "check_model", Mock())
     error = {
         "timeout": modal.exception.FunctionTimeoutError("timeout"),
+        "judge-lifetime": modal.exception.TimeoutError("judge-lifetime"),
         "training-error": RuntimeError("training-error"),
         "cancelled": KeyboardInterrupt("cancelled"),
     }.get(outcome)
 
-    def result():
+    def result(*, timeout):
+        assert timeout == 86090
         events.append("wait-gpu")
         if error is not None:
             raise error
 
     call = SimpleNamespace(get=result, cancel=Mock(side_effect=lambda **kw: events.append("cancel-gpu")))
     cluster = SimpleNamespace(spawn=Mock(return_value=call))
+    clock = iter([100, 105, 110])
+    monkeypatch.setattr(fcs_grpo.time, "monotonic", lambda: next(clock))
+    preflight = SimpleNamespace(
+        wait=Mock(side_effect=lambda: events.append("check-model")),
+        returncode=1 if outcome == "bad-model" else 0,
+        stderr=SimpleNamespace(read=lambda: "bad-model"),
+    )
     judge = SimpleNamespace(
+        exec=Mock(return_value=preflight),
         wait_until_ready=Mock(),
         create_connect_token=Mock(return_value=SimpleNamespace(url="https://judge.example", token="test-token")),
         terminate=Mock(side_effect=lambda: events.append("stop-judge")),
@@ -123,24 +136,43 @@ def test_remote_coordinator_preflight_and_cleanup(monkeypatch, outcome):
         return {"score": 0.5}
 
     monkeypatch.setattr(fcs_grpo, "check_judge", check)
-    kwargs = dict(run_name="test-run", model_path="/volume/model", recipe=fcs_grpo.RECIPES[0])
+    app, volume = object(), Mock()
+    config = load_modal_config()
+    kwargs = dict(
+        app=app,
+        config=config,
+        volume=volume,
+        run_name="test-run",
+        model_path="/volume/model",
+        recipe=fcs_grpo.RECIPES[0],
+    )
     image = object()
     if outcome == "success":
         fcs_grpo.run_training(cluster, image, fcs_grpo.parse_args([]), **kwargs)
-        assert events == ["check-judge", "wait-gpu", "stop-judge"]
+        assert events == ["check-model", "check-judge", "wait-gpu", "stop-judge"]
         call.cancel.assert_not_called()
     else:
-        with pytest.raises(type(error) if error else RuntimeError, match=outcome):
+        expected = (
+            fcs_grpo.JudgeLifetimeTimeout if outcome == "judge-lifetime" else type(error) if error else RuntimeError
+        )
+        match = "judge expires" if outcome == "judge-lifetime" else outcome
+        with pytest.raises(expected, match=match):
             fcs_grpo.run_training(cluster, image, fcs_grpo.parse_args([]), **kwargs)
-        if outcome == "bad-judge":
+        if outcome == "bad-model":
             cluster.spawn.assert_not_called()
-            assert events == ["check-judge", "stop-judge"]
+            assert events == ["check-model", "stop-judge"]
+        elif outcome == "bad-judge":
+            cluster.spawn.assert_not_called()
+            assert events == ["check-model", "check-judge", "stop-judge"]
         else:
             call.cancel.assert_called_once_with(terminate_containers=True)
-            assert events == ["check-judge", "wait-gpu", "cancel-gpu", "stop-judge"]
+            assert events == ["check-model", "check-judge", "wait-gpu", "cancel-gpu", "stop-judge"]
+    assert create.call_args.kwargs["app"] is app
+    assert create.call_args.kwargs["volumes"] == {config.volume_mount: volume.with_mount_options.return_value}
+    volume.with_mount_options.assert_called_once_with(read_only=True)
     assert create.call_args.kwargs["runtime"] == "vm"
     assert "gpu" not in create.call_args.kwargs
-    if outcome != "bad-judge":
+    if outcome not in ("bad-model", "bad-judge"):
         cluster.spawn.assert_called_once_with(
             "test-run", "/volume/model", fcs_grpo.RECIPES[0], "https://judge.example", "test-token"
         )
@@ -155,6 +187,9 @@ def test_missing_wandb_fails_before_judge_or_gpu(monkeypatch):
             None,
             None,
             fcs_grpo.parse_args([]),
+            app=None,
+            config=None,
+            volume=None,
             run_name="test",
             model_path="/missing",
             recipe=fcs_grpo.RECIPES[0],
@@ -164,7 +199,7 @@ def test_missing_wandb_fails_before_judge_or_gpu(monkeypatch):
         fcs_grpo.resume(run_name="test")
 
 
-@pytest.mark.parametrize("outcome", ["success", "timeout", "error", "exhausted"])
+@pytest.mark.parametrize("outcome", ["success", "timeout", "judge-lifetime", "error", "exhausted"])
 def test_resume_only_retries_timeouts_with_same_identity(monkeypatch, outcome):
     modal = pytest.importorskip("modal")
     monkeypatch.setenv("WANDB_API_KEY", "test-only")
@@ -172,19 +207,20 @@ def test_resume_only_retries_timeouts_with_same_identity(monkeypatch, outcome):
     effects = {
         "success": [None],
         "timeout": [timeout, None],
+        "judge-lifetime": [fcs_grpo.JudgeLifetimeTimeout("judge expired"), None],
         "error": [RuntimeError("training failed")],
         "exhausted": [timeout, timeout],
     }
-    remote = Mock(side_effect=effects[outcome])
-    monkeypatch.setattr(fcs_grpo.train, "remote", remote)
+    local_train = Mock(side_effect=effects[outcome])
+    monkeypatch.setattr(fcs_grpo, "train", local_train)
     kwargs = dict(run_name="same-run", model_path="/cached/sft", recipe=fcs_grpo.RECIPES[0])
-    if outcome in ("success", "timeout"):
+    if outcome in ("success", "timeout", "judge-lifetime"):
         fcs_grpo.resume(**kwargs, max_timeout_restarts=1)
     else:
         with pytest.raises(modal.exception.FunctionTimeoutError if outcome == "exhausted" else RuntimeError):
             fcs_grpo.resume(**kwargs, max_timeout_restarts=1)
-    assert remote.call_count == len(effects[outcome])
-    assert all(call.kwargs == kwargs for call in remote.call_args_list)
+    assert local_train.call_count == len(effects[outcome])
+    assert all(call.kwargs == kwargs for call in local_train.call_args_list)
 
 
 def test_default_model_uses_fcs_cache_and_custom_volume_paths():
@@ -211,9 +247,9 @@ def test_cached_model_preflight_detects_broken_weights(tmp_path, sharded):
         path = tmp_path / "model.safetensors"
     path.symlink_to(tmp_path / "missing-blob")
     with pytest.raises(FileNotFoundError, match="Missing model weights"):
-        fcs_grpo.check_model(str(tmp_path))
+        check_model(str(tmp_path))
     (tmp_path / "missing-blob").write_bytes(b"test")
-    fcs_grpo.check_model(str(tmp_path))
+    check_model(str(tmp_path))
 
 
 def test_remote_helper_import_does_not_need_local_build_context(tmp_path, monkeypatch):

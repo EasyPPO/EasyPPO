@@ -1,7 +1,7 @@
-"""FCS GRPO with a detached CPU coordinator, GPU cluster, and CPU judge.
+"""FCS GRPO with local tmux orchestration, a GPU cluster, and a CPU judge.
 
 Preview only: python -m modal_launchers.fcs_grpo
-Launch: modal run --detach modal_launchers/fcs_grpo.py::train --run-name NEW
+One attempt: modal run modal_launchers/fcs_grpo.py::train --run-name NEW
 Resume on timeouts: modal run modal_launchers/fcs_grpo.py::resume --run-name NEW
 WANDB_API_KEY is required. Keep the resume entrypoint alive in tmux.
 """
@@ -10,6 +10,7 @@ import argparse
 import importlib.util
 import json
 import os
+import time
 from pathlib import Path
 
 import modal
@@ -90,31 +91,24 @@ def default_model_path(config):
     )
 
 
-def check_model(model_path):
-    """Fail on missing or broken cached files before starting the judge or GPUs."""
-    model = Path(model_path)
-    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
-        if not (model / name).is_file():
-            raise FileNotFoundError(f"Missing model file: {model / name}")
-    index = model / "model.safetensors.index.json"
-    weights = set(json.loads(index.read_text())["weight_map"].values()) if index.exists() else {"model.safetensors"}
-    for name in weights:
-        path = model / name
-        if not path.is_file() or path.stat().st_size == 0:
-            raise FileNotFoundError(f"Missing model weights: {path}")
+class JudgeLifetimeTimeout(TimeoutError):
+    """The local attempt must stop before its CPU judge expires."""
 
 
-def run_training(cluster_train, judge_image, args, *, run_name, model_path, recipe):
-    """Execute inside the remote CPU coordinator, including detached runs."""
+def run_training(cluster_train, judge_image, args, *, app, config, volume, run_name, model_path, recipe):
+    """Manage one attempt in the local client kept alive by tmux."""
     validate_run_name(run_name)
     if recipe not in RECIPES:
         raise ValueError(f"Unsupported FCS recipe: {recipe}")
     if not os.getenv("WANDB_API_KEY"):
         raise ValueError("Export WANDB_API_KEY before starting training")
-    check_model(model_path)
+    # Reserve five minutes for cluster cancellation before the judge's 24h limit.
+    deadline = time.monotonic() + 86400 - 300
     judge = modal.Sandbox.create(
         "/app/entrypoint.sh",
+        app=app,
         image=judge_image,
+        volumes={config.volume_mount: volume.with_mount_options(read_only=True)},
         runtime="vm",
         cpu=args.judge_cpus,
         memory=args.judge_memory_gib * 1024,
@@ -132,11 +126,33 @@ def run_training(cluster_train, judge_image, args, *, run_name, model_path, reci
     completed = False
     try:
         judge.wait_until_ready(timeout=600)
+        # Resolve cached weight symlinks on the Volume in the existing CPU VM.
+        preflight = judge.exec(
+            "python3",
+            "-c",
+            "import sys; from modal_launchers.config import check_model; check_model(sys.argv[1])",
+            model_path,
+            timeout=120,
+        )
+        preflight.wait()
+        if preflight.returncode != 0:
+            raise RuntimeError(f"Cached model preflight failed: {preflight.stderr.read()}")
         credentials = judge.create_connect_token(port=JUDGE_PORT)
         result = check_judge(credentials.url, credentials.token)
         print(f"CPU judge smoke test passed: {json.dumps(result)}", flush=True)
+        if time.monotonic() >= deadline:
+            raise JudgeLifetimeTimeout("Judge lifetime reached during setup")
         call = cluster_train.spawn(run_name, model_path, recipe, credentials.url, credentials.token)
-        call.get()
+        from modal.exception import TimeoutError as ModalTimeoutError
+
+        try:
+            call.get(timeout=max(0, deadline - time.monotonic()))
+        except ModalTimeoutError as exc:
+            # get(timeout=...) expires with the base type. Preserve remote
+            # FunctionTimeoutError and other specific SDK errors unchanged.
+            if type(exc) is not ModalTimeoutError:
+                raise
+            raise JudgeLifetimeTimeout("Stopping cluster before CPU judge expires") from exc
         completed = True
     finally:
         try:
@@ -158,8 +174,6 @@ def build_app(args, config):
         .add_local_dir(ROOT / "data/frontiercs", remote_path=f"{config.source_root}/data/frontiercs")
     )
     judge_root = ROOT / "Frontier-CS/algorithmic"
-    # Using this image for the coordinator also builds/hydrates it before the
-    # remote Sandbox.create call; no local build context is needed remotely.
     judge_image = (
         modal.Image.from_dockerfile(
             judge_root / "Dockerfile",
@@ -221,23 +235,7 @@ def build_app(args, config):
             run_metadata={"recipe": recipe, "model": model_path},
         )
 
-    @app.function(
-        image=judge_image,
-        cpu=1,
-        memory=2048,
-        timeout=86400,
-        retries=0,
-        single_use_containers=True,
-        volumes=mounts,
-        secrets=secrets,
-        serialized=True,
-    )
-    def train(run_name: str, model_path: str = default_model_path(config), recipe: str = RECIPES[0]):
-        from modal_launchers.fcs_grpo import run_training
-
-        run_training(cluster_train, judge_image, args, run_name=run_name, model_path=model_path, recipe=recipe)
-
-    return app, train
+    return app, cluster_train, judge_image, volume
 
 
 def parse_args(argv=None):
@@ -278,7 +276,7 @@ def main(argv=None):
                 "total_gpus": args.nodes * GPUS_PER_NODE,
                 "gpu_node_cpus": 32,
                 "gpu_node_memory_gib": 256,
-                "coordinator": {"cpus": 1, "memory_gib": 2},
+                "orchestration": "local client in tmux",
                 "judge": {
                     "runtime": "vm",
                     "cpus": args.judge_cpus,
@@ -304,7 +302,24 @@ def main(argv=None):
 # Serialized remote functions capture their hydrated SDK objects. Helpers can
 # be imported remotely without rebuilding local images or reading local files.
 if modal.is_local() and __name__ != "__main__":
-    app, train = build_app(parse_args([]), load_modal_config())
+    settings = load_modal_config()
+    launch_args = parse_args([])
+    app, cluster_train, judge_image, volume = build_app(launch_args, settings)
+
+    @app.local_entrypoint()
+    def train(run_name: str, model_path: str = default_model_path(settings), recipe: str = RECIPES[0]):
+        """Run one attempt; keep this local client alive in tmux."""
+        run_training(
+            cluster_train,
+            judge_image,
+            launch_args,
+            app=app,
+            config=settings,
+            volume=volume,
+            run_name=run_name,
+            model_path=model_path,
+            recipe=recipe,
+        )
 
     @app.local_entrypoint()
     def resume(
@@ -313,7 +328,7 @@ if modal.is_local() and __name__ != "__main__":
         recipe: str = RECIPES[0],
         max_timeout_restarts: int = 10,
     ):
-        """Only Function timeouts start another attempt, with a fresh CPU judge."""
+        """Continue after a Function timeout or judge lifetime limit, with a fresh judge."""
         from modal.exception import FunctionTimeoutError
 
         validate_run_name(run_name)
@@ -325,12 +340,12 @@ if modal.is_local() and __name__ != "__main__":
             raise ValueError("Export WANDB_API_KEY before starting training")
         for attempt in range(max_timeout_restarts + 1):
             try:
-                train.remote(run_name=run_name, model_path=model_path, recipe=recipe)
+                train(run_name=run_name, model_path=model_path, recipe=recipe)
                 return
-            except FunctionTimeoutError:
+            except (FunctionTimeoutError, JudgeLifetimeTimeout):
                 if attempt == max_timeout_restarts:
                     raise
-                print(f"Function timeout: continuing {run_name} ({attempt + 1}/{max_timeout_restarts})", flush=True)
+                print(f"Attempt timeout: continuing {run_name} ({attempt + 1}/{max_timeout_restarts})", flush=True)
 
 
 if __name__ == "__main__":

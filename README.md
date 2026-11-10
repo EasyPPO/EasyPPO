@@ -345,8 +345,8 @@ before publishing a `b200-YYYYMMDD` Git tag as `easyppo-b200:YYYYMMDD`.
 [`modal_launchers/fcs_grpo.py`](modal_launchers/fcs_grpo.py) runs FrontierSmith
 training and Frontier-CS validation with a GPU cluster and a separate CPU judge.
 The default plan is **two nodes of 8 H200 GPUs**, with 32 CPUs and 256 GiB RAM per
-node, a **32-CPU / 64-GiB judge VM** with 32 workers, and a **1-CPU / 2-GiB
-coordinator**. The cluster uses
+node and a **32-CPU / 64-GiB judge VM** with 32 workers. A local client kept alive
+in `tmux` manages the judge and GPU cluster. The cluster uses
 [Modal RDMA networking](https://modal.com/docs/guide/multi-node-clusters); the judge
 uses the [VM runtime](https://modal.com/docs/guide/sandboxes) for Linux namespaces
 and cgroups, and an authenticated HTTPS endpoint reachable by every reward worker.
@@ -367,8 +367,8 @@ this cached snapshot, without downloading it again:
 ```
 
 Both `::train` and `::resume` accept `--model-path` to use another complete model
-on the Volume. The coordinator checks config, tokenizer, and weight files before
-creating the judge or invoking the GPUs. The separately stored
+on the Volume. The launcher checks config, tokenizer, and weight files through a
+read-only Volume mount in the CPU judge before invoking the GPUs. The separately stored
 `EasyPPO/models/Qwen3.5-9B-Base` remains the default for the AIME launchers.
 
 W&B is required. The run name becomes the W&B run ID, with `WANDB_RESUME=allow`;
@@ -386,33 +386,37 @@ export EASYPPO_FCS_NODES=2
 ```
 
 The last command only prints the resource plan and does not allocate anything.
-After approving that plan, start a detached run:
+After approving that plan, start the local client in `tmux`:
 
 ```bash
-.venv-modal/bin/modal run --detach modal_launchers/fcs_grpo.py::train \
-  --run-name fcs-h200
-```
-
-The remote CPU coordinator starts the judge, checks a real C++ submission through
-compilation, execution, scoring, and reward normalization, then invokes the GPU
-cluster. The detached attempt keeps running if the local terminal disconnects.
-On completion or failure, the coordinator stops the judge; on interruption or
-failure while waiting for the cluster, it also cancels the cluster call.
-
-For automatic continuation after **Function timeouts only**, keep this command
-alive in `tmux`:
-
-```bash
+tmux new-session -s fcs-grpo
 .venv-modal/bin/modal run modal_launchers/fcs_grpo.py::resume \
   --run-name fcs-h200 --max-timeout-restarts 10
 ```
 
+The local client starts the CPU judge, checks the cached model and a real C++
+submission through compilation, execution, scoring, and reward normalization,
+then invokes the GPU cluster directly. On completion or failure it stops the
+judge; on interruption or failure while waiting it first cancels the cluster.
+`::train` runs one attempt; `::resume` continues after a GPU Function timeout or
+when the judge approaches its lifetime limit.
+
+Keep the client and its host running for the entire training job. Detaching from
+`tmux` preserves the client when SSH disconnects. Do not use Modal's `--detach`
+flag: it does not keep this local judge management and continuation loop alive.
+A client or host crash can interrupt training and prevent judge cleanup; the
+judge still has its own 24-hour lifetime limit.
+
 Each continuation uses the same model, recipe, output directory, and W&B run ID,
 creates a fresh judge and cluster, and resumes the latest checkpoint. Training,
 judge preflight, and other non-timeout errors propagate immediately. The restart
-limit counts additional attempts after the first. Each Function and judge Sandbox
-has a 24-hour timeout; the coordinator's limit also includes setup and GPU queue
-waiting. `::train` runs one attempt; `::resume` supplies the continuation loop.
+limit counts additional attempts after the first. Each GPU Function and judge
+Sandbox has a 24-hour timeout. The local client bounds an attempt to 23 hours
+55 minutes from starting judge creation, including setup and GPU queue waiting,
+then cancels the cluster before replacing the judge. This reserves five minutes
+for cleanup. GPU preemption can still restart the whole cluster under Modal's
+platform retry policy, even with `retries=0`; that does not reset the local
+attempt's deadline. Recovery uses the latest complete persisted checkpoint.
 
 The default recipe is `grpo_frontiersmith`: standard GRPO with overlong-response
 filtering enabled, 240 steps, FA2 attention, and actor parameter/optimizer offload

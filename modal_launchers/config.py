@@ -72,3 +72,17 @@ def load_modal_config():
     if not isinstance(values, dict):
         raise ValueError("Modal configuration must be a mapping")
     return ModalConfig(**values)
+
+
+def check_model(model_path):
+    """Fail on missing or broken cached files before starting GPUs."""
+    model = Path(model_path)
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        if not (model / name).is_file():
+            raise FileNotFoundError(f"Missing model file: {model / name}")
+    index = model / "model.safetensors.index.json"
+    weights = set(json.loads(index.read_text())["weight_map"].values()) if index.exists() else {"model.safetensors"}
+    for name in weights:
+        path = model / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise FileNotFoundError(f"Missing model weights: {path}")
