@@ -415,10 +415,10 @@ limit counts additional attempts after the first. Each Function and judge Sandbo
 has a 24-hour timeout; the coordinator's limit also includes setup and GPU queue
 waiting. `::train` runs one attempt; `::resume` supplies the continuation loop.
 
-The default recipe is `dr_grpo_frontiersmith_no_overlong_filter`: 240 steps,
-FA2 attention, and actor parameter/optimizer offload disabled. Both entrypoints
-accept `--recipe grpo_frontiersmith` for standard GRPO with overlong-response
-filtering; all four Frontier recipes are available. To change resources, set
+The default recipe is `grpo_frontiersmith`: standard GRPO with overlong-response
+filtering enabled, 240 steps, FA2 attention, and actor parameter/optimizer offload
+disabled. Both entrypoints accept `--recipe` to select any of the four Frontier
+recipes. To change resources, set
 `EASYPPO_FCS_GPU` (`H200`, `B200`, or `H100`) and `EASYPPO_FCS_NODES` (1, 2, 4, 8,
 16, or 32) before both preview and launch. Judge resources can be changed through
 `EASYPPO_FCS_JUDGE_CPUS`, `EASYPPO_FCS_JUDGE_MEMORY_GIB`, and

@@ -19,10 +19,10 @@ from modal_launchers.multinode import GPUS_PER_NODE, validate_run_name
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPES = (
+    "grpo_frontiersmith",
     "dr_grpo_frontiersmith_no_overlong_filter",
     "dr_grpo_frontiersmith",
     "grpo_frontiersmith_no_overlong_filter",
-    "grpo_frontiersmith",
 )
 MODEL_ID = "HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1"
 MODEL_REVISION = "016efe4f9b8d1f472b412a26bd43e9b3f690a223"
@@ -243,7 +243,7 @@ def build_app(args, config):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-judge", metavar="URL", help="Check an existing judge on CPU; no Modal allocation")
-    parser.add_argument("--run-name", default="fcs-drgrpo")
+    parser.add_argument("--run-name", default="fcs-grpo")
     parser.add_argument("--recipe", choices=RECIPES, default=RECIPES[0])
     parser.add_argument("--model-path", default=default_model_path(load_modal_config()))
     parser.add_argument("--gpu", choices=("H200", "B200", "H100"), default=os.getenv("EASYPPO_FCS_GPU", "H200"))
