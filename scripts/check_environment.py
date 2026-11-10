@@ -37,7 +37,14 @@ def main():
         raise RuntimeError(f"Expected verl from {ROOT / 'verl'}, imported {source_path}")
     versions = dict(VERSIONS)
     if not args.local:
-        versions.update({"vllm": "0.21.0", "flash-attn": "2.8.3"})
+        versions.update(
+            {
+                "vllm": "0.21.0",
+                "flash-attn": "2.8.3",
+                "flash-linear-attention": "0.6.0",
+                "fla-core": "0.6.0",
+            }
+        )
     for package, expected in versions.items():
         actual = importlib.metadata.version(package)
         if actual.split("+")[0] != expected:
@@ -46,6 +53,7 @@ def main():
         importlib.import_module(module)
     if not args.local:
         importlib.import_module("flash_attn")
+        importlib.import_module("fla.ops.gated_delta_rule")
         importlib.import_module("vllm")
     for name, (rows, expected_hash) in DATA.items():
         path = ROOT / "data/aime" / name

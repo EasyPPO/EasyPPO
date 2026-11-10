@@ -1,0 +1,49 @@
+name: Publish B200 image
+
+on:
+  push:
+    tags:
+      - 'b200-*'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-b200-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'EasyPPO/EasyPPO'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select image tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#b200-}"
+          [[ "$version" =~ ^[0-9]{8}$ ]]
+          echo "IMAGE=ghcr.io/easyppo/easyppo-b200:$version" >> "$GITHUB_ENV"
+      - name: Make room for the CUDA image
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h /
+      - name: Sign in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image
+        run: docker build --platform linux/amd64 -f docker/Dockerfile.b200 -t "$IMAGE" .
+      - name: Check image environment
+        run: |
+          docker run --rm --volume "$PWD:/workspace/EasyPPO:ro" \
+            --env PYTHONDONTWRITEBYTECODE=1 "$IMAGE" python3 scripts/check_environment.py
+      - name: Publish image
+        run: |
+          docker push "$IMAGE"
+          docker image inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"

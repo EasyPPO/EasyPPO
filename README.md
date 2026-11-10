@@ -291,7 +291,7 @@ host networking for the training container to reach `127.0.0.1:8082`:
 docker run --rm -it --gpus all --network host --shm-size=16g \
   --mount "type=bind,source=$PWD,target=/workspace/EasyPPO" \
   -w /workspace/EasyPPO -e WANDB_MODE=online \
-  --entrypoint bash ghcr.io/easyppo/easyppo-b200:20260926
+  --entrypoint bash ghcr.io/easyppo/easyppo-b200:20261110
 ```
 
 Inside the container, run `wandb login`, export the W&B/model/data/output variables,
@@ -303,7 +303,12 @@ outputs under `/workspace/EasyPPO/outputs` persist in the host checkout.
 ## Docker
 
 We also provide a prebuilt B200 training environment:
-`ghcr.io/easyppo/easyppo-b200:20260926`.
+`ghcr.io/easyppo/easyppo-b200:20261110`.
+
+This image includes `flash-linear-attention==0.6.0`, `fla-core==0.6.0`, and
+`flash-attn==2.8.3`. The recipes in `configs/` select `flash_attention_2` and disable
+actor parameter and optimizer offload, following the settings in
+[PR #11](https://github.com/EasyPPO/EasyPPO/pull/11).
 
 On a host with **8 B200 GPUs**, Docker, and NVIDIA Container Toolkit, run from the
 repository root:
@@ -311,17 +316,35 @@ repository root:
 ```bash
 docker run --rm --gpus all --shm-size=16g \
   --mount "type=bind,source=$PWD,target=/workspace/EasyPPO" \
-  ghcr.io/easyppo/easyppo-b200:20260926 \
+  ghcr.io/easyppo/easyppo-b200:20261110 \
   bash scripts/run_aime_ours.sh
 ```
 
 This runs the same training script using the current checkout. Outputs are saved
 to `outputs/aime-ours/` in your local repository.
 
+To build the environment locally:
+
+```bash
+docker build -f docker/Dockerfile.b200 -t ghcr.io/easyppo/easyppo-b200:20261110 .
+```
+
+To check FA2 and FLA forward/backward kernels and a small randomly initialized
+Qwen3.5 model on one B200, without downloading model weights:
+
+```bash
+docker run --rm --gpus all \
+  --mount "type=bind,source=$PWD,target=/workspace/EasyPPO" \
+  ghcr.io/easyppo/easyppo-b200:20261110 python3 scripts/check_b200_gpu.py
+```
+
+The `Publish B200 image` GitHub Actions workflow builds and checks the environment
+before publishing a `b200-YYYYMMDD` Git tag as `easyppo-b200:YYYYMMDD`.
+
 ## B200 training on Modal
 
 Launch on **8 B200 GPUs** or **32 B200 GPUs** using the public
-`ghcr.io/easyppo/easyppo-b200:20260926` image. No registry credentials are needed.
+`ghcr.io/easyppo/easyppo-b200:20261110` image. No registry credentials are needed.
 Launchers, configuration, and client dependencies are in [`modal_launchers/`](modal_launchers/).
 
 From the repository root, install the Modal client and sign in:

@@ -1,11 +1,15 @@
-# Reuse the published B200 environment; training source is mounted at runtime.
+# B200 training environment; training source is mounted at runtime.
 FROM ghcr.io/easyppo/easyppo-b200:20260926@sha256:84b12174f44070e70db08b643e3ad1238c317673c50e7751c61e3709334ce2ad
 
 USER root
+RUN python3 -m pip install --no-cache-dir --no-deps \
+      flash-linear-attention==0.6.0 fla-core==0.6.0 \
+    && python3 -m pip check
 WORKDIR /workspace/EasyPPO
 ENV PYTHONPATH=/workspace/EasyPPO
 LABEL org.opencontainers.image.source="https://github.com/EasyPPO/EasyPPO" \
-      org.opencontainers.image.description="EasyPPO AIME environment for NVIDIA B200 and Modal"
+      org.opencontainers.image.description="EasyPPO B200 environment with FlashAttention 2 and FLA 0.6.0" \
+      org.opencontainers.image.version="20261110"
 
 ENTRYPOINT []
 CMD ["python3", "scripts/check_environment.py"]

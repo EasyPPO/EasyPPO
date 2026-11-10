@@ -31,7 +31,7 @@ actor_rollout_ref:
     use_remove_padding: true
     enable_gradient_checkpointing: true
     override_config:
-      attn_implementation: sdpa
+      attn_implementation: flash_attention_2
   actor:
     ppo_mini_batch_size: 32
     ppo_micro_batch_size_per_gpu: 1
@@ -56,8 +56,8 @@ actor_rollout_ref:
       betas: [0.9, 0.999]
       clip_grad: 1.0
     fsdp_config:
-      param_offload: true
-      optimizer_offload: true
+      param_offload: false
+      optimizer_offload: false
       fsdp_size: 8
   rollout:
     name: vllm

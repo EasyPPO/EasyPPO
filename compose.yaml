@@ -1,6 +1,6 @@
 services:
   easyppo:
-    image: ${EASYPPO_IMAGE:-ghcr.io/easyppo/easyppo-b200:20260926@sha256:84b12174f44070e70db08b643e3ad1238c317673c50e7751c61e3709334ce2ad}
+    image: ${EASYPPO_IMAGE:-ghcr.io/easyppo/easyppo-b200:20261110}
     working_dir: /workspace/EasyPPO
     volumes:
       - type: bind

@@ -4,6 +4,8 @@ vllm==0.21.0
 flashinfer-python==0.6.8.post1
 flashinfer-cubin==0.6.8.post1
 transformers==5.9.0
+flash-linear-attention==0.6.0
+fla-core==0.6.0
 ray[default]==2.55.1
 tensordict==0.10.0
 TransferQueue==0.1.8

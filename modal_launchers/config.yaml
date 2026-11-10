@@ -1,6 +1,6 @@
 # Shared by b200.py (8 GPUs) and b200_32gpu.py (32 GPUs).
 # Public image: no REGISTRY_USERNAME or REGISTRY_PASSWORD is needed.
-image: ghcr.io/easyppo/easyppo-b200:20260926@sha256:84b12174f44070e70db08b643e3ad1238c317673c50e7751c61e3709334ce2ad
+image: ghcr.io/easyppo/easyppo-b200:20261110
 
 # Absolute path where the current local checkout is uploaded in each container.
 source_root: /workspace/EasyPPO
