@@ -346,7 +346,8 @@ before publishing a `b200-YYYYMMDD` Git tag as `easyppo-b200:YYYYMMDD`.
 [`modal_launchers/fcs_grpo.py`](modal_launchers/fcs_grpo.py) runs FrontierSmith
 training and Frontier-CS validation with a GPU cluster and a separate CPU judge.
 The default plan is **two nodes of 8 H200 GPUs**, with 32 CPUs and 256 GiB RAM per
-node, plus a **32-CPU / 64-GiB judge VM** with 32 judge workers. The cluster uses
+node, a **32-CPU / 64-GiB judge VM** with 32 workers, and a **1-CPU / 2-GiB
+coordinator**. The cluster uses
 [Modal RDMA networking](https://modal.com/docs/guide/multi-node-clusters); the judge
 uses the [VM runtime](https://modal.com/docs/guide/sandboxes) for Linux namespaces
 and cgroups, and an authenticated HTTPS endpoint reachable by every reward worker.
@@ -359,42 +360,77 @@ uv pip install --python .venv-modal/bin/python -r modal_launchers/requirements.t
 .venv-modal/bin/modal token new
 ```
 
-Preview the complete resource plan without allocating anything:
+The `easyppo` Volume already contains the FCS SFT model. The launcher defaults to
+this cached snapshot, without downloading it again:
+
+```text
+/mnt/easyppo/cache/huggingface/hub/models--HuanzhiMao--Qwen3.5-9B-FrontierCS-SFT-DSv3.1/snapshots/016efe4f9b8d1f472b412a26bd43e9b3f690a223
+```
+
+Both `::train` and `::resume` accept `--model-path` to use another complete model
+on the Volume. The coordinator checks config, tokenizer, and weight files before
+creating the judge or invoking the GPUs. The separately stored
+`EasyPPO/models/Qwen3.5-9B-Base` remains the default for the AIME launchers.
+
+W&B is required. The run name becomes the W&B run ID, with `WANDB_RESUME=allow`;
+reusing it resumes the same experiment. Console and file metrics are also enabled.
 
 ```bash
+export WANDB_API_KEY='your-wandb-api-key'
+export WANDB_ENTITY='your-user-or-team'         # optional
+export WANDB_PROJECT='EasyPPO-FrontierSmith'    # optional; this is the default
+
+# These defaults apply to both plan and Modal commands.
+export EASYPPO_FCS_GPU=H200
+export EASYPPO_FCS_NODES=2
 .venv-modal/bin/python -m modal_launchers.fcs_grpo --run-name fcs-h200
 ```
 
-After approving that resource plan, launch with the same arguments plus `--launch`:
+The last command only prints the resource plan and does not allocate anything.
+After approving that plan, start a detached run:
 
 ```bash
-.venv-modal/bin/python -m modal_launchers.fcs_grpo --run-name fcs-h200 --launch
+.venv-modal/bin/modal run --detach modal_launchers/fcs_grpo.py::train \
+  --run-name fcs-h200
 ```
 
-Keep this command running in a persistent terminal such as `tmux`. It first
-downloads `HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1` into the shared Volume
-using a 2-CPU / 8-GiB Function, then starts the CPU judge and checks a real C++
-submission through compilation, execution, scoring, and reward normalization.
-The GPU training call starts only after that check passes. The judge is stopped
-when the training call finishes or fails. Each Function and the judge Sandbox
-have a 24-hour timeout.
+The remote CPU coordinator starts the judge, checks a real C++ submission through
+compilation, execution, scoring, and reward normalization, then invokes the GPU
+cluster. The detached attempt keeps running if the local terminal disconnects.
+On completion or failure, the coordinator stops the judge; on interruption or
+failure while waiting for the cluster, it also cancels the cluster call.
+
+For automatic continuation after **Function timeouts only**, keep this command
+alive in `tmux`:
+
+```bash
+.venv-modal/bin/modal run modal_launchers/fcs_grpo.py::resume \
+  --run-name fcs-h200 --max-timeout-restarts 10
+```
+
+Each continuation uses the same model, recipe, output directory, and W&B run ID,
+creates a fresh judge and cluster, and resumes the latest checkpoint. Training,
+judge preflight, and other non-timeout errors propagate immediately. The restart
+limit counts additional attempts after the first. Each Function and judge Sandbox
+has a 24-hour timeout; the coordinator's limit also includes setup and GPU queue
+waiting. `::train` runs one attempt; `::resume` supplies the continuation loop.
 
 The default recipe is `dr_grpo_frontiersmith_no_overlong_filter`: 240 steps,
-FA2 attention, and actor parameter/optimizer offload disabled. Use
-`--recipe grpo_frontiersmith` for standard GRPO with overlong-response filtering;
-all four Frontier recipes are available through `--recipe`. Use `--gpu B200`
-or `--nodes 4` to change the resource plan. `--model-id` selects a different
-Hugging Face model; `HF_TOKEN` is forwarded when set. Add `--wandb` with
-`WANDB_API_KEY` to enable W&B; console and file metrics are enabled by default.
+FA2 attention, and actor parameter/optimizer offload disabled. Both entrypoints
+accept `--recipe grpo_frontiersmith` for standard GRPO with overlong-response
+filtering; all four Frontier recipes are available. To change resources, set
+`EASYPPO_FCS_GPU` (`H200`, `B200`, or `H100`) and `EASYPPO_FCS_NODES` (1, 2, 4, 8,
+16, or 32) before both preview and launch. Judge resources can be changed through
+`EASYPPO_FCS_JUDGE_CPUS`, `EASYPPO_FCS_JUDGE_MEMORY_GIB`, and
+`EASYPPO_FCS_JUDGE_WORKERS`.
 
 The launcher uploads this checkout, both dataset Parquets, and the bundled judge
-problems. Image, Volume, cache, and output paths come from
-[`modal_launchers/config.yaml`](modal_launchers/config.yaml). The Volume is
-created if absent. With the defaults, checkpoints, rollouts, validation results,
-and timestamped metrics are stored under `easyppo:outputs/<run-name>/`.
-Checkpoints are saved **every 5 steps, keeping at most 2 actor checkpoints**.
-Rerun the same command and run name to resume; use a new name when changing the
-recipe, model, or cluster size.
+problems. Image, existing Volume, cache, and output paths come from
+[`modal_launchers/config.yaml`](modal_launchers/config.yaml). With the defaults,
+checkpoints, rollouts, validation results, and timestamped metrics are stored under
+`easyppo:outputs/<run-name>/`. Checkpoints are saved **every 5 steps, keeping at
+most 2 actor checkpoints**. Use a new name when changing the recipe, model path,
+or cluster size.
 
 To check an already running judge locally on CPU, without creating Modal resources:
 
@@ -405,8 +441,9 @@ To check an already running judge locally on CPU, without creating Modal resourc
 
 For an authenticated Modal judge endpoint, set `FRONTIERCS_JUDGE_TOKEN` before
 using `--check-judge`. Local CPU tests cover configuration, authentication,
-launch ordering, and checkpoint coordination. The image contains H200 `sm_90`
-kernels, but this launcher has not yet been validated by running a GPU cluster.
+launch ordering, timeout continuation, and checkpoint coordination. The image
+contains H200 `sm_90` kernels, but this launcher has not yet been validated by
+running a GPU cluster.
 
 ## AIME B200 training on Modal
 
