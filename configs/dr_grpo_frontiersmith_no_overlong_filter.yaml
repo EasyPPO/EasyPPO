@@ -58,8 +58,8 @@ actor_rollout_ref:
       betas: [0.9, 0.999]
       clip_grad: 1.0
     fsdp_config:
-      param_offload: false
-      optimizer_offload: false
+      param_offload: true
+      optimizer_offload: true
       fsdp_size: 8
   rollout:
     name: vllm

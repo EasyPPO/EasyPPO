@@ -306,9 +306,8 @@ We also provide a prebuilt B200 training environment:
 `ghcr.io/easyppo/easyppo-b200:20261110`.
 
 This image includes `flash-linear-attention==0.6.0`, `fla-core==0.6.0`, and
-`flash-attn==2.8.3`. The recipes in `configs/` select `flash_attention_2` and disable
-actor parameter and optimizer offload, following the settings in
-[PR #11](https://github.com/EasyPPO/EasyPPO/pull/11).
+`flash-attn==2.8.3`. The recipes in `configs/` select `flash_attention_2`.
+The FrontierSmith recipes enable actor parameter and optimizer offload.
 
 On a host with **8 B200 GPUs**, Docker, and NVIDIA Container Toolkit, run from the
 repository root:
@@ -417,7 +416,7 @@ waiting. `::train` runs one attempt; `::resume` supplies the continuation loop.
 
 The default recipe is `grpo_frontiersmith`: standard GRPO with overlong-response
 filtering enabled, 240 steps, FA2 attention, and actor parameter/optimizer offload
-disabled. Both entrypoints accept `--recipe` to select any of the four Frontier
+enabled. Both entrypoints accept `--recipe` to select any of the four Frontier
 recipes. To change resources, set
 `EASYPPO_FCS_GPU` (`H200`, `B200`, or `H100`) and `EASYPPO_FCS_NODES` (1, 2, 4, 8,
 16, or 32) before both preview and launch. Judge resources can be changed through

@@ -46,8 +46,8 @@ def test_real_recipe_composes_without_aime_overrides(recipe, nodes):
     assert cfg.algorithm.adv_estimator == "grpo" and not cfg.critic.enable
     assert cfg.actor_rollout_ref.model.path == "/models/Qwen (FCS)"
     assert cfg.actor_rollout_ref.model.override_config.attn_implementation == "flash_attention_2"
-    assert not cfg.actor_rollout_ref.actor.fsdp_config.param_offload
-    assert not cfg.actor_rollout_ref.actor.fsdp_config.optimizer_offload
+    assert cfg.actor_rollout_ref.actor.fsdp_config.param_offload
+    assert cfg.actor_rollout_ref.actor.fsdp_config.optimizer_offload
     assert cfg.actor_rollout_ref.ref.fsdp_config.param_offload
     assert cfg.reward.custom_reward_function.reward_kwargs.judge_url == "https://judge.example"
     assert "frontiercs" in cfg.data.train_files[0] and "frontiercs" in cfg.data.val_files[0]
