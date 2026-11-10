@@ -58,6 +58,21 @@ def test_wrong_data_source():
         reward.compute_score("aime", "code", "frontiersmith_0")
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_modal_auth_on_both_submission_and_polling(monkeypatch, explicit):
+    monkeypatch.setenv("FRONTIERCS_JUDGE_TOKEN", "environment-token")
+    post = Mock(return_value=response({"sid": "test"}))
+    get = Mock(return_value=response({"status": "done", "score": 50}))
+    monkeypatch.setattr(reward.requests, "post", post)
+    monkeypatch.setattr(reward.requests, "get", get)
+    kwargs = {"judge_token": "explicit-token"} if explicit else {}
+    result = reward.compute_score("frontiercs", "code", "frontiersmith_0", **kwargs)
+    expected = {"Authorization": "Bearer " + ("explicit-token" if explicit else "environment-token")}
+    assert post.call_args.kwargs["headers"] == expected
+    assert get.call_args.kwargs["headers"] == expected
+    assert result["score"] == 0.5
+
+
 @pytest.mark.parametrize(
     "explicit,extra,expected",
     [

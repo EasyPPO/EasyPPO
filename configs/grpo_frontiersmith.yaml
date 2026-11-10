@@ -128,7 +128,7 @@ trainer:
   total_epochs: 100
   total_training_steps: 240
   resume_mode: auto
-  save_freq: 10
+  save_freq: 5
   max_actor_ckpt_to_keep: 2
   test_freq: 5
   ray_wait_register_center_timeout: 600

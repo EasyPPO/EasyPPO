@@ -1,6 +1,6 @@
-# Shared by b200.py (8 GPUs) and b200_32gpu.py (32 GPUs).
+# Shared by the AIME B200 launchers and fcs_grpo.py.
 # Public image: no REGISTRY_USERNAME or REGISTRY_PASSWORD is needed.
-image: ghcr.io/easyppo/easyppo-b200:20261110
+image: ghcr.io/easyppo/easyppo-b200:20261110@sha256:a461595356a041e8af18aa0d4514b2ecd28de1e824d349c9ca8667760270b091
 
 # Absolute path where the current local checkout is uploaded in each container.
 source_root: /workspace/EasyPPO

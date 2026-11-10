@@ -1,4 +1,4 @@
-"""Ray orchestration for the 4 x 8 B200 launcher (no GPU work at import time)."""
+"""Ray orchestration for Modal clusters (no GPU work at import time)."""
 
 import json
 import os
@@ -58,22 +58,24 @@ def training_command(model_path, run_name, project, config=None):
     ]
 
 
-def prepare_output(output, run_name, project, entity, commit):
-    """Refuse to reuse an 8-GPU checkpoint or an unrelated experiment directory."""
+def prepare_output(output, run_name, project, entity, commit, *, nodes=NODES, run_metadata=None):
+    """Refuse to resume with incompatible run metadata or an unrelated directory."""
     output = Path(output)
-    manifest = output / "modal_32gpu_run.json"
+    manifest = output / ("modal_32gpu_run.json" if run_metadata is None else "modal_cluster_run.json")
     expected = {
-        "world_size": NODES * GPUS_PER_NODE,
+        "world_size": nodes * GPUS_PER_NODE,
         "run_name": run_name,
         "wandb_run_id": run_name,
         "wandb_project": project,
         "wandb_entity": entity,
     }
+    if run_metadata is not None:
+        expected["training"] = run_metadata
     if manifest.exists():
         if json.loads(manifest.read_text()) != expected:
             raise ValueError(f"Run configuration does not match {manifest}; use a new run name")
     elif output.exists() and any(output.iterdir()):
-        raise ValueError(f"Refusing to reuse existing output without a 32-GPU manifest: {output}")
+        raise ValueError(f"Refusing to reuse existing output without a matching run manifest: {output}")
     else:
         output.mkdir(parents=True, exist_ok=True)
         temporary = manifest.with_suffix(".tmp")
@@ -187,19 +189,19 @@ def ray_command(rank, node_ip, head_ip):
     return command
 
 
-def check_health(store, ray_process):
+def check_health(store, ray_process, nodes=NODES):
     if ray_process.poll() is not None:
         raise RuntimeError(f"Local Ray process exited with code {ray_process.returncode}")
-    for rank in range(NODES):
+    for rank in range(nodes):
         key = f"error/{rank}"
         if store.check([key]):
             raise RuntimeError(f"Node {rank} failed: {store.get(key).decode()}")
 
 
-def wait_for(store, predicate, ray_process, description, timeout=STARTUP_TIMEOUT):
+def wait_for(store, predicate, ray_process, description, timeout=STARTUP_TIMEOUT, *, nodes=NODES):
     deadline = time.monotonic() + timeout
     while not predicate():
-        check_health(store, ray_process)
+        check_health(store, ray_process, nodes)
         if time.monotonic() >= deadline:
             # Deliberately not FunctionTimeoutError: setup failures must not
             # trigger the local entrypoint's 24-hour continuation policy.
@@ -207,19 +209,19 @@ def wait_for(store, predicate, ray_process, description, timeout=STARTUP_TIMEOUT
         time.sleep(1)
 
 
-def commit_all_nodes(store, ray_process, commit, generation):
+def commit_all_nodes(store, ray_process, commit, generation, *, nodes=NODES):
     # The trainer writes its iteration marker after all ranks have saved. Ask
     # every node to commit its own Volume view before committing the head view.
     store.set("commit", generation)
-    keys = [f"committed/{rank}/{generation}" for rank in range(1, NODES)]
-    wait_for(store, lambda: store.check(keys), ray_process, "worker checkpoint commits")
+    keys = [f"committed/{rank}/{generation}" for rank in range(1, nodes)]
+    wait_for(store, lambda: store.check(keys), ray_process, "worker checkpoint commits", nodes=nodes)
     commit()
 
 
-def worker_loop(store, ray_process, commit):
+def worker_loop(store, ray_process, commit, *, nodes=NODES):
     generation = ""
     while not store.check(["finished"]):
-        check_health(store, ray_process)
+        check_health(store, ray_process, nodes)
         if store.check(["commit"]):
             requested = store.get("commit").decode()
             if requested != generation:
@@ -229,25 +231,39 @@ def worker_loop(store, ray_process, commit):
         time.sleep(1)
 
 
-def run_node(cluster, *, run_name, model_path, commit, config=None):
+def run_node(
+    cluster,
+    *,
+    run_name,
+    model_path,
+    commit,
+    config=None,
+    nodes=NODES,
+    command=None,
+    project=None,
+    require_wandb=True,
+    run_metadata=None,
+):
     import ray
     from torch.distributed import TCPStore
 
     validate_run_name(run_name)
     config = config or load_modal_config()
     addresses = list(cluster.container_ipv4_ips)
-    if len(addresses) != NODES or any(not address for address in addresses):
-        raise RuntimeError("This launcher requires four Modal cluster IPv4 addresses")
+    if len(addresses) != nodes or any(not address for address in addresses):
+        raise RuntimeError(f"Expected {nodes} Modal cluster IPv4 addresses")
     rank = cluster.rank
     head_ip, node_ip = addresses[0], addresses[rank]
     env = node_environment(node_ip, head_ip, run_name, config)
     # Ray actors inherit their local raylet's environment. Update the parent too
     # so Ray introspection uses the same address as the training subprocess.
+    if not require_wandb:
+        env["WANDB_MODE"] = "disabled"
     os.environ.update(env)
     store = TCPStore(
         head_ip,
         CONTROL_PORT,
-        NODES,
+        nodes,
         rank == 0,
         timeout=timedelta(seconds=STARTUP_TIMEOUT),
         wait_for_workers=True,
@@ -255,14 +271,22 @@ def run_node(cluster, *, run_name, model_path, commit, config=None):
     ray_process = trainer = None
     connected = False
     try:
-        if not env.get("WANDB_API_KEY"):
+        if require_wandb and not env.get("WANDB_API_KEY"):
             raise ValueError("Export WANDB_API_KEY before starting training")
         if not (Path(model_path) / "config.json").is_file():
             raise FileNotFoundError(f"Missing model config: {model_path}/config.json")
-        project = env.get("WANDB_PROJECT", "EasyPPO")
+        project = project or env.get("WANDB_PROJECT", "EasyPPO")
         output = Path(config.output_path(run_name))
         if rank == 0:
-            prepare_output(output, run_name, project, env.get("WANDB_ENTITY"), commit)
+            prepare_output(
+                output,
+                run_name,
+                project,
+                env.get("WANDB_ENTITY"),
+                commit,
+                nodes=nodes,
+                run_metadata=run_metadata,
+            )
             store.set("output_ready", "1")
         else:
             # Also surface head preflight errors instead of waiting for 24 hours.
@@ -287,10 +311,10 @@ def run_node(cluster, *, run_name, model_path, commit, config=None):
                 except OSError:
                     return False
 
-            wait_for(store, gcs_ready, ray_process, "Ray head")
+            wait_for(store, gcs_ready, ray_process, "Ray head", nodes=nodes)
             store.set("head_started", "1")
         else:
-            for generation in worker_loop(store, ray_process, commit):
+            for generation in worker_loop(store, ray_process, commit, nodes=nodes):
                 store.set(f"committed/{rank}/{generation}", "1")
             store.set(f"finished/{rank}", "1")
             return
@@ -299,42 +323,43 @@ def run_node(cluster, *, run_name, model_path, commit, config=None):
         connected = True
 
         def cluster_ready():
-            nodes = [node for node in ray.nodes() if node["Alive"]]
+            alive_nodes = [node for node in ray.nodes() if node["Alive"]]
             return (
-                len(nodes) == NODES
-                and {node["NodeManagerAddress"] for node in nodes} == set(addresses)
-                and all(node["Resources"].get("GPU", 0) == GPUS_PER_NODE for node in nodes)
+                len(alive_nodes) == nodes
+                and {node["NodeManagerAddress"] for node in alive_nodes} == set(addresses)
+                and all(node["Resources"].get("GPU", 0) == GPUS_PER_NODE for node in alive_nodes)
             )
 
-        wait_for(store, cluster_ready, ray_process, "four Ray nodes with eight GPUs each")
-        print(f"Ray cluster ready: {NODES} nodes / {NODES * GPUS_PER_NODE} B200s; run={run_name}", flush=True)
+        wait_for(store, cluster_ready, ray_process, f"{nodes} Ray nodes with eight GPUs each", nodes=nodes)
+        print(f"Ray cluster ready: {nodes} nodes / {nodes * GPUS_PER_NODE} GPUs; run={run_name}", flush=True)
         check_nccl_cluster(ray, addresses)
         trainer = subprocess.Popen(
-            training_command(model_path, run_name, project, config),
+            command if command is not None else training_command(model_path, run_name, project, config),
             cwd=config.source_root,
             env=env,
         )
         tracker = output / "checkpoints/latest_checkpointed_iteration.txt"
         last_step = tracker.read_text().strip() if tracker.exists() else ""
         while trainer.poll() is None:
-            check_health(store, ray_process)
+            check_health(store, ray_process, nodes)
             if not cluster_ready():
                 raise RuntimeError("A Ray node disappeared during training")
             if tracker.exists():
                 step = tracker.read_text().strip()
                 if step.isdigit() and step != last_step:
-                    commit_all_nodes(store, ray_process, commit, f"step-{step}")
+                    commit_all_nodes(store, ray_process, commit, f"step-{step}", nodes=nodes)
                     last_step = step
             time.sleep(2)
         if trainer.returncode:
             raise subprocess.CalledProcessError(trainer.returncode, trainer.args)
-        commit_all_nodes(store, ray_process, commit, "final")
+        commit_all_nodes(store, ray_process, commit, "final", nodes=nodes)
         store.set("finished", "1")
         wait_for(
             store,
-            lambda: store.check([f"finished/{rank}" for rank in range(1, NODES)]),
+            lambda: store.check([f"finished/{rank}" for rank in range(1, nodes)]),
             ray_process,
             "worker completion",
+            nodes=nodes,
         )
     except BaseException as error:
         try:

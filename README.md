@@ -241,7 +241,7 @@ For a configuration preview without starting training, append `--cfg job --resol
 Checkpoints, rollouts, and validation results go to `$OUTPUT_DIR/checkpoints`,
 `$OUTPUT_DIR/rollouts`, and `$OUTPUT_DIR/validation`. The default training length
 is 240 steps; validation runs before training and every 5 steps, and checkpoints
-are saved every 10 steps. `resume_mode=auto` resumes from checkpoints in that
+are saved every 5 steps, keeping the latest two. `resume_mode=auto` resumes from checkpoints in that
 output directory; use a new directory for a new experiment.
 
 The PPO recipe is also available:
@@ -341,7 +341,74 @@ docker run --rm --gpus all \
 The `Publish B200 image` GitHub Actions workflow builds and checks the environment
 before publishing a `b200-YYYYMMDD` Git tag as `easyppo-b200:YYYYMMDD`.
 
-## B200 training on Modal
+## FCS GRPO on Modal
+
+[`modal_launchers/fcs_grpo.py`](modal_launchers/fcs_grpo.py) runs FrontierSmith
+training and Frontier-CS validation with a GPU cluster and a separate CPU judge.
+The default plan is **two nodes of 8 H200 GPUs**, with 32 CPUs and 256 GiB RAM per
+node, plus a **32-CPU / 64-GiB judge VM** with 32 judge workers. The cluster uses
+[Modal RDMA networking](https://modal.com/docs/guide/multi-node-clusters); the judge
+uses the [VM runtime](https://modal.com/docs/guide/sandboxes) for Linux namespaces
+and cgroups, and an authenticated HTTPS endpoint reachable by every reward worker.
+
+Install the client from the repository root and configure your Modal account:
+
+```bash
+uv venv --python 3.12 .venv-modal
+uv pip install --python .venv-modal/bin/python -r modal_launchers/requirements.txt
+.venv-modal/bin/modal token new
+```
+
+Preview the complete resource plan without allocating anything:
+
+```bash
+.venv-modal/bin/python -m modal_launchers.fcs_grpo --run-name fcs-h200
+```
+
+After approving that resource plan, launch with the same arguments plus `--launch`:
+
+```bash
+.venv-modal/bin/python -m modal_launchers.fcs_grpo --run-name fcs-h200 --launch
+```
+
+Keep this command running in a persistent terminal such as `tmux`. It first
+downloads `HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1` into the shared Volume
+using a 2-CPU / 8-GiB Function, then starts the CPU judge and checks a real C++
+submission through compilation, execution, scoring, and reward normalization.
+The GPU training call starts only after that check passes. The judge is stopped
+when the training call finishes or fails. Each Function and the judge Sandbox
+have a 24-hour timeout.
+
+The default recipe is `dr_grpo_frontiersmith_no_overlong_filter`: 240 steps,
+FA2 attention, and actor parameter/optimizer offload disabled. Use
+`--recipe grpo_frontiersmith` for standard GRPO with overlong-response filtering;
+all four Frontier recipes are available through `--recipe`. Use `--gpu B200`
+or `--nodes 4` to change the resource plan. `--model-id` selects a different
+Hugging Face model; `HF_TOKEN` is forwarded when set. Add `--wandb` with
+`WANDB_API_KEY` to enable W&B; console and file metrics are enabled by default.
+
+The launcher uploads this checkout, both dataset Parquets, and the bundled judge
+problems. Image, Volume, cache, and output paths come from
+[`modal_launchers/config.yaml`](modal_launchers/config.yaml). The Volume is
+created if absent. With the defaults, checkpoints, rollouts, validation results,
+and timestamped metrics are stored under `easyppo:outputs/<run-name>/`.
+Checkpoints are saved **every 5 steps, keeping at most 2 actor checkpoints**.
+Rerun the same command and run name to resume; use a new name when changing the
+recipe, model, or cluster size.
+
+To check an already running judge locally on CPU, without creating Modal resources:
+
+```bash
+.venv-modal/bin/python -m modal_launchers.fcs_grpo \
+  --check-judge http://127.0.0.1:8082
+```
+
+For an authenticated Modal judge endpoint, set `FRONTIERCS_JUDGE_TOKEN` before
+using `--check-judge`. Local CPU tests cover configuration, authentication,
+launch ordering, and checkpoint coordination. The image contains H200 `sm_90`
+kernels, but this launcher has not yet been validated by running a GPU cluster.
+
+## AIME B200 training on Modal
 
 Launch on **8 B200 GPUs** or **32 B200 GPUs** using the public
 `ghcr.io/easyppo/easyppo-b200:20261110` image. No registry credentials are needed.

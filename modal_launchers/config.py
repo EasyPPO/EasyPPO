@@ -1,4 +1,4 @@
-"""Shared path and image configuration for the 8- and 32-GPU B200 launchers."""
+"""Shared path and image configuration for the Modal launchers."""
 
 import json
 import os

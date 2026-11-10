@@ -65,6 +65,7 @@ def compute_score(
     ground_truth: Any,
     extra_info: Optional[dict] = None,
     judge_url: Optional[str] = None,
+    judge_token: Optional[str] = None,
     **kwargs,
 ) -> dict[str, float]:
     """Return reward in [0, 1] and judge metrics in [0, 100].
@@ -82,11 +83,15 @@ def compute_score(
     url = (
         judge_url or extra_info.get("judge_url") or os.environ.get("FRONTIERCS_JUDGE_URL") or DEFAULT_JUDGE_URL
     ).rstrip("/")
+    # Modal Sandbox Connect authentication; local judges need no token.
+    token = judge_token or os.environ.get("FRONTIERCS_JUDGE_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         response = requests.post(
             f"{url}/submit",
             files={"code": ("sol.cpp", code)},
             data={"pid": str(ground_truth), "lang": "cpp"},
+            headers=headers,
             timeout=30,
         )
         response.raise_for_status()
@@ -96,7 +101,7 @@ def compute_score(
 
         start = time.monotonic()
         while time.monotonic() - start < MAX_WAIT:
-            response = requests.get(f"{url}/result/{sid}", timeout=10)
+            response = requests.get(f"{url}/result/{sid}", headers=headers, timeout=10)
             if response.status_code != 404:
                 response.raise_for_status()
                 result = response.json()
