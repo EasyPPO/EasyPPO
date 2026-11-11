@@ -143,14 +143,12 @@ def run_training(cluster_train, judge_image, args, *, app, config, volume, run_n
         if time.monotonic() >= deadline:
             raise JudgeLifetimeTimeout("Judge lifetime reached during setup")
         call = cluster_train.spawn(run_name, model_path, recipe, credentials.url, credentials.token)
-        from modal.exception import TimeoutError as ModalTimeoutError
-
         try:
             call.get(timeout=max(0, deadline - time.monotonic()))
-        except ModalTimeoutError as exc:
-            # get(timeout=...) expires with the base type. Preserve remote
-            # FunctionTimeoutError and other specific SDK errors unchanged.
-            if type(exc) is not ModalTimeoutError:
+        except TimeoutError as exc:
+            # Modal 1.6.2 uses Python's built-in TimeoutError for get(timeout=...).
+            # A remote task can also raise it: only resume at our local deadline.
+            if time.monotonic() < deadline:
                 raise
             raise JudgeLifetimeTimeout("Stopping cluster before CPU judge expires") from exc
         completed = True

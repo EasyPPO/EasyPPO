@@ -1,9 +1,10 @@
 """FCS launch contracts; all remote allocation is mocked or forbidden."""
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from hydra import compose, initialize_config_dir
@@ -91,7 +92,8 @@ def test_resume_rejects_changed_recipe_or_world_size(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "outcome", ["success", "bad-model", "bad-judge", "timeout", "judge-lifetime", "training-error", "cancelled"]
+    "outcome",
+    ["success", "bad-model", "bad-judge", "timeout", "judge-lifetime", "early-timeout", "training-error", "cancelled"],
 )
 def test_local_orchestration_preflight_and_cleanup(monkeypatch, outcome):
     modal = pytest.importorskip("modal")
@@ -99,7 +101,8 @@ def test_local_orchestration_preflight_and_cleanup(monkeypatch, outcome):
     monkeypatch.setenv("WANDB_API_KEY", "test-only")
     error = {
         "timeout": modal.exception.FunctionTimeoutError("timeout"),
-        "judge-lifetime": modal.exception.TimeoutError("judge-lifetime"),
+        "judge-lifetime": TimeoutError("judge-lifetime"),
+        "early-timeout": TimeoutError("early-timeout"),
         "training-error": RuntimeError("training-error"),
         "cancelled": KeyboardInterrupt("cancelled"),
     }.get(outcome)
@@ -112,8 +115,8 @@ def test_local_orchestration_preflight_and_cleanup(monkeypatch, outcome):
 
     call = SimpleNamespace(get=result, cancel=Mock(side_effect=lambda **kw: events.append("cancel-gpu")))
     cluster = SimpleNamespace(spawn=Mock(return_value=call))
-    clock = iter([100, 105, 110])
-    monkeypatch.setattr(fcs_grpo.time, "monotonic", lambda: next(clock))
+    clock = iter([100, 105, 110, 86200 if outcome == "judge-lifetime" else 111])
+    monkeypatch.setattr(fcs_grpo, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     preflight = SimpleNamespace(
         wait=Mock(side_effect=lambda: events.append("check-model")),
         returncode=1 if outcome == "bad-model" else 0,
@@ -265,3 +268,56 @@ def test_remote_helper_import_does_not_need_local_build_context(tmp_path, monkey
     spec.loader.exec_module(module)
     assert callable(module.run_training)
     create.assert_not_called()
+
+
+def test_real_sdk_wait_timeout_cleans_up_and_resumes_locally(monkeypatch):
+    # Exercise the pinned SDK's real exception, mocking only its network response.
+    from modal._functions import _Invocation
+    from modal_proto import api_pb2
+
+    events = []
+    monkeypatch.setenv("WANDB_API_KEY", "test-only")
+    monkeypatch.setattr(fcs_grpo, "volume", Mock())
+    monkeypatch.setattr(fcs_grpo, "check_judge", Mock(return_value={"score": 0.5}))
+    ticks = iter([100, 105, 110, 86200, 86210, 86215, 86220])
+    monkeypatch.setattr(fcs_grpo, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    invocation = SimpleNamespace(
+        pop_function_call_outputs=AsyncMock(return_value=api_pb2.FunctionGetOutputsResponse(num_unfinished_inputs=1))
+    )
+
+    def wait_for_sdk_timeout(*, timeout):
+        events.append("wait-first")
+        return asyncio.run(_Invocation.poll_function(invocation, timeout=timeout))
+
+    first_call = SimpleNamespace(
+        get=wait_for_sdk_timeout,
+        cancel=Mock(side_effect=lambda **kwargs: events.append("cancel-first")),
+    )
+    second_call = SimpleNamespace(get=Mock(return_value=None), cancel=Mock())
+    spawn = Mock(side_effect=[first_call, second_call])
+    monkeypatch.setattr(fcs_grpo, "cluster_train", SimpleNamespace(spawn=spawn))
+    judges = []
+    for index in range(2):
+        judges.append(
+            SimpleNamespace(
+                wait_until_ready=Mock(),
+                exec=Mock(return_value=SimpleNamespace(wait=Mock(), returncode=0)),
+                create_connect_token=Mock(return_value=SimpleNamespace(url=f"https://judge-{index}", token="test")),
+                terminate=Mock(side_effect=lambda index=index: events.append(f"stop-judge-{index}")),
+            )
+        )
+
+    def create_judge(*args, **kwargs):
+        index = len([e for e in events if e.startswith("create-judge-")])
+        events.append(f"create-judge-{index}")
+        return judges[index]
+
+    monkeypatch.setattr(fcs_grpo.modal.Sandbox, "create", create_judge)
+    fcs_grpo.resume(run_name="same-run", model_path="/cached/model", max_timeout_restarts=1)
+    assert events == ["create-judge-0", "wait-first", "cancel-first", "stop-judge-0", "create-judge-1", "stop-judge-1"]
+    first_call.cancel.assert_called_once_with(terminate_containers=True)
+    second_call.cancel.assert_not_called()
+    invocation.pop_function_call_outputs.assert_awaited_once_with(index=0, timeout=86090, clear_on_success=False)
+    assert [call.args for call in spawn.call_args_list] == [
+        ("same-run", "/cached/model", fcs_grpo.RECIPES[0], f"https://judge-{i}", "test") for i in range(2)
+    ]
