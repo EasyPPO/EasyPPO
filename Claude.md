@@ -1,6 +1,6 @@
 # Qwen3.5-27B 同步 PPO：FrontierSmith 运行说明
 
-入口：[`run_qwen3_5_27b_sync_frontiersmith.py`](run_qwen3_5_27b_sync_frontiersmith.py)。以下按环境配置、judge 部署、模型准备、正式训练的顺序执行，命令均从仓库根目录运行。示例使用 `/shared` 共享目录、head 地址 `10.0.0.10`、judge 地址 `10.0.0.20:8081`，部署时替换为实际值。
+入口：[`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py)。以下按环境配置、judge 部署、模型准备、正式训练的顺序执行，命令均从仓库根目录运行。示例使用 `/shared` 共享目录、head 地址 `10.0.0.10`、judge 地址 `10.0.0.20:8081`，部署时替换为实际值。
 
 ## 1. 环境配置
 
@@ -15,7 +15,7 @@ git submodule update --init third_party/compaction
 mkdir -p /shared/models /shared/data /shared/runs
 ```
 
-GPU 训练环境使用 Miles NVIDIA 镜像，安装方法见 [installation.md](../../docs/getting-started/installation.md)，构建定义见 [docker/Dockerfile](../../docker/Dockerfile)。所有节点使用同一镜像 digest。
+GPU 训练环境使用 Miles NVIDIA 镜像，安装方法见 [installation.md](docs/getting-started/installation.md)，构建定义见 [docker/Dockerfile](docker/Dockerfile)。所有节点使用同一镜像 digest。
 
 仓库 NVIDIA Dockerfile 已包含以下加速组件，不能只靠安装项目的 Python extras 来补齐：
 
