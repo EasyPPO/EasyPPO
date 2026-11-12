@@ -17,6 +17,7 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
     score_centering_candidates: int = 0
     score_centering_is: Literal["none"] = "none"
     score_centering_recompute_loss: bool = False
+    max_keep: int = 0
 
     def __post_init__(self):
         super().__post_init__()
@@ -66,8 +67,11 @@ def _prepare(args: _SyncScriptArgs, *, dataset: str) -> None:
 
 def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:
     _validate(args, dataset=dataset)
+    checkpoint_args = _recipe._checkpoint_args(args)
+    if args.max_keep:
+        checkpoint_args += ["--max-keep", str(args.max_keep)]
     argv = (
-        _recipe._checkpoint_args(args)
+        checkpoint_args
         + _recipe._rollout_args(args)
         + _recipe._terminal_args(args)
         # train.py finishes rollout before updating the actor. Its current
