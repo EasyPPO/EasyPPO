@@ -1,0 +1,216 @@
+# FrontierSmith → Frontier-CS: Dr. GRPO baseline
+
+A Dr. GRPO baseline for the FrontierSmith/Frontier-CS setting of this branch, run with
+`configs/dr_grpo_frontiersmith_no_overlong_filter.yaml`: Dr. GRPO **without** response overlong
+filtering, as in the Dr. GRPO paper ([Liu et al., 2025](https://arxiv.org/abs/2503.20783)).
+
+<!-- status:begin -->
+**Status: finished** (240 training steps). Avg@5 went from 4.43 at step 0 to ~12 by step 40 and then stayed at
+12.5–14.6 (peak 14.62 at step 190; 13.10 at step 240). Best@5 peaked at 24.3 (step 190).
+<!-- status:end -->
+
+## Setup
+
+Unchanged from the config: `HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1` initialization, the 200
+FrontierSmith training problems, 16 prompts × 32 responses per step, 8192 prompt / 32768 response
+tokens, lr 1e-6, 240 steps, validation on the 172 Frontier-CS problems × 5 samples before training
+and every 5 steps (temperature 1.0).
+
+What differs from a local single-node run:
+
+- **Hardware:** 2 nodes × 8 H200 (`trainer.nnodes=2`); FSDP still shards within each node
+  (`fsdp_size=8`) and replicates across the two nodes, like `modal_launchers/multinode.py`.
+  The global batch, mini-batch and all optimization settings are those of the config.
+  A training step takes about 10 min at a mean response length of ~24k tokens; each validation adds about 9 min.
+- **Software:** the published `ghcr.io/easyppo/easyppo-b200:20260926` image with this branch at `260f7ef`
+  mounted, unmodified, plus `flash-linear-attention==0.6.0` (`fla-core==0.6.0`), which the image lacks.
+  Without it, transformers runs the Gated DeltaNet layers of the FSDP actor on its PyTorch fallback. Before
+  training, the job checks on the GPU that the FLA chunk kernel is in use and matches the fallback (relative
+  error 5.9e-3 on the output, 0.7–0.9e-2 on the gradients). No verl change: the kernel gets no `cu_seqlens`,
+  exactly like the fallback.
+- **Actor implementation settings** (no effect on the algorithm, hyperparameters, batch or rollout):
+  `actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2` instead of `sdpa`, and
+  `actor_rollout_ref.actor.fsdp_config.param_offload=false`, `optimizer_offload=false`. See "Speed and
+  numerical checks" below.
+- **Judge:** the bundled `Frontier-CS/algorithmic` judge, one instance per node on `127.0.0.1:8082`
+  (each reward worker submits to and polls its own node's judge), `JUDGE_WORKERS=GJ_PARALLELISM=64`.
+  The container gets all capabilities, an unconfined seccomp profile and unmasked `/proc`/`/sys`
+  instead of `--privileged`. Before training, the README's vertex-cover smoke test scores > 0.
+- **Logging:** W&B was not used; per-step metrics come from verl's `file` logger
+  (`metrics.jsonl`, one JSON object per step).
+
+## Results
+
+Frontier-CS validation (170 problems: verl drops `frontiercs_val_156` and `_157`, whose prompts exceed 8192 tokens), 5 samples
+per problem at temperature 1.0, judge score 0-100. **Avg@5** is the mean score over all samples;
+**Best@5** is the mean over problems of the best of the 5 samples. verl's console/W&B `best@5/mean` is a
+bootstrap estimate and comes out lower; it is kept in `val_curve.csv` as `verl_best@5_bootstrap`.
+
+<!-- results:begin -->
+| Step | Avg@5 | Best@5 | Train reward (mean) | Response length (mean) | Truncated |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 4.43 | 11.26 | — | — | — |
+| 5 | 4.56 | 11.80 | 0.035 | 26,273 | 54.1% |
+| 10 | 5.12 | 13.52 | 0.041 | 25,664 | 42.0% |
+| 15 | 4.77 | 14.50 | 0.077 | 27,661 | 47.7% |
+| 20 | 5.17 | 15.66 | 0.072 | 23,802 | 29.3% |
+| 25 | 5.99 | 17.92 | 0.139 | 19,136 | 2.5% |
+| 30 | 7.79 | 20.75 | 0.153 | 15,205 | 2.0% |
+| 35 | 9.50 | 19.69 | 0.255 | 8,109 | 0.2% |
+| 40 | 11.90 | 23.14 | 0.279 | 11,140 | 0.4% |
+| 45 | 13.38 | 22.75 | 0.353 | 16,121 | 1.0% |
+| 50 | 13.70 | 23.31 | 0.282 | 16,412 | 4.5% |
+| 55 | 13.56 | 23.50 | 0.273 | 17,357 | 5.7% |
+| 60 | 12.61 | 21.22 | 0.284 | 15,732 | 2.9% |
+| 65 | 13.76 | 23.00 | 0.320 | 18,026 | 5.3% |
+| 70 | 12.96 | 21.82 | 0.349 | 15,863 | 1.2% |
+| 75 | 13.64 | 21.73 | 0.195 | 17,268 | 2.9% |
+| 80 | 13.55 | 22.57 | 0.310 | 17,251 | 1.0% |
+| 85 | 13.71 | 22.99 | — | — | — |
+| 90 | 13.24 | 21.54 | 0.320 | 19,332 | 4.7% |
+| 95 | 13.06 | 22.28 | 0.279 | 18,731 | 3.3% |
+| 100 | 12.95 | 21.59 | 0.367 | 19,198 | 2.3% |
+| 105 | 13.76 | 22.39 | — | — | — |
+| 110 | 13.65 | 21.34 | 0.380 | 18,255 | 2.7% |
+| 115 | 14.14 | 22.59 | 0.291 | 20,490 | 9.6% |
+| 120 | 12.74 | 20.88 | 0.353 | 17,659 | 1.2% |
+| 125 | 13.37 | 21.35 | 0.388 | 19,848 | 8.2% |
+| 130 | 13.10 | 20.34 | 0.397 | 18,857 | 2.9% |
+| 135 | 13.01 | 21.05 | 0.360 | 16,280 | 0.4% |
+| 140 | 12.99 | 18.21 | 0.330 | 17,226 | 2.1% |
+| 145 | 12.34 | 20.16 | 0.360 | 17,041 | 1.4% |
+| 150 | 13.04 | 22.25 | 0.311 | 18,498 | 2.0% |
+| 155 | 12.92 | 21.32 | — | — | — |
+| 160 | 12.60 | 20.13 | 0.346 | 18,848 | 2.1% |
+| 165 | 12.72 | 20.41 | 0.395 | 16,104 | 3.1% |
+| 170 | 13.36 | 21.74 | 0.366 | 16,162 | 0.4% |
+| 175 | 12.93 | 19.98 | 0.426 | 17,268 | 1.2% |
+| 180 | 13.68 | 21.25 | 0.399 | 20,839 | 2.5% |
+| 185 | 12.85 | 21.49 | 0.371 | 19,874 | 6.6% |
+| 190 | 14.62 | 24.35 | 0.317 | 21,712 | 4.1% |
+| 195 | 13.18 | 20.68 | 0.336 | 18,407 | 1.6% |
+| 200 | 13.78 | 20.77 | 0.386 | 16,153 | 0.2% |
+| 205 | 13.29 | 20.01 | 0.333 | 16,881 | 6.6% |
+| 210 | 13.83 | 21.50 | 0.372 | 15,811 | 2.3% |
+| 215 | 13.25 | 19.92 | 0.449 | 14,786 | 0.4% |
+| 220 | 13.48 | 19.59 | 0.312 | 15,120 | 0.2% |
+| 225 | 12.48 | 20.19 | 0.371 | 17,542 | 0.6% |
+| 230 | 13.62 | 20.58 | 0.383 | 17,101 | 1.2% |
+| 235 | 14.33 | 21.39 | 0.283 | 16,409 | 1.6% |
+| 240 | 13.10 | — | 0.439 | 16,119 | 0.2% |
+<!-- results:end -->
+
+Step 240: the job ended right after the final validation, before its per-sample dump was synced, so
+only the logged Avg@5 (identical to `verl_mean@5`) is available and Best@5 is missing; it is not in the CSVs.
+
+![Validation and training curves](curves.png)
+
+Step 0 is the initialization (`HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1`). Four independent step-0
+validations on this setup gave Avg@5 4.43, 4.32, 4.57 and 4.81, which gives a sense of the sampling noise
+(validation is generated by vLLM, so FLA does not affect it). At step 0, 89% of the samples score 0 and about 19% are cut off at 32768 tokens without
+closing the reasoning block. To rule out a silently failing judge, 32 step-0 responses (24 zero, 8 positive)
+were re-judged on a separate judge instance: all 32 got identical scores.
+
+## Speed and numerical checks
+
+The run above is the third attempt. Each change only touches the actor's implementation; earlier attempts
+were stopped and their data is kept:
+
+| Attempt | GDN kernel | Attention | Offload | Step time (~24k mean length) | Data |
+|---|---|---|---|---|---|
+| 1 | PyTorch fallback (image as published) | sdpa | on | ~42 min | `torch_fallback_run/` (steps 0–8) |
+| 2 | FLA 0.6.0 | sdpa | on | ~15.5 min | `fla_sdpa_run/` (steps 0–9) |
+| 3 (above) | FLA 0.6.0 | flash_attention_2 | off | ~10 min | top-level CSVs |
+
+**Speed, same checkpoint and same prompts.** Resumed from attempt 2's step-10 checkpoint for 2 steps per
+setting, on 2×8 H200, in one job, so all settings see the same step-11/12 prompts (step 12, warm):
+
+| Setting | Step | Generation | `old_log_prob` | `update_actor` | per token | actor MFU | train–rollout KL | grad norm |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| sdpa, offload on | 950 s | 350 s | 91 s | 503 s | 0.038 ms | 10.0% | 0.0028 | 0.0159 |
+| sdpa, offload off | 941 s | 376 s | 87 s | 469 s | 0.036 ms | 10.5% | 0.0028 | 0.0165 |
+| flash_attention_2, offload on | 603 s | 374 s | 46 s | 176 s | 0.013 ms | 29.1% | 0.0029 | 0.0179 |
+
+With packed micro-batches (up to 40,960 tokens), sdpa gets a dense block-diagonal mask and does the full
+quadratic attention work over the whole micro-batch, while the FA2 varlen path only computes within each
+sequence. Disabling offload is a small gain (within step-to-step noise); peak actor memory stays at 81 GB.
+
+**Numerical equivalence, same checkpoint and fixed batch.** The step-10 checkpoint (merged to HF) and 24 fixed
+responses from step 9 (5.6k–34.7k tokens) go through verl's remove-padding input path (one packed row per
+micro-batch, `attention_mask=None`, per-sequence `position_ids`, ≤40,960 tokens per micro-batch) under FSDP
+with bf16 compute and fp32 gradient reduction. The loss is the Dr. GRPO surrogate with fixed advantages.
+
+| Comparison | log-prob, mean / max abs diff per token | gradient rel. error / cosine |
+|---|---|---|
+| sdpa vs. sdpa, rerun (nondeterminism floor) | 0 / 0 | 0.010 / 0.9999 |
+| FA2 vs. FA2, rerun | 0 / 0 | 0.010 / 0.9999 |
+| sdpa vs. FA2 | 0.0117 / 0.43 | 0.33 / 0.945 |
+| sdpa (bf16) vs. fp32 reference¹ | 0.0105 / 0.41 | 0.42 / 0.913 |
+| FA2 (bf16) vs. fp32 reference¹ | 0.0104 / 0.47 | 0.33 / 0.945 |
+| offload round trip: parameters, optimizer state | exactly 0, exactly 0 | — |
+| offload vs. no offload, first step | 0 / 0 | 0.011 / 0.9999 |
+
+¹ 24 shorter responses (≤8k tokens) so that fp32 logits fit; fp32 compute, with the gated-delta-rule layers on
+transformers' exact PyTorch implementation (FLA's fp32 backward does not compile here).
+
+- **Sequence boundaries.** On the first full-attention layer, fed identical packed hidden states: sdpa
+  receives a block-diagonal mask built from `position_ids` and matches running each sequence alone (rel. err.
+  5e-4, bf16 rounding); FA2 receives no mask and uses the varlen path, and matches running each sequence
+  alone exactly (0). Neither attends across sequences.
+- **sdpa vs. FA2** differ by about as much as each differs from fp32, so FA2 is as accurate as sdpa
+  (slightly closer on gradients); the difference is bf16 rounding in a different kernel, accumulated over 32
+  layers. For scale: one AdamW step from two runs whose first-step gradients differ only by backward
+  nondeterminism (1%) already moves log-probs by 0.012 per token.
+- **Offload** only moves parameters and optimizer state between CPU and GPU between phases; the round trip is
+  bit-exact, so it cannot change the training.
+- Not changed here: in packed micro-batches the gated-delta-rule state still carries over from one response to
+  the next (the kernel gets no `cu_seqlens`, as in the original image). Comparing packed with one response per
+  micro-batch, this changes log-probs by 7e-4 per token on the batch above and by 0.017 on a batch with more
+  packing, identically for sdpa and FA2.
+
+## Dr. GRPO vs. PPO (EasyPPO) in this repository
+
+Both use the same clipped policy objective (ε_low = 0.2, ε_high = 0.28, dual-clip c = 3), lr 1e-6,
+one PPO epoch per batch, and FSDP + vLLM. They differ in where the advantage comes from and how the
+loss is normalized:
+
+| | Dr. GRPO (`dr_grpo_frontiersmith_no_overlong_filter`) | PPO / EasyPPO (`scripts/run_frontiersmith.sh` → `easyppo_aime.yaml`) |
+|---|---|---|
+| Advantage | Group baseline only: `A_i = r_i − mean(r_group)`, same value on every token of response *i* (`norm_adv_by_std_in_grpo: false`, no division by the group std) | Token-level GAE (γ = λ = 1) from a learned critic: `A_t = r − V(s_t)` |
+| Critic | None | Qwen3.5-9B value model, lr 2e-6, value clip 0.2, 4 critic mini-batches per batch, noise-normalized regression (each prompt weighted by 1 / its group's return std, β = 0.5, floor 0.25); 30 critic-only warm-up steps |
+| Loss aggregation | `seq-mean-token-sum-norm`: sum of token losses per response, divided by the constant 32768 (`loss_scale_factor = max_response_length`), averaged over responses. No length bias from per-response normalization | `token-mean`: average over all tokens of the batch |
+| KL | None (`use_kl_loss: false`) | low-var KL loss to the reference, coefficient 0.001 |
+| Overlong responses | Kept: truncated responses keep their judge reward and are trained on | Actor-only overlong filtering: truncated responses are masked out of the actor loss but kept for GAE and critic training |
+| Samples per prompt | 32 (needed for the group baseline) | 16 |
+| Prompts per step | 16 (512 responses) | 32 (512 responses) |
+| Response length | 32768 | 12000 in `run_frontiersmith.sh` |
+
+In short, Dr. GRPO is the critic-free side of the comparison: its baseline is the empirical mean of
+the 32 sibling responses, and it removes GRPO's two normalizations (per-group std and per-response
+length) so that the gradient is not biased toward low-variance groups or toward short correct /
+long wrong answers. EasyPPO keeps a critic and instead fixes the critic's failure modes on this
+kind of data (truncated rollouts, noisy returns). The no-overlong-filter variant is the paper-faithful
+Dr. GRPO; the filtered variant (`dr_grpo_frontiersmith`) differs only in masking truncated responses out
+of the actor loss (their judge rewards still enter the group statistics).
+
+## Files
+
+| File | Content |
+|---|---|
+| `val_curve.csv` | Avg@5 / Best@5 per validation step |
+| `val_per_problem.csv` | the 5 sample scores of every validation problem at every validation step |
+| `train_metrics.csv` | per-step training metrics (train reward, response length and truncation rate, entropy, grad norm, PPO clip fraction / KL, step time) |
+| `curves.png` | validation Avg@5/Best@5, train reward, response length and truncation rate per step |
+| `summarize.py` | regenerates the three CSVs (and, with `--plot`, `curves.png`) from verl's validation dumps and `file`-logger metrics |
+| `torch_fallback_run/` | the same three CSVs for attempt 1 (no FLA, steps 0–8) |
+| `fla_sdpa_run/` | the same three CSVs for attempt 2 (FLA, sdpa, offload on, steps 0–9) |
+
+```bash
+python results/frontiercs_dr_grpo/summarize.py --validation-dir $OUTPUT_DIR/validation \
+  --metrics metrics.jsonl --val-parquet data/frontiercs/frontiercs_val.parquet --out results/frontiercs_dr_grpo
+```
+
+Reproduce the run on one 8-GPU node with the README's GRPO command and
+`--config-name dr_grpo_frontiersmith_no_overlong_filter` and the three actor overrides above, after
+`pip install --no-deps flash-linear-attention==0.6.0 fla-core==0.6.0` in the training image; on two nodes, start a Ray cluster over both and add
+`trainer.nnodes=2 +ray_kwargs.ray_init.address=auto`, with a judge reachable from every node.
