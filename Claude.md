@@ -1,34 +1,52 @@
-# Qwen3.5-27B 同步 PPO：FrontierSmith 启动要求
+# Qwen3.5-27B Synchronous PPO on FrontierSmith
 
-入口：[`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py)。按环境、judge、模型准备、训练四步执行。先查看实际集群的镜像、调度器、存储和服务地址，沿用已有配置；下面的命令是参数模板，路径和部署方式由执行者按环境调整。
+Entry point: [`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py).
+Adapt the commands below to the cluster's image, scheduler, storage, and service configuration.
 
-## 1. 环境
+## 1. Environment
 
-使用兼容本分支的 Miles GPU 镜像。镜像已有的依赖无需重复安装；构建细节见 [installation.md](docs/getting-started/installation.md)。确保运行环境使用本分支代码；只有镜像尚未包含本项目及 terminal 依赖时，才安装：
+Use a Miles-compatible GPU image and this branch's code. Follow the
+[installation guide](docs/getting-started/installation.md) when building an image.
+For a fresh checkout:
 
 ```bash
 git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO
 cd EasyPPO
+```
+
+If the job image needs the project or its terminal dependencies, install:
+
+```bash
 python -m pip install -e '.[agentic,terminal]'
 ```
 
-当前实验不需要初始化 `third_party/compaction`。这里的 actor 文本摘要由 terminal 实现，外部 KV compaction 包只用于单独的 KV 压缩实验。
+The default allocation is **4 nodes × 8 B200 GPUs**. Rollout, critic training,
+and actor training alternate on the same 32 GPUs with offload enabled.
+Training uses TP4/DP8; rollout uses eight TP4 engines. Set `--num-nodes` and
+`--num-gpus-per-node` to match the allocation, and provision host memory for offload.
 
-默认申请 4 节点 × 8 张 B200。同一批 32 张卡依次执行 rollout、critic 训练和 actor 训练，脚本已开启 colocate 和 offload；训练 TP4/DP8，推理 8 个 TP4 engine。按实际分配设置 `--num-nodes`、`--num-gpus-per-node`，并为 offload 和 Harbor 任务安排足够的 CPU/内存。
+Set these variables for the commands below:
 
-执行前确定以下路径和服务，本文用环境变量表示：
+| Variable | Value |
+|---|---|
+| `MODEL_DIR` | Model and converted checkpoint directory |
+| `DATA_DIR` | Prepared Harbor tasks and datasets |
+| `RUN_DIR` | Training outputs |
+| `JUDGE_URL` | Judge service URL reachable from Harbor task containers |
 
-- `MODEL_DIR`、`DATA_DIR`、`RUN_DIR`：模型、准备后的任务数据、训练输出。由平台挂载或分发到所需进程，不限定共享盘、目录名或部署用户；当前任务的 Docker bind mount 源路径须在对应 daemon 主机上可访问。
-- `JUDGE_URL`：Harbor 任务容器能访问的 judge 服务 URL。
-- 集群的 Ray 作业提交地址和训练通信配置：优先使用平台提供的配置，不自行改写网络接口或重建集群。
+Make the code and assets available to their execution processes through the
+platform's storage or distribution mechanism. Give Harbor access to Docker;
+task bind-mount source paths must exist on the corresponding daemon host.
+Set `--megatron-path` when using a custom Megatron installation path.
 
-Harbor 当前使用 Docker 环境，需要任务执行进程能使用相应 Docker daemon；具体接入由平台决定，不要求固定挂载 `/var/run/docker.sock`。Megatron 不在脚本默认位置时，通过 `--megatron-path` 指定实际位置。
+## 2. Judge deployment
 
-## 2. judge 部署
+Use one shared judge service for all Harbor trials. The bundled
+`Frontier-CS/algorithmic/` contains the judge and both corpora: **200 FrontierSmith
+training tasks and 180 FCS evaluation tasks**. The manifest records ten known
+cross-corpus overlaps retained in these sets.
 
-仓库 `Frontier-CS/algorithmic/` 已内嵌 judge 和合并题库：200 道 FrontierSmith 用于训练，180 道 FCS 用于评测。两边已公布的 10 道重叠题保留并记录在清单中。
-
-所有 Harbor trial 共用一个 judge 服务。可以复用兼容的已有服务，也可以在独立 CPU 机器或平台分配的服务环境部署。官方 Compose 启动方式如下，在拥有本分支代码的 judge 环境中执行：
+Deploy on a CPU service host using the bundled Compose configuration:
 
 ```bash
 cd Frontier-CS/algorithmic
@@ -37,13 +55,17 @@ docker compose up -d --build
 curl --fail http://127.0.0.1:8081/problems
 ```
 
-Compose 需要 privileged 容器，挂载本地 `problems/`、`data/`、`submissions/`。若平台使用其他服务编排方式，按这份 Compose 的镜像、挂载和权限要求部署。judge 不需要训练集群的模型、共享盘或 Ray；并发容量按 CPU/内存调整 `JUDGE_WORKERS` 和 `GJ_PARALLELISM`。
+For another service orchestrator, preserve the Compose image, privileged-container
+setting, and mounts for `problems/`, `data/`, and `submissions/`. Size
+`JUDGE_WORKERS` and `GJ_PARALLELISM` for the available CPU and memory.
 
-`FRONTIERCS_JUDGE_BIND_IP` 是服务端监听地址；`JUDGE_URL` 使用任务容器可达的服务 DNS 或地址，不能填 `0.0.0.0`。API 无认证，应使用平台内部网络或访问控制。
+Set `JUDGE_URL` to the service's reachable DNS name or address.
+`FRONTIERCS_JUDGE_BIND_IP` controls the server's local listening interface.
+Keep the unauthenticated API behind the platform's internal network or access controls.
 
-## 3. 模型准备
+## 3. Model preparation
 
-在集群分配的 GPU 作业环境中，从仓库根目录执行。路径变量须已按实际环境设置：
+Run from the repository root in an allocated GPU job environment:
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
@@ -52,21 +74,26 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-此步骤准备固定 revision 的 `Qwen/Qwen3.5-27B`、Harbor 任务和 JSONL，并转换 Megatron checkpoint。模型产物为 `$MODEL_DIR/Qwen3.5-27B` 和 `$MODEL_DIR/Qwen3.5-27B_torch_dist`；已有兼容产物可直接复用。转换需要 GPU。judge URL 和超时写入任务配置，变更后需重新准备数据。
+This prepares the pinned `Qwen/Qwen3.5-27B` model, Harbor tasks, and JSONL datasets,
+then converts the Megatron checkpoint. Reuse compatible existing artifacts:
+`$MODEL_DIR/Qwen3.5-27B` and `$MODEL_DIR/Qwen3.5-27B_torch_dist`.
+Checkpoint conversion requires GPUs. Regenerate task data after changing the
+judge URL or `--frontier-judge-timeout`, which are embedded in the task configuration.
 
-## 4. 正式训练
+## 4. Training
 
-优先通过集群现有的作业入口运行。平台已提供 Ray 集群时设置：
+Submit through the platform's job environment. For platform-managed Ray:
 
 ```bash
 export MILES_SCRIPT_EXTERNAL_RAY=1
-# RAY_ADDRESS 使用平台提供的 Ray Jobs HTTP 地址；在 head 本地运行可沿用默认地址。
-# MASTER_ADDR 使用训练节点可达的 head 地址，沿用平台设置。
+# Set RAY_ADDRESS to the platform's Ray Jobs HTTP endpoint.
+# Set MASTER_ADDR to the head address reachable by training workers.
 ```
 
-此模式不启动或停止 Ray，也不通过 SSH 加入节点。当前 Ray backend 仍会清理提交环境中的旧训练进程，应在本实验的作业容器/进程环境内运行。代码和准备后的模型、任务数据需在执行端可用。
-
-仅在平台没有管理 Ray、且分配的环境支持 SSH 时，使用脚本已有的自动启动方式：不设置 `MILES_SCRIPT_EXTERNAL_RAY`，提供实际 `MASTER_ADDR` 和 `--ray-hostfile`。这个可选路径使用 root SSH；不是训练本身的要求。其他平台后端按 Miles 对应部署配置接入。
+Run the launcher inside this experiment's job/container environment: the current
+Ray backend cleans old training processes in the submission environment.
+For SSH-based bootstrap or another deployment backend, follow the
+[cluster integration guide](README.md#2-cluster-integration).
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
@@ -76,8 +103,16 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-节点数按实际资源覆盖。Harbor 并发按任务宿主机和 judge 容量设置 `--sglang-server-concurrency`；默认每 engine 为 128，设置为 1 时默认 8 个 engine 最多运行 8 个 trial。
+Set `--sglang-server-concurrency` to fit the Harbor host and judge capacity.
+The default is 128 per engine; a value of 1 allows up to eight concurrent trials
+with the default allocation.
 
-默认训练 200 轮，每轮 32 组 × 16 个 episode；前 30 轮只训练 critic，之后每轮 critic 更新 4 次、actor 更新 1 次。初始阶段、每 10 轮和最后一轮进行评测；完整评测为 180 题 × 5 次。需要 `actor-summary` 时更换 context mode 和 run ID。
+Training runs for 200 rounds, each with 32 prompt groups × 16 episodes.
+The first 30 rounds update the critic; subsequent rounds perform four critic
+updates and one actor update. Evaluation runs initially, every ten rounds,
+and at the end, with 180 tasks × 5 trials per evaluation.
 
-输出在 `$RUN_DIR/<run-id>/` 的 `checkpoints/`、`checkpoints_critic/` 和 `trials/`。恢复时保持 run ID、context mode、拓扑及训练参数一致；新实验使用新的 run ID。
+Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
+and `trials/`. Resume with the same run ID, context mode, topology, and training
+parameters. Use a new run ID for a new experiment, including a switch to
+`--critic-context-mode actor-summary`.
