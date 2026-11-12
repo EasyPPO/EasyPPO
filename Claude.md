@@ -132,7 +132,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
   --num-rollout 100 \
-  --save-interval 5 --keep-last-checkpoints 2 \
+  --save-interval 5 --keep-last-checkpoints 1 \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
@@ -147,8 +147,9 @@ and continue; the cumulative episode generation budget is 120000 tokens.
 Training runs for 100 rounds, each with 32 prompt groups × 16 episodes.
 Every round performs four critic updates, including the first 30 critic-only
 rounds. Rounds 31–100 also perform one actor update. Checkpoints are saved every
-five rounds. Once a save completes, only the two most recent checkpoint sets
-are kept. Evaluation runs initially, every ten rounds, and at the end, with
+five rounds. The previous checkpoint stays on disk until the new actor,
+critic, and rollout state have all been saved. Evaluation runs initially,
+every ten rounds, and at the end, with
 180 tasks × 5 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
@@ -184,7 +185,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
-  --save-interval 5 --keep-last-checkpoints 2 \
+  --save-interval 5 --keep-last-checkpoints 1 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
@@ -206,7 +207,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
-  --save-interval 5 --keep-last-checkpoints 2 \
+  --save-interval 5 --keep-last-checkpoints 1 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
@@ -235,16 +236,20 @@ trainer topology, and training parameters. For the 100-round runs above, keep
 The launcher loads the actor and critic from `checkpoints/` and
 `checkpoints_critic/` under the run directory. Megatron restores their model,
 optimizer, scheduler, and RNG state. Both checkpoints must point to the same
-rollout ID. For example, after round 20 of `sync-fs-full-detach-001`, check:
+rollout ID. With checkpoint retention enabled, the launcher updates the joint
+tracker after both checkpoints and the rollout state have been saved. If a
+save is interrupted, resubmitting the command restores the last complete set.
+For example, after round 20 of `sync-fs-full-detach-001`, check:
 
 ```bash
 run="$RUN_DIR/sync-fs-full-detach-001"
+cat "$run/checkpoints/latest_complete_ppo_checkpoint.txt"
 cat "$run/checkpoints/latest_checkpointed_iteration.txt"
 cat "$run/checkpoints_critic/latest_checkpointed_iteration.txt"
 ls "$run/checkpoints/rollout/global_dataset_state_dict_19.pt"
 ```
 
-Both trackers should read `19` in this example because rollout IDs start at
+The trackers should read `19` in this example because rollout IDs start at
 zero. The dataset state file restores the prompt sampling position and epoch.
 If the file is missing, prompt sampling restarts from the beginning of the
 dataset. With the settings above, the launcher first evaluates the restored
