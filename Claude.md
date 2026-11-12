@@ -129,8 +129,8 @@ counts toward these limits. Length-limited turns increment `truncated_turns`
 and continue; the cumulative episode generation budget is 120000 tokens.
 
 Training runs for 200 rounds, each with 32 prompt groups × 16 episodes.
-The first 30 rounds update the critic; subsequent rounds perform four critic
-updates and one actor update. Evaluation runs initially, every ten rounds,
+Every round performs four critic updates, including the first 30 critic-only
+rounds. Rounds 31–200 also perform one actor update. Evaluation runs initially, every ten rounds,
 and at the end, with 180 tasks × 5 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
@@ -147,9 +147,62 @@ to measure how critic access to episode history affects synchronous PPO training
 | `full_detach` | Full chronological episode history, with gradients detached across segment boundaries | `sync-fs-full-detach-001` |
 | `actor-summary` | The actor's context for each segment: task, current summary, and local conversation | `sync-fs-actor-summary-001` |
 
-Run the training command in section 4 once per mode, setting
-`--critic-context-mode` and `--run-id` from the table. Keep the initial model,
-200-task training set, 180-task evaluation set, training hyperparameters,
-resource allocation, and evaluation protocol identical. Start each run from
-the same base checkpoint and use its own output directory through the run ID.
-Compare the training curves and full Frontier-CS evaluation rewards at matched rounds.
+Complete model/data preparation in sections 1–3 and configure the job/Ray
+environment in section 4. Use the same `NUM_NODES`, `GPUS_PER_NODE`, `MODEL_DIR`,
+`DATA_DIR`, and `RUN_DIR` for both commands below. Run each in its allocated job
+environment with a fresh run ID.
+
+**Full-detach critic:**
+
+```bash
+python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+  --action train \
+  --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
+  --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
+  --run-id sync-fs-full-detach-001 \
+  --critic-context-mode full_detach \
+  --num-rollout 200 \
+  --num-critic-only-steps 30 \
+  --critic-steps-per-rollout 4 \
+  --rollout-batch-size 32 --samples-per-prompt 16 \
+  --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
+  --save-interval 10 \
+  --max-context-tokens 131072 \
+  --max-new-tokens 24576 --summary-tokens 3072 \
+  --compact-threshold 12000 --max-total-tokens 120000 \
+  --continue-on-length \
+  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 4
+```
+
+**Actor-summary critic:**
+
+```bash
+python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+  --action train \
+  --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
+  --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
+  --run-id sync-fs-actor-summary-001 \
+  --critic-context-mode actor-summary \
+  --num-rollout 200 \
+  --num-critic-only-steps 30 \
+  --critic-steps-per-rollout 4 \
+  --rollout-batch-size 32 --samples-per-prompt 16 \
+  --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
+  --save-interval 10 \
+  --max-context-tokens 131072 \
+  --max-new-tokens 24576 --summary-tokens 3072 \
+  --compact-threshold 12000 --max-total-tokens 120000 \
+  --continue-on-length \
+  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 4
+```
+
+A step here means one rollout round of 512 episodes. Each round has four critic
+optimizer updates, each on 128 episodes. The first 30 rounds therefore perform
+120 critic updates and zero actor updates; rounds 31–200 also update the actor
+once per round. Eval runs before training and after rounds 10, 20, …, 200, using
+all 180 FCS tasks with five trials each (`--eval-max-tasks 0` selects all tasks).
+
+Keep the initial model, 200-task training set, resource allocation, and other
+hyperparameters identical. Start both runs from the same base checkpoint;
+their run IDs select separate output directories. Compare training curves and
+full Frontier-CS evaluation rewards at matched rounds.
