@@ -229,30 +229,6 @@ full Frontier-CS evaluation rewards at matched rounds.
 
 ## 6. Resume training
 
-Resubmit the original `--action train` command from section 5 through the job
-environment in section 4. Use the same `RUN_DIR`, run ID, critic context mode,
-trainer topology, and training parameters. For the 100-round runs above, keep
-`--num-rollout 100`. This sets the total number of rounds for the run.
-
-The launcher loads the actor and critic from `checkpoints/` and
-`checkpoints_critic/` under the run directory. Megatron restores their model,
-optimizer, scheduler, and RNG state. Both checkpoints must point to the same
-rollout ID. With checkpoint retention enabled, the launcher updates the joint
-tracker after both checkpoints and the rollout state have been saved. If a
-save is interrupted, resubmitting the command restores the last complete set.
-For example, after round 20 of `sync-fs-full-detach-001`, check:
-
-```bash
-run="$RUN_DIR/sync-fs-full-detach-001"
-cat "$run/checkpoints/latest_complete_ppo_checkpoint.txt"
-cat "$run/checkpoints/latest_checkpointed_iteration.txt"
-cat "$run/checkpoints_critic/latest_checkpointed_iteration.txt"
-ls "$run/checkpoints/rollout/global_dataset_state_dict_19.pt"
-```
-
-The trackers should read `19` in this example because rollout IDs start at
-zero. The dataset state file restores the prompt sampling position and epoch.
-If the file is missing, prompt sampling restarts from the beginning of the
-dataset. With the settings above, the launcher first evaluates the restored
-policy, then starts round 21 at rollout ID `20`. The critic-only phase ends
-after round 30 as scheduled.
+Rerun the same training command from [section 5](#5-primary-experiment-full_detach-vs-actor-summary)
+with the same `--output-dir` and `--run-id`. Training automatically resumes
+from the latest complete checkpoint.
