@@ -26,6 +26,7 @@ python -m pip install -e '.[terminal]'
 python scripts/make_miles_frontiersmith_data.py \
   --source-dir /data/FrontierSmith \
   --frontier-cs-source-dir /data/Frontier-CS-eval \
+  --judge-url http://10.0.0.20:8081 \
   --tasks-dir /data/harbor --out /data/prepared
 python scripts/make_miles_terminal_data.py \
   --dataset tmax --tasks-dir /data/harbor --out /data/prepared
@@ -62,15 +63,24 @@ The complete 89-task TB2.1 file remains evaluation input.
 The actor reads FrontierSmith/Frontier-CS statements from `/app/statement.txt`,
 writes `/app/solution.cpp`, and can compile and self-test through bash. The
 same terminal harness handles both corpora; it does not invoke the separate
-Frontier-CS `submit`-only wrapper. The final verifier calls the judge sidecar.
+Frontier-CS `submit`-only wrapper. The final verifier calls one shared judge HTTP service.
 
-Task directories and **both complete source checkouts** must exist at the same
-absolute paths on every rollout host and its Docker daemon host. Generated
-Compose mounts are pinned per task to the appropriate source, so one shared
-`FRONTIER_CS_ALGORITHMIC_PATH` variable cannot substitute the training source
-for the evaluation source. The upstream judge uses privileged containers,
-one sidecar per task. Allow CPU, RAM and Docker build capacity independently
-of GPU allocation. Data preparation itself requires no Docker or GPU.
+Task directories must exist at the same absolute paths on every Docker worker
+host. Both complete source checkouts must exist at their prepared paths on the
+judge host. Preparation writes `frontier-judge.compose.yaml` beside the JSONL
+files, with one read-only mount per selected problem and persistent data/submission
+volumes. It uses the pinned Frontier-CS judge code for both corpora. Start it once
+as described in the [README](../../README.md#4-run-the-task-environments-and-judges).
+Each Harbor trial contains only `main`; its teardown cannot remove the shared service.
+
+`--judge-url` must be reachable from every task container. The single-host default
+is `http://host.docker.internal:8081`; multi-host training must supply the judge
+host's private address. `--judge-timeout` defaults to 3600 seconds including queue
+wait; Harbor's verifier timeout is 90 seconds longer. Rerunning preparation updates
+these settings in existing tasks and removes their old sidecars without downloading
+the sources again. The 27B launchers expose these preparation settings as
+`--frontier-judge-url` and `--frontier-judge-timeout`.
+Data preparation itself requires no Docker or GPU.
 
 FrontierSmith and Frontier-CS preserve their pinned checkers' bounded mean
 partial score divided by 100, in `[0, 1]`. This remains a continuous score;

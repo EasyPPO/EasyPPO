@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 import pytest
+import toml
+import yaml
 
 from scripts import make_miles_frontiersmith_data as data
 
@@ -10,7 +12,13 @@ def _task(root: Path, problem_id: str) -> Path:
     task = root / f"frontier-cs-algorithm-{problem_id}"
     (task / "environment").mkdir(parents=True)
     (task / "tests").mkdir()
-    (task / "task.toml").write_text('schema_version = "1.1"\n')
+    (task / "task.toml").write_text(
+        f'schema_version = "1.1"\n[verifier.env]\nPROBLEM_ID = "{problem_id}"\nJUDGE_URL = "http://judge:8081"\n'
+    )
+    (task / "environment/docker-compose.yaml").write_text(
+        "services:\n  main:\n    depends_on:\n      judge:\n        condition: service_started\n"
+        "    volumes: [./statement.txt:/app/statement.txt:ro]\n  judge:\n    privileged: true\n"
+    )
     (task / "instruction.md").write_text(f"Read /app/statement.txt for {problem_id}.")
     return task
 
@@ -139,6 +147,9 @@ def test_default_frontiersmith_excludes_known_evaluation_aliases(monkeypatch, tm
     assert not set(manifest["train"]) & {row["problem_id"] for row in aliases}
     assert len(manifest["excluded"]) == 10
     assert manifest["evaluation_source_revision"] == data.EVAL_SOURCE_REVISION
+    for config_path in (tmp_path / "harbor").rglob("task.toml"):
+        services = yaml.safe_load((config_path.parent / "environment/docker-compose.yaml").read_text())["services"]
+        assert set(services) == {"main"}
 
 
 def test_official_evaluation_set_excludes_changed_problem_61(tmp_path):
@@ -162,14 +173,57 @@ def test_parity_alias_manifest_is_validated(tmp_path):
         data._parity_aliases(tmp_path)
 
 
-def test_generated_mounts_pin_the_correct_source_for_each_corpus(tmp_path):
+def test_trial_uses_shared_judge_without_sidecar_or_source_mounts(tmp_path):
     task = _task(tmp_path / "tasks", "frontiersmith_0")
     source = tmp_path / "source/Frontier-CS"
     algorithmic = str((source / "algorithmic").resolve())
     expression = "${FRONTIER_CS_ALGORITHMIC_PATH:-" + algorithmic + "}"
-    (task / "task.toml").write_text(f'[environment.env]\nFRONTIER_CS_ALGORITHMIC_PATH = "{expression}"\n')
+    with (task / "task.toml").open("a") as output:
+        output.write(f'[environment.env]\nFRONTIER_CS_ALGORITHMIC_PATH = "{expression}"\n')
     compose = task / "environment/docker-compose.yaml"
-    compose.write_text(f"services:\n  judge:\n    build:\n      context: {expression}\n")
-    data._install_verifier(task, problems_source=source)
-    assert expression not in compose.read_text() and algorithmic in compose.read_text()
-    assert expression not in (task / "task.toml").read_text()
+    for url in ("http://judge-host:8081", "http://other-host:9090"):
+        data._install_verifier(task, judge_url=url, judge_timeout=900)
+        config = toml.loads((task / "task.toml").read_text())
+        assert config["verifier"]["env"] == {
+            "PROBLEM_ID": "frontiersmith_0",
+            "JUDGE_URL": url,
+            "MAX_POLL_TIME": "900",
+        }
+        assert config["verifier"]["timeout_sec"] == 990
+        assert "FRONTIER_CS_ALGORITHMIC_PATH" not in config["environment"]["env"]
+        services = yaml.safe_load(compose.read_text())["services"]
+        assert set(services) == {"main"}
+        assert "depends_on" not in services["main"]
+        assert services["main"]["volumes"] == ["./statement.txt:/app/statement.txt:ro"]
+        assert services["main"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
+
+
+def test_single_judge_mounts_exact_training_and_evaluation_fixtures(tmp_path):
+    data._write_shared_judge(
+        tmp_path,
+        source_dir=tmp_path / "train",
+        evaluation_source=tmp_path / "eval",
+        training_ids=["frontiersmith_0", "frontiersmith_2"],
+        evaluation_ids=["0", "306"],
+    )
+    compose = yaml.safe_load((tmp_path / "frontier-judge.compose.yaml").read_text())
+    assert set(compose["services"]) == {"judge"}
+    judge = compose["services"]["judge"]
+    assert judge["build"]["context"] == str(tmp_path / "eval/algorithmic")
+    mounts = {mount["target"]: mount for mount in judge["volumes"] if isinstance(mount, dict)}
+    assert set(mounts) == {f"/app/problems/{pid}" for pid in ("frontiersmith_0", "frontiersmith_2", "0", "306")}
+    for target, mount in mounts.items():
+        corpus = "train/Frontier-CS" if "frontiersmith" in target else "eval"
+        assert mount["source"] == str(tmp_path / corpus / "algorithmic/problems" / Path(target).name)
+        assert mount["read_only"] and not mount["bind"]["create_host_path"]
+    assert "judge-data:/app/data" in judge["volumes"]
+    assert "judge-submissions:/app/submissions" in judge["volumes"]
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"judge_url": "not-a-url"}, {"judge_url": "file:///tmp/judge"}, {"judge_timeout": 0}]
+)
+def test_invalid_judge_configuration_fails_before_download(tmp_path, overrides):
+    with pytest.raises(ValueError, match="judge-"):
+        data.prepare(source_dir=tmp_path / "missing", tasks_dir=tmp_path / "tasks", out=tmp_path / "out", **overrides)
+    assert not (tmp_path / "missing").exists()

@@ -1,6 +1,6 @@
 """Synchronous clipped PPO on FrontierSmith with Frontier-CS evaluation.
 
-Requires the Miles GPU environment, Docker and a prejoined Ray cluster for
+Requires a running shared Frontier judge, the Miles GPU environment, Docker and a prejoined Ray cluster for
 multi-node training. The prepare action downloads the pinned model/data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
 and support full_detach or actor-summary memory. Score centering is disabled.
@@ -10,6 +10,7 @@ Args:
     --dataset: Fixed to frontiersmith; use the separate TMAX launcher for TMAX.
     --critic-context-mode: full_detach (default) or actor-summary.
     --model-dir / --data-dir / --output-dir: Shared model, task and run paths.
+    --frontier-judge-url / --frontier-judge-timeout: Shared judge endpoint and queue-inclusive timeout baked into prepared tasks.
     --score-centering: Rejected; this entrypoint uses ordinary clipped PPO.
     --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and five samples by default.
 

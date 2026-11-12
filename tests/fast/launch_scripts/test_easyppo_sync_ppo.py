@@ -145,6 +145,8 @@ def test_prepare_uses_the_fixed_training_and_evaluation_corpus(launcher, monkeyp
         critic_context_mode=mode,
         model_dir=str(tmp_path / "models with spaces"),
         data_dir=str(tmp_path / "data with spaces"),
+        frontier_judge_url="http://shared-judge:8082",
+        frontier_judge_timeout=1200,
     )
     launcher.prepare(args)
     assert backend.commands[1][:3] == ["hf", "download", args.hf_repo]
@@ -153,6 +155,8 @@ def test_prepare_uses_the_fixed_training_and_evaluation_corpus(launcher, monkeyp
     if args.dataset == "frontiersmith":
         assert preparation[1].endswith("make_miles_frontiersmith_data.py")
         assert "--frontier-cs-source-dir" in preparation
+        assert preparation[preparation.index("--judge-url") + 1] == args.frontier_judge_url
+        assert preparation[preparation.index("--judge-timeout") + 1] == str(args.frontier_judge_timeout)
         assert args.validation_data.endswith("fcs.eval.jsonl")
     else:
         assert preparation[1].endswith("make_miles_terminal_data.py")

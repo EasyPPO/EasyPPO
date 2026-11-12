@@ -45,7 +45,7 @@ The examples use `/shared` at the **same absolute path** on every worker and
 Docker daemon host. Clone once on that shared filesystem:
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO_fork.git /shared/EasyPPO
+git clone --branch miles https://github.com/EasyPPO/EasyPPO.git /shared/EasyPPO
 mkdir -p /shared/models /shared/data /shared/runs
 ```
 
@@ -66,7 +66,7 @@ dependency set uses a different Transformers range.
 For containerized Miles workers, bind `/shared` to `/shared` and expose the host
 Docker daemon through `/var/run/docker.sock`; the worker environment needs the
 Docker CLI and Compose plugin. The daemon resolves task/source bind mounts on
-its host. Hosts must allow Frontier's privileged judge sidecars. Expose the
+its host. The shared judge host must allow a privileged judge container. Expose the
 site's RDMA devices when using an InfiniBand/RDMA fabric. Provision CPU, RAM,
 image storage, and package/image network access for Harbor trials separately
 from GPU allocation.
@@ -109,6 +109,7 @@ or 64-GPU environment. Prepared model/data assets are shared by all four launche
 ```bash
 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
   --action prepare \
+  --frontier-judge-url http://10.0.0.20:8081 \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 
 python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
@@ -135,30 +136,86 @@ The preparation removes ten published training aliases and follows the fixed
 registry references; training is audited for exact evaluation overlap,
 duplicate executable fixtures, and initial-context fit.
 
-Keep the complete `/shared/data/harbor` task tree and **both full Frontier source
-checkouts**, not just JSONL files. Generated Compose files bind the corresponding
-source by absolute path. Existing task-download directories are reused; use a
-fresh preparation directory when regenerating a source-versioned dataset.
+Keep the complete `/shared/data/harbor` task tree on every Docker worker host.
+Keep **both full Frontier source checkouts** and this repository at their prepared
+absolute paths on the shared judge host. `frontier-judge.compose.yaml` binds each
+selected problem from its pinned source read-only. Existing task-download directories
+are reused; rerun preparation to update their verifier URL and remove judge sidecars.
+Use a fresh preparation directory when changing dataset source versions.
 Source references and manifests are documented in [ASYNC_DATA.md](examples/easyppo/ASYNC_DATA.md).
 
 ## 4. Run the task environments and judges
 
-**Harbor starts and stops them automatically for each trial.** Miles starts
-SGLang and supplies the in-process Qwen generation callback. No separate Harbor
-agent server or global judge HTTP service is required.
+**Start one shared Frontier judge before training.** All FrontierSmith and
+Frontier-CS trials submit to that service. On the CPU judge host (the example
+uses private address `10.0.0.20`), run:
 
-For FrontierSmith and Frontier-CS, each generated
-`environment/docker-compose.yaml` contains `main` and `judge` services. Harbor
-builds/starts the Compose project, runs the terminal agent, invokes the verifier,
-and tears down the project. The privileged judge sidecar starts go-judge and its
-Node server; the verifier reaches it over private Compose DNS at
-`http://judge:8081`.
+```bash
+export FRONTIER_JUDGE_BIND_IP=10.0.0.20
+export FRONTIER_JUDGE_PORT=8081
+export JUDGE_WORKERS=8 GJ_PARALLELISM=8
+docker compose -p easyppo-frontier-judge \
+  -f /shared/data/frontier-judge.compose.yaml up -d --build --wait
+curl --fail http://10.0.0.20:8081/problems
+```
+
+The endpoint must be reachable **from every task container**. Use a trusted
+private network: the upstream HTTP API has no authentication. Set
+`--frontier-judge-url` during preparation to that endpoint; this option configures
+generated tasks, not an already prepared dataset. Its single-host default is
+`http://host.docker.internal:8081` with a Linux host-gateway mapping. On multiple
+Docker hosts, use the actual judge host address. The Compose port defaults to
+8081 on all interfaces; set `FRONTIER_JUDGE_BIND_IP` to the private interface.
+
+The service uses the pinned Frontier-CS judge implementation for both corpora,
+with their own pinned checkers/test data and unchanged problem IDs. Scores come
+from checker/interactor output and are scaled from `[0,100]` to `[0,1]`. Its
+queue, worker pool and compiled-checker cache are shared across trials.
+
+Harbor starts only the `main` agent sandbox for each trial, runs its verifier,
+and tears down that trial. Trial cleanup does not stop the shared judge. Miles
+starts SGLang and supplies the Qwen generation callback; no Harbor agent server
+is required.
 
 The agent reads `/app/statement.txt`, writes `/app/solution.cpp`, and can compile
 and self-test through bash. The verifier submits the solution, polls its result,
 and writes `reward.json` and `judge-result.json` under the trial's verifier logs.
-Each sidecar requests 4 GiB of shared memory and configures eight judge workers;
-size rollout-host CPU/RAM and Docker image storage for the chosen concurrency.
+The single judge has a 4 GiB shared-memory limit and eight workers by default.
+`--frontier-judge-timeout` defaults to 3600 seconds including queue wait; Harbor's
+verifier deadline adds 90 seconds for readiness and result handling. Tune the
+worker pool and timeout together. Data and submissions persist in Compose volumes.
+Stop the service separately after all runs:
+
+```bash
+docker compose -p easyppo-frontier-judge \
+  -f /shared/data/frontier-judge.compose.yaml down
+```
+
+The rollout executor starts local Docker trials; SGLang engine count does not
+distribute these sandboxes across Docker hosts. For an initial run, add
+`--sglang-server-concurrency 1` to limit the default sync allocation to six
+concurrent trials. Increase this after measuring sandbox and judge capacity.
+
+To check the sandbox-to-judge path on CPU with Harbor's Codex agent, run the data
+preparation command below first (no model download or checkpoint conversion).
+Then start the shared judge as above before running `harbor run`:
+
+```bash
+python scripts/make_miles_frontiersmith_data.py \
+  --source-dir /shared/data/FrontierSmith \
+  --frontier-cs-source-dir /shared/data/Frontier-CS-eval \
+  --tasks-dir /shared/data/harbor --out /shared/data \
+  --judge-url http://10.0.0.20:8081
+
+# Use your configured Codex credentials and model; no local model or GPU is used.
+CODEX_AUTH_JSON_PATH="$HOME/.codex/auth.json" harbor run \
+  --path /shared/data/harbor/frontiersmith/frontier-cs-algorithm-frontiersmith_0 \
+  --agent codex --model "$CODEX_MODEL" --n-attempts 2 --n-concurrent 2 \
+  --jobs-dir /shared/runs/harbor-codex-check
+```
+
+Set `CODEX_MODEL` to your available model. Confirm both trial rewards are numeric
+and the shared judge remains healthy after Harbor removes the trial containers.
 
 TMAX and TB2.1 retain each task's supplied image or Dockerfile, auxiliary
 services, and `tests/test.sh`. Harbor runs those tests and reads the task reward

@@ -45,6 +45,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tasks_dir: str = ""
     frontiersmith_source_dir: str = ""
     frontier_cs_source_dir: str = ""
+    frontier_judge_url: str = "http://host.docker.internal:8081"
+    frontier_judge_timeout: int = 3600
     trials_dir: str = ""
     critic_context_mode: Literal["full_detach", "actor-summary"] = "full_detach"
     critic_load: str = ""
@@ -266,6 +268,10 @@ def _prepare(args: ScriptArgs, *, dataset: str) -> None:
                 args.task_root,
                 "--out",
                 args.data_dir,
+                "--judge-url",
+                args.frontier_judge_url,
+                "--judge-timeout",
+                str(args.frontier_judge_timeout),
             ],
         )
     else:

@@ -12,6 +12,8 @@ python <REPO_ROOT>/scripts/make_miles_frontiersmith_data.py
   --frontier-cs-source-dir /root/datasets/Frontier-CS-eval
   --tasks-dir /root/datasets/harbor
   --out /root/datasets
+  --judge-url http://host.docker.internal:8081
+  --judge-timeout 3600
 
 ### 3
 PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun

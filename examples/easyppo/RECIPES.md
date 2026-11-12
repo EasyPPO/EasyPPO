@@ -40,7 +40,7 @@ instructions that exceed the action budget. The manifests and generated
 JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md).
 
 The terminal harness runs bash in Harbor sandboxes. Frontier tasks use their
-per-trial Compose judge sidecar and native partial scores; TMAX/TB use their
+shared Frontier-CS judge service and checker partial scores; TMAX/TB use their
 supplied task verifiers. Model decoding is handled by Miles/SGLang.
 
 ## Batch and update schedule
@@ -293,7 +293,9 @@ Host-memory requirements depend on the model, optimizer, offload configuration,
 and episode lengths.
 
 SGLang uses a static memory fraction of .7 and concurrency 128 per engine.
-Docker sandboxes and judges consume additional CPU/RAM on rollout hosts.
+Docker sandboxes run on the rollout executor's Docker host. All Frontier trials
+use one separately managed judge; configure its URL during data preparation.
+The shared judge's CPU/RAM and queue capacity are independent of GPU allocation.
 
 ## Rewards, validation, and checkpoints
 

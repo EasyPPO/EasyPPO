@@ -1,6 +1,7 @@
 """Harbor verifier copied into prepared FrontierSmith tasks.
 
-Uses the pinned upstream judge's score / 100. Infrastructure failures leave no
+Uses the shared judge's score / 100, configured by task verifier JUDGE_URL.
+Infrastructure failures leave no
 reward file, so Harbor rejects the trial instead of training on a false zero.
 """
 
@@ -81,7 +82,7 @@ def main() -> None:
     _verify(
         solution=Path("/app/solution.cpp"),
         logs=Path("/logs/verifier"),
-        judge_url=os.environ.get("JUDGE_URL", "http://judge:8081"),
+        judge_url=os.environ["JUDGE_URL"],
         problem_id=os.environ["PROBLEM_ID"],
         timeout=float(os.environ.get("MAX_POLL_TIME", "600")),
     )

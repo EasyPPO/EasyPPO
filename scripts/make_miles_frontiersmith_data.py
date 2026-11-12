@@ -8,6 +8,8 @@ Install the terminal extra (the adapter is loaded from the pinned checkout):
 A missing source checkout is cloned at its pinned revision. Training uses 190
 synthetic problems after excluding 10 known aliases of Frontier-CS evaluation
 problems. Evaluation uses the official pinned 179-problem algorithmic set.
+Writes one shared judge Compose file beside the JSONL inputs. Set --judge-url
+to an address reachable from all task containers; preparation starts no services.
 """
 
 import argparse
@@ -19,6 +21,10 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import toml
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.make_miles_terminal_data import task_records, write_jsonl  # noqa: E402
@@ -29,6 +35,8 @@ EVAL_SOURCE_URL = "https://github.com/FrontierCS/Frontier-CS.git"
 EVAL_SOURCE_REVISION = "59687e5428266a22a49cf51f981b912103bfa91d"
 _MANIFEST = Path("data/sample_lists/frontiersmith_train_200.json")
 _ADAPTER = Path("harbor/adapters/frontier-cs-algorithm")
+DEFAULT_JUDGE_URL = "http://host.docker.internal:8081"
+DEFAULT_JUDGE_TIMEOUT = 3600
 
 
 def _prepare_source(source: Path, *, url: str = SOURCE_URL, revision: str = SOURCE_REVISION) -> None:
@@ -90,21 +98,81 @@ FrontierCSAdapter(
     )
 
 
-def _install_verifier(task: Path, *, problems_source: Path) -> None:
-    # Train/eval use two source repositories. Pin each task's mounts explicitly
-    # so a shared FRONTIER_CS_ALGORITHMIC_PATH cannot redirect one corpus to the other.
-    algorithmic = str((problems_source / "algorithmic").resolve())
-    expression = "${FRONTIER_CS_ALGORITHMIC_PATH:-" + algorithmic + "}"
-    for relative in ("task.toml", "environment/docker-compose.yaml"):
-        path = task / relative
-        if path.exists():
-            path.write_text(path.read_text().replace(expression, algorithmic))
+def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None:
+    config_path = task / "task.toml"
+    config = toml.loads(config_path.read_text())
+    verifier = config.setdefault("verifier", {})
+    verifier["timeout_sec"] = judge_timeout + 90
+    verifier.setdefault("env", {}).update(JUDGE_URL=judge_url, MAX_POLL_TIME=str(judge_timeout))
+    config.get("environment", {}).get("env", {}).pop("FRONTIER_CS_ALGORITHMIC_PATH", None)
+    config_path.write_text(toml.dumps(config))
+
+    compose_path = task / "environment/docker-compose.yaml"
+    compose = yaml.safe_load(compose_path.read_text())
+    services = compose["services"]
+    services.pop("judge", None)
+    main = services["main"]
+    main.pop("depends_on", None)
+    # Resolve the local Docker host on Linux too. Multi-host runs must prepare
+    # tasks with the judge host's reachable address instead of this local alias.
+    main["extra_hosts"] = ["host.docker.internal:host-gateway"]
+    compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
     shutil.copy2(Path(__file__).with_name("frontiersmith_verifier.py"), task / "tests/evaluate.py")
     entrypoint = task / "tests/test.sh"
     entrypoint.write_text(
         "#!/bin/bash\nset -euo pipefail\nmkdir -p /logs/verifier\npython3 /tests/evaluate.py 2>&1 | tee /logs/verifier/evaluation.log\n"
     )
     entrypoint.chmod(0o755)
+
+
+def _write_shared_judge(
+    out: Path, *, source_dir: Path, evaluation_source: Path, training_ids: list[str], evaluation_ids: list[str]
+) -> None:
+    problem_mounts = [
+        {
+            "type": "bind",
+            "source": str(source / "algorithmic/problems" / problem_id),
+            "target": f"/app/problems/{problem_id}",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        }
+        for source, ids in ((source_dir / "Frontier-CS", training_ids), (evaluation_source, evaluation_ids))
+        for problem_id in ids
+    ]
+    judge = {
+        "image": f"easyppo-frontier-judge:{EVAL_SOURCE_REVISION[:12]}",
+        "build": {
+            "context": str(evaluation_source / "algorithmic"),
+            "dockerfile": str(Path(__file__).resolve().parents[1] / "docker/Dockerfile.fcs-judge-cpp"),
+        },
+        "privileged": True,
+        "shm_size": "4g",
+        "ulimits": {"stack": {"soft": -1, "hard": -1}},
+        "ports": ["${FRONTIER_JUDGE_BIND_IP:-0.0.0.0}:${FRONTIER_JUDGE_PORT:-8081}:8081"],
+        "environment": {
+            "PORT": "8081",
+            "GJ_ADDR": "http://127.0.0.1:5050",
+            "JUDGE_WORKERS": "${JUDGE_WORKERS:-8}",
+            "GJ_PARALLELISM": "${GJ_PARALLELISM:-8}",
+            "SAVE_OUTPUTS": "false",
+        },
+        "volumes": [*problem_mounts, "judge-data:/app/data", "judge-submissions:/app/submissions"],
+        "healthcheck": {
+            "test": ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/problems"],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 6,
+        },
+    }
+    (out / "frontier-judge.compose.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "services": {"judge": judge},
+                "volumes": {"judge-data": {}, "judge-submissions": {}},
+            },
+            sort_keys=False,
+        )
+    )
 
 
 def _records(
@@ -211,7 +279,20 @@ def prepare(
     eval_count: int = 0,
     seed: int = 42,
     overwrite: bool = False,
+    judge_url: str = DEFAULT_JUDGE_URL,
+    judge_timeout: int = DEFAULT_JUDGE_TIMEOUT,
 ) -> None:
+    parsed_url = urlsplit(judge_url)
+    if (
+        parsed_url.scheme not in ("http", "https")
+        or not parsed_url.hostname
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        raise ValueError("--judge-url must be an HTTP(S) base URL reachable from task containers")
+    if judge_timeout <= 0:
+        raise ValueError("--judge-timeout must be positive and include queue wait time")
+    judge_url = judge_url.rstrip("/")
     source_dir = source_dir.resolve()
     tasks_dir = tasks_dir.resolve()
     _prepare_source(source_dir)
@@ -237,11 +318,19 @@ def prepare(
         source_dir, evaluation_destination, evaluation_ids, overwrite=overwrite, problems_source=frontier_cs_source_dir
     )
     benchmark = _evaluation_records(evaluation_destination, tasks_dir, evaluation_ids)
-    for row in training + evaluation:
-        _install_verifier(tasks_dir / row["metadata"]["task_path"], problems_source=source_dir / "Frontier-CS")
-    for row in benchmark:
-        _install_verifier(tasks_dir / row["metadata"]["task_path"], problems_source=frontier_cs_source_dir)
+    # Update excluded alias task directories too, so rerunning preparation never
+    # leaves an old per-trial judge behind in the generated task tree.
+    for directory in (destination, evaluation_destination):
+        for config_path in directory.rglob("task.toml"):
+            _install_verifier(config_path.parent, judge_url=judge_url, judge_timeout=judge_timeout)
     out.mkdir(parents=True, exist_ok=True)
+    _write_shared_judge(
+        out,
+        source_dir=source_dir,
+        evaluation_source=frontier_cs_source_dir,
+        training_ids=[pid for pid in ids if pid not in excluded_ids],
+        evaluation_ids=evaluation_ids,
+    )
     write_jsonl(out / "frontiersmith.train.jsonl", training)
     write_jsonl(out / "frontiersmith.eval.jsonl", evaluation)
     write_jsonl(out / "fcs.eval.jsonl", benchmark)
@@ -264,6 +353,9 @@ def prepare(
                 ],
                 "evaluation_source_url": EVAL_SOURCE_URL,
                 "evaluation_source_revision": EVAL_SOURCE_REVISION,
+                "judge_source_revision": EVAL_SOURCE_REVISION,
+                "judge_url": judge_url,
+                "judge_timeout": judge_timeout,
                 "evaluation": evaluation_ids,
                 "evaluation_excluded": [
                     {"problem_id": "61", "reason": "official_179_problem_scoring_set_excludes_changed_output_format"}
@@ -288,6 +380,15 @@ def main() -> None:
     parser.add_argument("--eval-count", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--judge-url", default=DEFAULT_JUDGE_URL, help="Shared judge URL reachable from every task container"
+    )
+    parser.add_argument(
+        "--judge-timeout",
+        type=int,
+        default=DEFAULT_JUDGE_TIMEOUT,
+        help="Submission timeout in seconds, including queue wait",
+    )
     prepare(**vars(parser.parse_args()))
 
 
