@@ -132,7 +132,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
   --num-rollout 100 \
-  --save-interval 5 --keep-last-checkpoints 1 \
+  --save-interval 5 --save-retain-interval 5 \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
@@ -147,10 +147,11 @@ and continue; the cumulative episode generation budget is 120000 tokens.
 Training runs for 100 rounds, each with 32 prompt groups × 16 episodes.
 Every round performs four critic updates, including the first 30 critic-only
 rounds. Rounds 31–100 also perform one actor update. Checkpoints are saved every
-five rounds. The previous checkpoint stays on disk until the new actor,
-critic, and rollout state have all been saved. Evaluation runs initially,
-every ten rounds, and at the end, with
-180 tasks × 5 trials per evaluation.
+five rounds. With `--save-retain-interval 5`, the regular saves at rollout IDs
+`4, 9, 14, …` leave only the latest complete checkpoint. The previous
+checkpoint stays on disk until the new actor, critic, and rollout state have
+all been saved. Evaluation runs initially, every ten rounds, and at the end,
+with 180 tasks × 5 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
 and `trials/`. Use a new run ID for each new experiment. See [section 6](#6-resume-training)
@@ -185,7 +186,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
-  --save-interval 5 --keep-last-checkpoints 1 \
+  --save-interval 5 --save-retain-interval 5 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
@@ -207,7 +208,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
-  --save-interval 5 --keep-last-checkpoints 1 \
+  --save-interval 5 --save-retain-interval 5 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \

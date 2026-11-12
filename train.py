@@ -32,16 +32,6 @@ logger = logging.getLogger(__name__)
 PPO_CHECKPOINT_TRACKER = "latest_complete_ppo_checkpoint.txt"
 
 
-def _add_checkpoint_retention_arg(parser):
-    parser.add_argument(
-        "--keep-last-checkpoints",
-        type=int,
-        default=0,
-        help="Keep this many completed PPO checkpoints (0 disables pruning).",
-    )
-    return parser
-
-
 def _checkpoint_directories(root: Path) -> dict[int, Path]:
     return {
         int(match[1]): path
@@ -76,7 +66,7 @@ def _recover_checkpoint(args) -> None:
                 shutil.rmtree(path)
 
 
-def _finalize_checkpoint(args, rollout_id: int, keep: int) -> None:
+def _finalize_checkpoint(args, rollout_id: int, retain_interval: int) -> None:
     roots = (Path(args.save), Path(args.critic_save))
     state_path = Path(compute_global_dataset_state_path(args.save, rollout_id=rollout_id))
     if any(read_checkpoint_tracker_iteration(root) != rollout_id for root in roots) or (
@@ -90,13 +80,11 @@ def _finalize_checkpoint(args, rollout_id: int, keep: int) -> None:
         raise RuntimeError(f"Checkpoint directories for rollout {rollout_id} are missing. Skipping checkpoint pruning.")
 
     atomic_write_text(roots[0] / PPO_CHECKPOINT_TRACKER, f"{rollout_id}\n")
-    complete = sorted(iteration for iteration in actor.keys() & critic.keys() if iteration <= rollout_id)
-    if len(complete) < keep:
-        return
-    oldest_kept = complete[-keep]
     for iteration in sorted(actor.keys() | critic.keys()):
-        if iteration >= oldest_kept:
+        if iteration >= rollout_id:
             break
+        if iteration == 0 or iteration % retain_interval == 0:
+            continue
         Path(compute_global_dataset_state_path(args.save, rollout_id=iteration)).unlink(missing_ok=True)
         for checkpoints in iterations_by_root:
             if iteration in checkpoints:
@@ -105,20 +93,17 @@ def _finalize_checkpoint(args, rollout_id: int, keep: int) -> None:
 
 async def train(args, *, disposer: Disposer):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    keep_checkpoints = getattr(args, "keep_last_checkpoints", 0)
-    if keep_checkpoints < 0:
-        raise ValueError("--keep-last-checkpoints must be non-negative")
-    if keep_checkpoints and (
-        not args.use_critic
-        or args.megatron_config is not None
-        or not args.save
-        or not args.critic_save
-        or Path(args.save).resolve() == Path(args.critic_save).resolve()
-    ):
-        raise ValueError(
-            "--keep-last-checkpoints requires standard Megatron PPO with separate actor and critic save directories"
-        )
-    if keep_checkpoints:
+    retain_interval = getattr(args, "save_retain_interval", None) if args.use_critic else None
+    if retain_interval is not None:
+        if (
+            args.megatron_config is not None
+            or not args.save
+            or not args.critic_save
+            or Path(args.save).resolve() == Path(args.critic_save).resolve()
+        ):
+            raise ValueError("PPO checkpoint retention requires separate actor and critic save directories")
+        # Megatron would prune the actor and critic independently as each save completes.
+        args.save_retain_interval = None
         _recover_checkpoint(args)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
 
@@ -171,7 +156,7 @@ async def train(args, *, disposer: Disposer):
             await actor_model.clear_memory()
 
     async def save(rollout_id, force_sync=False):
-        force_sync = force_sync or rollout_id == args.num_rollout - 1 or keep_checkpoints > 0
+        force_sync = force_sync or rollout_id == args.num_rollout - 1 or retain_interval is not None
 
         async def save_training_model(model):
             if args.use_critic and args.offload_train:
@@ -186,8 +171,8 @@ async def train(args, *, disposer: Disposer):
         if args.use_critic:
             await save_training_model(critic_model)
         await rollout_executor.save(rollout_id)
-        if keep_checkpoints:
-            _finalize_checkpoint(args, rollout_id, keep_checkpoints)
+        if retain_interval is not None:
+            _finalize_checkpoint(args, rollout_id, retain_interval)
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
@@ -278,5 +263,5 @@ async def train(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args(add_custom_arguments=_add_checkpoint_retention_arg)
+    args = parse_args()
     asyncio.run(with_disposer(train, args))

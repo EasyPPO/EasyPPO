@@ -2,7 +2,7 @@
 
 import shlex
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 from examples.easyppo import async_ppo as _recipe
 
@@ -17,7 +17,7 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
     score_centering_candidates: int = 0
     score_centering_is: Literal["none"] = "none"
     score_centering_recompute_loss: bool = False
-    keep_last_checkpoints: int = 0
+    save_retain_interval: Optional[int] = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -29,8 +29,6 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
 
 
 def _validate_sync_options(args: _SyncScriptArgs) -> None:
-    if args.keep_last_checkpoints < 0:
-        raise ValueError("--keep-last-checkpoints must be non-negative")
     if args.score_centering:
         raise ValueError("Synchronous PPO launchers do not support --score-centering")
     if (
@@ -70,8 +68,8 @@ def _prepare(args: _SyncScriptArgs, *, dataset: str) -> None:
 def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:
     _validate(args, dataset=dataset)
     checkpoint_args = _recipe._checkpoint_args(args)
-    if args.keep_last_checkpoints:
-        checkpoint_args += ["--keep-last-checkpoints", str(args.keep_last_checkpoints)]
+    if args.save_retain_interval is not None:
+        checkpoint_args += ["--save-retain-interval", str(args.save_retain_interval)]
     argv = (
         checkpoint_args
         + _recipe._rollout_args(args)
