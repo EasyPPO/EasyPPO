@@ -10,7 +10,7 @@ Use a Miles-compatible GPU image and this branch's code. Follow the
 For a fresh checkout:
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO
+git clone --branch miles https://github.com/EasyPPO/EasyPPO.git EasyPPO
 cd EasyPPO
 ```
 
@@ -20,15 +20,22 @@ If the job image needs the project or its terminal dependencies, install:
 python -m pip install -e '.[agentic,terminal]'
 ```
 
-The default allocation is **4 nodes × 8 B200 GPUs**. Rollout, critic training,
-and actor training alternate on the same 32 GPUs with offload enabled.
-Training uses TP4/DP8; rollout uses eight TP4 engines. Set `--num-nodes` and
-`--num-gpus-per-node` to match the allocation, and provision host memory for offload.
+Choose the GPU allocation to fit the available hardware and memory budget.
+Set `--num-nodes` and `--num-gpus-per-node` to match the cluster allocation.
+Rollout, critic training, and actor training alternate on all allocated GPUs
+with offload enabled. Provision host memory for offload.
+
+Training and rollout default to TP4. With `N` total GPUs, this gives training
+DP `N / 4` and `N / 4` rollout engines. Adjust `--tensor-model-parallel-size`
+and `--rollout-gpus-per-engine` for the hardware, keeping the GPU count divisible
+by each parallel group size and the training batches divisible by training DP.
 
 Set these variables for the commands below:
 
 | Variable | Value |
 |---|---|
+| `NUM_NODES` | Number of allocated training nodes |
+| `GPUS_PER_NODE` | GPUs allocated per node |
 | `MODEL_DIR` | Model and converted checkpoint directory |
 | `DATA_DIR` | Prepared Harbor tasks and datasets |
 | `RUN_DIR` | Training outputs |
@@ -70,6 +77,7 @@ Run from the repository root in an allocated GPU job environment:
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --action prepare \
+  --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --frontier-judge-url "$JUDGE_URL" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
@@ -98,14 +106,14 @@ For SSH-based bootstrap or another deployment backend, follow the
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --action train \
+  --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
 Set `--sglang-server-concurrency` to fit the Harbor host and judge capacity.
-The default is 128 per engine; a value of 1 allows up to eight concurrent trials
-with the default allocation.
+The default is 128 per engine; a value of 1 allows one concurrent trial per engine.
 
 Training runs for 200 rounds, each with 32 prompt groups × 16 episodes.
 The first 30 rounds update the critic; subsequent rounds perform four critic
