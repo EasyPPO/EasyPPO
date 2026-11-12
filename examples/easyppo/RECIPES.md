@@ -236,12 +236,36 @@ Candidates are stored in `easyppo-topk.npz` alongside the trajectory JSON.
 
 ## Context, summaries, and generation budget
 
-The actor's per-call prompt+generation window is **32768 tokens**. An action
-can generate at most 8192 tokens and a summary at most 2048. With current prompt
-length `L` and summary-request overhead `O`, compaction triggers at:
+### FrontierSmith / FCS
+
+Both launchers read their generation defaults from [`frontiersmith.py`](frontiersmith.py):
+
+| Setting | Tokens |
+|---|---:|
+| Prompt + generation window | 131072 |
+| Tokens per action, including thinking | 24576 |
+| Tokens per summary, including thinking | 3072 |
+| Compaction threshold | 12000 |
+
+`--terminal-continue-on-length` is enabled: a length-limited action or summary
+increments `truncated_turns` and the episode continues. An inserted end-of-turn
+token has loss mask 0 and does not count toward the generation budget. Recorded
+generated tokens retain their original masks and log-probabilities.
+
+### TMAX / Terminal-Bench
+
+The context window is 32768 tokens, with up to 8192 tokens per action and 2048
+per summary, including thinking. Compaction starts at 24576 context tokens,
+subject to the remaining-window reserve. A length-limited turn ends the episode
+with `GenerationLimit`.
+
+### Episode budgets
+
+With current prompt length `L` and summary-request overhead `O`, compaction
+is checked before each action, using the configured limits:
 
 ```text
-L >= min(24576,32768-max(8192,2048+O))
+L >= min(compact_threshold,max_context_tokens-max(max_new_tokens,summary_tokens+O))
 ```
 
 The actor then resumes from the original task plus the sampled progress
@@ -252,6 +276,8 @@ The **120000-token cumulative generation cap** includes actions, thinking,
 EOS, and summaries. It excludes prompts and tool outputs. Other limits are
 300 action-loop steps, 120 seconds per shell command, and 16000 characters
 per tool output. Harbor's task-specific agent/verifier timeouts also apply.
+Exhausting the episode budget, step limit, or a Harbor timeout marks the
+episode truncated.
 
 The **262144-token training packing budget** checks the critic's history and
 the total actor-segment length for an episode. Tool outputs and repeated actor

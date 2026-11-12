@@ -74,13 +74,15 @@ class TerminalConfig:
     compaction: Literal["summary", "keep_last_turns", "none"] = "summary"
     compact_threshold: int = 24576
     summary_tokens: int = 2048
+    continue_on_length: bool = False
     keep_last_turns: int = 2
     command_timeout: int = 120
     max_output_chars: int = 16000
 
     def __post_init__(self):
-        if type(self.enable_thinking) is not bool:
-            raise ValueError("terminal enable_thinking must be a boolean")
+        for name in ("enable_thinking", "continue_on_length"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"terminal {name} must be a boolean")
         for name in (
             "max_steps",
             "max_context_tokens",
@@ -137,6 +139,7 @@ class TerminalTrace:
     topk_log_probs: list[np.ndarray] | None = None
     calls: list[dict] = field(default_factory=list)
     n_compactions: int = 0
+    truncated_turns: int = 0
     n_format_errors: int = 0
     n_commands: int = 0
     generated_tokens: int = 0
@@ -230,6 +233,16 @@ class TerminalTrace:
             }
         )
 
+    def append_context(self, tokens: list[int]) -> None:
+        """Append environment tokens to the current actor and critic segments."""
+        for segment in (self.segments[-1], self.critic_segments[-1]):
+            segment.tokens.extend(tokens)
+            segment.response_length += len(tokens)
+            segment.loss_mask.extend([0] * len(tokens))
+        self.logprobs[-1].extend([0.0] * len(tokens))
+        if self.topk_token_ids is not None:
+            self._record_topk((self.topk_token_ids[-1][:0], self.topk_log_probs[-1][:0]), gap=len(tokens))
+
     def sample_fields(self) -> list[dict]:
         if not self.segments:
             return []
@@ -311,15 +324,23 @@ class TerminalAgent(DefaultAgent):
 
     def _remember_completion(self, messages: list[dict], prompt: list[int], result: Completion):
         self._completed_prefix = None
-        if result.tokens[-1] not in self._eos_token_ids:
+        needs_end = result.tokens[-1] not in self._eos_token_ids
+        if needs_end and result.finish_reason != "length":
             return  # No proven completed-message boundary: do not guess one.
         completed = self._encode(
             messages + [{"role": "assistant", "content": result.text}], add_generation_prompt=False
         )
         end = next((i for i in range(len(completed) - 1, -1, -1) if completed[i] in self._eos_token_ids), None)
         if end is None or self.tokenizer.decode(completed[end + 1 :]).strip():
+            if result.finish_reason == "length":
+                raise ValueError("Continuing a truncated turn requires a chat-template EOS boundary")
             return  # A supported completed render ends in EOS plus whitespace.
-        self._completed_prefix = _CompletedPrefix(completed[: end + 1], prompt + result.tokens)
+        # A length-limited turn continues as a completed message. Its inserted
+        # EOS is environment context, not sampled output or a supervised token.
+        closing = [completed[end]] if needs_end else []
+        if closing:
+            self.trace.append_context(closing)
+        self._completed_prefix = _CompletedPrefix(completed[: end + 1], prompt + result.tokens + closing)
 
     def render_template(self, template: str, **kwargs) -> str:
         # DefaultAgent's renderer asks model/environment for system metadata;
@@ -338,11 +359,13 @@ class TerminalAgent(DefaultAgent):
         result = await self.decode(prompt, limit)
         if len(result.tokens) > limit:
             raise ValueError("Decoder exceeded the requested token limit")
+        if result.finish_reason not in ("stop", "length"):
+            raise RuntimeError(f"Decoder stopped unexpectedly: {result.finish_reason}")
         self.trace.record(prompt, result, kind=kind)
         if result.finish_reason == "length":
-            raise EpisodeLimit("GenerationLimit")
-        if result.finish_reason != "stop":
-            raise RuntimeError(f"Decoder stopped unexpectedly: {result.finish_reason}")
+            self.trace.truncated_turns += 1
+            if not self.options.continue_on_length:
+                raise EpisodeLimit("GenerationLimit")
         self._remember_completion(messages, prompt, result)
         return result
 

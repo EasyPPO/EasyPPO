@@ -90,6 +90,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     max_new_tokens: int = 8192
     max_total_tokens: int = 120000
     summary_tokens: int = 2048
+    continue_on_length: bool = False
     max_steps: int = 300
     command_timeout: int = 120
     max_output_chars: int = 16000
@@ -258,6 +259,7 @@ def _validate(args: ScriptArgs) -> None:
         max_total_tokens=args.max_total_tokens,
         compact_threshold=args.compact_threshold,
         summary_tokens=args.summary_tokens,
+        continue_on_length=args.continue_on_length,
         command_timeout=args.command_timeout,
         max_output_chars=args.max_output_chars,
     )
@@ -409,6 +411,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         "--chat-template-path",
         args.chat_template_path,
         "--terminal-enable-thinking",
+        *(["--terminal-continue-on-length"] if args.continue_on_length else []),
         "--terminal-tasks-dir",
         args.task_root,
         "--terminal-trials-dir",

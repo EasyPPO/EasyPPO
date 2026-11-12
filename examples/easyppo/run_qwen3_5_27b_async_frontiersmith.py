@@ -13,6 +13,9 @@ Args:
         MILES_SCRIPT_EXTERNAL_RAY=1 skips joining an already managed cluster.
     --dataset: Fixed to frontiersmith; use the separate TMAX launcher for TMAX.
     --critic-context-mode: full_detach (default) or actor-summary.
+    --max-new-tokens / --summary-tokens: Per-call limits including thinking (24576 / 3072).
+    --compact-threshold / --max-context-tokens: Context limits (12000 / 131072).
+    --continue-on-length / --no-continue-on-length: Continue length-limited turns (default: on).
     --model-dir / --data-dir / --output-dir: Model, task and run paths available in the job environment.
     --frontier-judge-url / --frontier-judge-timeout: Shared judge endpoint and queue-inclusive timeout baked into prepared tasks.
     --no-score-centering: Use the existing asynchronous clipped-PPO baseline.
@@ -38,12 +41,13 @@ if sys.path[0] != _REPO_ROOT:
     sys.path.insert(0, _REPO_ROOT)
 
 from examples.easyppo import async_ppo as _async  # noqa: E402
+from examples.easyppo.frontiersmith import GenerationArgs  # noqa: E402
 
 from miles.utils.external_utils import command_utils as U  # noqa: E402
 
 
 @dataclass
-class ScriptArgs(_async.ScriptArgs):
+class ScriptArgs(GenerationArgs, _async.ScriptArgs):
     dataset: Literal["frontiersmith"] = "frontiersmith"
 
     def __post_init__(self):

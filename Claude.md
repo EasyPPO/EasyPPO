@@ -123,6 +123,11 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 Set `--sglang-server-concurrency` to fit the Harbor host and judge capacity.
 The default is 128 per engine; a value of 1 allows one concurrent trial per engine.
 
+Actor generation uses a 131072-token context window, up to 24576 tokens per
+action and 3072 per summary, with compaction at 12000 context tokens. Thinking
+counts toward these limits. Length-limited turns increment `truncated_turns`
+and continue; the cumulative episode generation budget is 120000 tokens.
+
 Training runs for 200 rounds, each with 32 prompt groups × 16 episodes.
 The first 30 rounds update the critic; subsequent rounds perform four critic
 updates and one actor update. Evaluation runs initially, every ten rounds,

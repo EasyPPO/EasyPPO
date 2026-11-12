@@ -196,3 +196,104 @@ async def test_token_in_requires_a_proven_eos_boundary(tokenizer):
     assert agent._completed_prefix is None
     next_messages = messages + [{"role": "assistant", "content": first_text}, {"role": "user", "content": "obs"}]
     assert agent._prompt(next_messages) == agent._encode(next_messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["action", "invalid_action", "summary", "unclosed_summary"])
+@pytest.mark.parametrize("topk", [False, True])
+async def test_length_limited_turns_continue_with_masked_eos_and_exact_tokens(tokenizer, kind, topk):
+    import numpy as np
+
+    compact = "summary" in kind
+    first = "ab inspect.\n</think>\n\n```bash\ninspect\n```"
+    if kind == "invalid_action":
+        first = "ab unfinished reasoning"
+    summary = "ab summary reasoning\n</think>\n\nSUMMARY_SENTINEL"
+    if kind == "unclosed_summary":
+        summary = "ab unfinished SUMMARY_SENTINEL"
+    replies = [(first, "stop" if compact else "length")]
+    if compact:
+        replies.append((summary, "length"))
+    replies.append(("ab done.\n</think>\n\n```bash\nsubmit\n```", "stop"))
+    pending = iter(replies)
+    prompts, sampled, commands = [], [], []
+
+    async def decode(prompt, limit):
+        text, reason = next(pending)
+        # Preserve a noncanonical BPE split even when no sampled EOS closes the turn.
+        tokens = [token for char in text for token in tokenizer.encode(char, add_special_tokens=False)]
+        if reason == "stop":
+            tokens.append(tokenizer.eos_token_id)
+        assert len(tokens) <= limit
+        prompts.append(list(prompt))
+        sampled.append(tokens)
+        ids = np.asarray(tokens, dtype=np.int32)[:, None] if topk else None
+        logps = np.full((len(tokens), 1), -0.5, dtype=np.float32) if topk else None
+        return Completion(tokens, [-0.5] * len(tokens), text, reason, ids, logps)
+
+    async def execute(command, timeout):
+        commands.append(command)
+        return {
+            "returncode": 0,
+            "output": "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" if command == "submit" else "observation " * 500,
+        }
+
+    config = TerminalConfig(compaction="summary" if compact else "none", continue_on_length=True)
+    agent = TerminalAgent(tokenizer=tokenizer, decode=decode, execute=execute, config=config)
+    initial_size = len(agent._encode([{"role": "system", "content": _SYSTEM}, {"role": "user", "content": "task"}]))
+    agent.options = replace(config, compact_threshold=initial_size + 500)
+    trace = await agent.run_async("task")
+    assert trace.exit_status == "Submitted" and not trace.truncated
+    assert trace.truncated_turns == 1 and trace.critic_memory_exact
+    assert trace.n_compactions == int(compact)
+    assert commands == (["submit"] if kind == "invalid_action" else ["inspect", "submit"])
+    assert trace.n_format_errors == int(kind == "invalid_action")
+    assert trace.generated_tokens == sum(map(len, sampled)) == sum(sum(s.loss_mask) for s in trace.segments)
+    for prompt, tokens in zip(prompts, sampled, strict=True):
+        assert any(s.tokens[: len(prompt) + len(tokens)] == prompt + tokens for s in trace.segments)
+    # The inserted end marker closes the truncated turn without a value/policy target.
+    call_index = 1 if compact else 0
+    segment = trace.segments[0]
+    closing_position = len(prompts[call_index]) + len(sampled[call_index])
+    response_position = closing_position - segment.response_start
+    assert segment.tokens[closing_position] == tokenizer.eos_token_id
+    assert segment.loss_mask[response_position] == trace.logprobs[0][response_position] == 0
+    if compact:
+        assert "SUMMARY_SENTINEL" in tokenizer.decode(prompts[-1])
+    else:
+        assert prompts[1][: closing_position + 1] == prompts[0] + sampled[0] + [tokenizer.eos_token_id]
+    for i, (actor, critic) in enumerate(zip(trace.segments, trace.critic_segments, strict=True)):
+        assert actor.tokens[-actor.response_length :] == critic.tokens[-critic.response_length :]
+        assert actor.loss_mask == critic.loss_mask
+        if topk:
+            active = np.asarray(actor.loss_mask, dtype=bool)
+            ids, logps = trace.topk_token_ids[i], trace.topk_log_probs[i]
+            assert ids.shape == logps.shape == (actor.response_length, 1)
+            assert (ids[~active] == -1).all() and np.isneginf(logps[~active]).all()
+            np.testing.assert_array_equal(ids[active, 0], np.asarray(actor.tokens[-actor.response_length :])[active])
+
+
+@pytest.mark.asyncio
+async def test_continuing_truncated_turn_still_obeys_episode_budget(tokenizer):
+    text = "Done inspecting.\n</think>\n\n```bash\ninspect\n```"
+    tokens = tokenizer.encode(text, add_special_tokens=False)
+    requests, commands = [], []
+
+    async def decode(prompt, limit):
+        requests.append(limit)
+        return Completion(tokens, [-0.5] * len(tokens), text, "length")
+
+    async def execute(command, timeout):
+        commands.append(command)
+        return {"returncode": 0, "output": "ok"}
+
+    agent = TerminalAgent(
+        tokenizer=tokenizer,
+        decode=decode,
+        execute=execute,
+        config=TerminalConfig(compaction="none", continue_on_length=True, max_total_tokens=len(tokens)),
+    )
+    trace = await agent.run_async("task")
+    assert trace.exit_status == "ContextOrTokenLimit" and trace.truncated
+    assert trace.truncated_turns == 1 and trace.generated_tokens == len(tokens)
+    assert requests == [len(tokens)] and commands == ["inspect"]

@@ -272,6 +272,7 @@ async def generate(input):
             **reward_metadata,
             "segment": i,
             "n_compactions": trace.n_compactions,
+            "truncated_turns": trace.truncated_turns,
             "n_format_errors": trace.n_format_errors,
             "n_commands": trace.n_commands,
             "exit_status": trace.exit_status,

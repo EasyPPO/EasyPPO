@@ -81,7 +81,18 @@ def test_one_step_async_recipe(launcher, monkeypatch, tmp_path, mode, centering)
     assert value("--rollout-batch-size") == batch and value("--over-sampling-batch-size") == oversample
     assert value("--n-samples-per-prompt") == "16" and value("--global-batch-size") == "512"
     assert value("--terminal-max-total-tokens") == "120000"
-    assert value("--terminal-max-context-tokens") == value("--rollout-max-context-len") == "32768"
+    frontier = args.dataset == "frontiersmith"
+    assert (
+        value("--terminal-max-context-tokens")
+        == value("--rollout-max-context-len")
+        == ("131072" if frontier else "32768")
+    )
+    assert (
+        value("--terminal-max-new-tokens") == value("--rollout-max-response-len") == ("24576" if frontier else "8192")
+    )
+    assert value("--terminal-summary-tokens") == ("3072" if frontier else "2048")
+    assert value("--terminal-compact-threshold") == ("12000" if frontier else "24576")
+    assert ("--terminal-continue-on-length" in argv) == frontier
     assert value("--max-tokens-per-gpu") == "262144"
     assert value("--tensor-model-parallel-size") == "4"
     assert int(value("--actor-num-nodes")) * int(value("--actor-num-gpus-per-node")) == 16
@@ -156,7 +167,7 @@ def test_one_step_async_recipe(launcher, monkeypatch, tmp_path, mode, centering)
         {"top_p": 0},
         {"top_k": 0},
         {"max_steps": 0},
-        {"compact_threshold": 32768},
+        {"compact_threshold": 131072},
         {"weight_decay": -1},
         {"critic_weights_only": True},
         {"score_centering_candidates": 0},

@@ -26,8 +26,7 @@ critic-memory options.
 | Adam / weight decay | `(0.9, 0.999)`, epsilon `1e-8`, decay `0.01` |
 | Critic-only phase | 30 outer rounds |
 | Training duration | 200 outer rounds |
-| Actor context / action / summary | 32768 / 8192 / 2048 tokens |
-| Compaction threshold | 24576 context tokens, subject to remaining-window reserve |
+| Generation settings | [FrontierSmith/FCS](RECIPES.md#frontiersmith--fcs) or [TMAX/Terminal-Bench](RECIPES.md#tmax--terminal-bench) |
 | Cumulative generation | 120000 tokens per episode, including summaries |
 | Training episode packing limit | 262144 tokens |
 | Default GPU allocation | 16 trainer + 48 rollout B200s |

@@ -66,8 +66,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-temperature 1.0
   --rollout-top-p 1.0
   --rollout-top-k -1
-  --rollout-max-response-len 8192
-  --rollout-max-context-len 32768
+  --rollout-max-response-len 24576
+  --rollout-max-context-len 131072
   --update-weights-interval 1
   --eval-config 'base64:<frozen-pseudo-file-1>'
   --eval-interval 10
@@ -77,18 +77,19 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-temperature 1.0
   --eval-top-p 1.0
   --eval-top-k -1
-  --eval-max-response-len 8192
+  --eval-max-response-len 24576
   --chat-template-path <REPO_ROOT>/agentic_critic/qwen3_5_interleaved.jinja
   --terminal-enable-thinking
+  --terminal-continue-on-length
   --terminal-tasks-dir /root/datasets/harbor
   --terminal-trials-dir /root/shared_data/260101-000000-000/trials
   --terminal-environment docker
   --terminal-compaction summary
-  --terminal-compact-threshold 24576
-  --terminal-max-context-tokens 32768
-  --terminal-max-new-tokens 8192
+  --terminal-compact-threshold 12000
+  --terminal-max-context-tokens 131072
+  --terminal-max-new-tokens 24576
   --terminal-max-total-tokens 120000
-  --terminal-summary-tokens 2048
+  --terminal-summary-tokens 3072
   --terminal-max-steps 300
   --terminal-command-timeout 120
   --terminal-max-output-chars 16000
