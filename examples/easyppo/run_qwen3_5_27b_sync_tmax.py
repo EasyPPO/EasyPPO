@@ -1,20 +1,23 @@
 """Synchronous clipped PPO on TMAX-15K with Terminal-Bench 2.1 evaluation.
 
-Requires the Miles GPU environment, Docker and a prejoined Ray cluster for
-multi-node training. The prepare action downloads the pinned model/data and
+Requires the Miles GPU environment, Docker, MASTER_ADDR and an SSH hostfile
+for multi-node training. The prepare action downloads the pinned model/data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
 and support full_detach or actor-summary memory. Score centering is disabled.
 
 Args:
     --action: prepare, train or all (default).
+    --ray-hostfile: Hosts to join over root SSH (default: /root/mpi_rack_hostfile).
+    --join-ray-workers / --no-join-ray-workers: Automatically join workers (default: on);
+        MILES_SCRIPT_EXTERNAL_RAY=1 skips joining an already managed cluster.
     --dataset: Fixed to tmax; use the FrontierSmith launcher for FrontierSmith.
     --critic-context-mode: full_detach (default) or actor-summary.
     --model-dir / --data-dir / --output-dir: Shared model, task and run paths.
     --score-centering: Rejected; this entrypoint uses ordinary clipped PPO.
     --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and five samples by default.
 
-Example (run from the head of a prejoined four-node Ray cluster):
-    MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \\
+Example (run on the head of a four-node allocation):
+    MASTER_ADDR=10.0.0.10 python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \\
         --action train --critic-context-mode actor-summary --model-dir /shared/models \\
         --data-dir /shared/data --output-dir /shared/runs
 """

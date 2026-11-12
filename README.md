@@ -71,35 +71,38 @@ site's RDMA devices when using an InfiniBand/RDMA fabric. Provision CPU, RAM,
 image storage, and package/image network access for Harbor trials separately
 from GPU allocation.
 
-## 2. Join the Ray cluster
+## 2. Configure Ray startup
 
-Choose the allocation for the launcher you will run: **eight eight-GPU nodes
-for async**, or **four eight-GPU nodes for sync**. Start Ray after installation
-in each Miles worker environment. Replace the example IPs with the cluster's
-reachable data-network addresses. Set `NCCL_SOCKET_IFNAME` and
-`GLOO_SOCKET_IFNAME` to the site's network interface when needed.
-
-On the head node:
+The launchers start the Ray head and join workers over SSH automatically. Use
+**eight eight-GPU nodes for async**, or **four eight-GPU nodes for sync**.
+On the head, write an MPI-style hostfile with one node per line. For sync:
 
 ```bash
+cat > /shared/ray-hostfile <<'EOF'
+10.0.0.10 slots=8
+10.0.0.11 slots=8
+10.0.0.12 slots=8
+10.0.0.13 slots=8
+EOF
 export MASTER_ADDR=10.0.0.10
-ray start --head --node-ip-address "$MASTER_ADDR" --port=6379 \
-  --dashboard-host=0.0.0.0 --num-gpus=8 --disable-usage-stats
 ```
 
-Join the remaining seven async workers or three sync workers, using each
-node's own IP:
+For async, list all eight allocated nodes. Pass `--ray-hostfile /shared/ray-hostfile`
+when launching; its default is `/root/mpi_rack_hostfile`. Include the head using
+exactly `MASTER_ADDR`, or set `MLP_WORKER_0_HOST` to its hostfile name so it is skipped.
+Do not put the independent CPU judge host in this file.
 
-```bash
-export MASTER_ADDR=10.0.0.10
-export EASYPPO_NODE_IP=10.0.0.11
-ray start --address "$MASTER_ADDR:6379" --node-ip-address "$EASYPPO_NODE_IP" \
-  --num-gpus=8 --disable-usage-stats
-```
+The head must have passwordless `ssh root@<worker>` access, and the remote SSH
+shell must run `ray` from the same configured Miles environment. With containers,
+SSH must reach the worker container environment. All workers need the prepared
+code/model/data paths. Configure `NCCL_SOCKET_IFNAME` and `GLOO_SOCKET_IFNAME` for
+the site's network when needed. Automatic startup cleans old Miles/SGLang/Ray
+processes on the listed nodes; use nodes allocated exclusively to this run.
 
-On the head, `ray status` should show eight live nodes / 64 GPUs for the async
-allocation, or four live nodes / 32 GPUs for sync. Submit from that allocation's
-head worker, with `MASTER_ADDR` still set and `MILES_SCRIPT_EXTERNAL_RAY=1`.
+Submit from the head with `MASTER_ADDR` set. No manual `ray start` is needed.
+If the platform already provides a joined Ray cluster, set
+`MILES_SCRIPT_EXTERNAL_RAY=1`; this skips head startup and SSH joining.
+`--no-join-ray-workers` disables only SSH joining.
 
 ## 3. Download the model and prepare both datasets
 
@@ -151,7 +154,7 @@ Frontier-CS trials submit to that service. On the CPU judge host (the example
 uses private address `10.0.0.20`), run:
 
 ```bash
-export FRONTIER_JUDGE_BIND_IP=10.0.0.20
+export FRONTIERCS_JUDGE_BIND_IP=10.0.0.20
 export FRONTIER_JUDGE_PORT=8081
 export JUDGE_WORKERS=8 GJ_PARALLELISM=8
 docker compose -p easyppo-frontier-judge \
@@ -165,7 +168,7 @@ private network: the upstream HTTP API has no authentication. Set
 generated tasks, not an already prepared dataset. Its single-host default is
 `http://host.docker.internal:8081` with a Linux host-gateway mapping. On multiple
 Docker hosts, use the actual judge host address. The Compose port defaults to
-8081 on all interfaces; set `FRONTIER_JUDGE_BIND_IP` to the private interface.
+8081 on all interfaces; set `FRONTIERCS_JUDGE_BIND_IP` to the private interface.
 
 The service uses the pinned Frontier-CS judge implementation for both corpora,
 with their own pinned checkers/test data and unchanged problem IDs. Scores come
@@ -232,13 +235,13 @@ experiment. All four launchers accept the same context-mode and path options.
 
 ```bash
 for MEMORY_MODE in full_detach actor-summary; do
-  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
-    --action train --critic-context-mode "$MEMORY_MODE" \
+  python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
+    --action train --ray-hostfile /shared/ray-hostfile --critic-context-mode "$MEMORY_MODE" \
     --run-id "async-fs-$MEMORY_MODE" \
     --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 
-  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
-    --action train --critic-context-mode "$MEMORY_MODE" \
+  python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
+    --action train --ray-hostfile /shared/ray-hostfile --critic-context-mode "$MEMORY_MODE" \
     --run-id "async-tmax-$MEMORY_MODE" \
     --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 done
@@ -248,13 +251,13 @@ done
 
 ```bash
 for MEMORY_MODE in full_detach actor-summary; do
-  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-    --action train --critic-context-mode "$MEMORY_MODE" \
+  python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+    --action train --ray-hostfile /shared/ray-hostfile --critic-context-mode "$MEMORY_MODE" \
     --run-id "sync-fs-$MEMORY_MODE" \
     --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 
-  MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \
-    --action train --critic-context-mode "$MEMORY_MODE" \
+  python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \
+    --action train --ray-hostfile /shared/ray-hostfile --critic-context-mode "$MEMORY_MODE" \
     --run-id "sync-tmax-$MEMORY_MODE" \
     --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 done
@@ -315,8 +318,8 @@ Resume with the **same launcher, dataset, context mode, run ID, and trainer
 topology**:
 
 ```bash
-MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
-  --action train --critic-context-mode full_detach \
+python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \
+  --action train --ray-hostfile /shared/ray-hostfile --critic-context-mode full_detach \
   --run-id async-fs-full_detach \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs
 ```

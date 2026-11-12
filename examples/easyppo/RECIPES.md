@@ -271,8 +271,10 @@ and logs. Plan shared storage and host memory for the actual response length.
 | Async default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
 | Sync default: 4 nodes × 8 B200 | 8 GPUs, TP4 × DP2, PP=CP=1 | 24 GPUs, 6 TP4 engines |
 
-Each recipe uses disjoint training and rollout pools. Join the corresponding
-8-node async or 4-node sync Ray allocation before launch. Async can also use the
+Each recipe uses disjoint training and rollout pools. Set `MASTER_ADDR` and
+provide the corresponding 8-node async or 4-node sync allocation through
+`--ray-hostfile`; the launcher starts Ray and joins workers over SSH. Set
+`MILES_SCRIPT_EXTERNAL_RAY=1` to use a cluster already managed by the platform. Async can also use the
 32-GPU layout with `--num-nodes 4 --trainer-num-nodes 1`; sync can request the
 64-GPU layout with `--num-nodes 8 --trainer-num-nodes 2`.
 

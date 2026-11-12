@@ -16,6 +16,12 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 from typer.testing import CliRunner
 
 
+@pytest.fixture(autouse=True)
+def ray_head_address(monkeypatch):
+    monkeypatch.setenv("MASTER_ADDR", "10.0.0.10")
+    monkeypatch.delenv("MILES_SCRIPT_EXTERNAL_RAY", raising=False)
+
+
 @pytest.fixture(params=["frontiersmith", "tmax"])
 def launcher(request):
     return import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{request.param}.py")

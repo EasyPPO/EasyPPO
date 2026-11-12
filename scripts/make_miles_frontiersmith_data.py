@@ -148,7 +148,7 @@ def _write_shared_judge(
         "privileged": True,
         "shm_size": "4g",
         "ulimits": {"stack": {"soft": -1, "hard": -1}},
-        "ports": ["${FRONTIER_JUDGE_BIND_IP:-0.0.0.0}:${FRONTIER_JUDGE_PORT:-8081}:8081"],
+        "ports": ["${FRONTIERCS_JUDGE_BIND_IP:-0.0.0.0}:${FRONTIER_JUDGE_PORT:-8081}:8081"],
         "environment": {
             "PORT": "8081",
             "GJ_ADDR": "http://127.0.0.1:5050",

@@ -6,7 +6,9 @@ these parameter blocks while choosing the synchronous driver and PPO actor loss.
 
 import json
 import math
+import os
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -14,6 +16,8 @@ from typing import Literal
 import agentic_critic
 
 from miles.utils.external_utils import command_utils as U
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
+from miles.utils.workers.types import ClusterBackend
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     action: Literal["prepare", "train", "all"] = "all"
     num_nodes: int = 8
     num_gpus_per_node: int = 8
+    join_ray_workers: bool = True
+    ray_hostfile: str = "/root/mpi_rack_hostfile"
     trainer_num_nodes: int = 2
     rollout_num_gpus: int = 0
     dataset: Literal["frontiersmith", "tmax"] = "frontiersmith"
@@ -569,6 +575,25 @@ def _resource_args(args: ScriptArgs) -> list[str]:
     ]
 
 
+def _ray_worker_startup(args: ScriptArgs, backend: BaseCommandBackend) -> Callable[[], None] | None:
+    if (
+        args.cluster_backend != ClusterBackend.RAY
+        or not args.join_ray_workers
+        or U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
+    ):
+        return None
+    master_addr = os.environ.get("MASTER_ADDR")
+    if not master_addr:
+        raise ValueError("Set MASTER_ADDR to the Ray head address reachable from every host in --ray-hostfile")
+    head_host = os.environ.get("MLP_WORKER_0_HOST")
+    return lambda: backend.ssh_start_ray_workers(
+        master_addr=master_addr,
+        num_gpus_per_node=args.num_gpus_per_node,
+        hostfile=shlex.quote(args.ray_hostfile),
+        head_host=head_host,
+    )
+
+
 def _execute(args: ScriptArgs, *, dataset: str, script_path: str) -> None:
     _validate_dataset(args, dataset=dataset)
     _validate(args)
@@ -580,11 +605,13 @@ def _execute(args: ScriptArgs, *, dataset: str, script_path: str) -> None:
         + _resource_args(args)
         + shlex.split(U.get_default_wandb_args(script_path, run_id=args.run_id))
     )
-    args.create_backend().execute_train(
+    backend = args.create_backend()
+    backend.execute_train(
         train_args=shlex.join(argv),
         train_script="train_async.py",
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="qwen3.5-27B",
         megatron_path=args.megatron_path,
         extra_env_vars={"PYTHONPATH": args.megatron_path},
+        before_ray_job_submit=_ray_worker_startup(args, backend),
     )

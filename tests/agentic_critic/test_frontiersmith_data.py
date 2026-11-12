@@ -209,6 +209,7 @@ def test_single_judge_mounts_exact_training_and_evaluation_fixtures(tmp_path):
     compose = yaml.safe_load((tmp_path / "frontier-judge.compose.yaml").read_text())
     assert set(compose["services"]) == {"judge"}
     judge = compose["services"]["judge"]
+    assert judge["ports"] == ["${FRONTIERCS_JUDGE_BIND_IP:-0.0.0.0}:${FRONTIER_JUDGE_PORT:-8081}:8081"]
     assert judge["build"]["context"] == str(tmp_path / "eval/algorithmic")
     mounts = {mount["target"]: mount for mount in judge["volumes"] if isinstance(mount, dict)}
     assert set(mounts) == {f"/app/problems/{pid}" for pid in ("frontiersmith_0", "frontiersmith_2", "0", "306")}

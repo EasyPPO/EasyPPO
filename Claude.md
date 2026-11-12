@@ -93,7 +93,7 @@ judge 上的 `/shared` 在这里是本地目录，不必是共享文件系统。
 **SSH 登录独立 judge 机器后**，在该机器的 Docker daemon 上启动服务：
 
 ```bash
-export FRONTIER_JUDGE_BIND_IP=0.0.0.0
+export FRONTIERCS_JUDGE_BIND_IP=0.0.0.0
 export FRONTIER_JUDGE_PORT=8081
 export JUDGE_WORKERS=8 GJ_PARALLELISM=8
 docker compose -p easyppo-frontier-judge \
@@ -101,7 +101,7 @@ docker compose -p easyppo-frontier-judge \
 curl --fail http://127.0.0.1:8081/problems
 ```
 
-`FRONTIER_JUDGE_BIND_IP=0.0.0.0` 表示在 judge 本机所有接口发布端口；也可以改为 judge 本机实际网卡的 IP，不能填写另一台机器的 IP。任务配置中的 `--judge-url http://10.0.0.20:8081` 则是客户端访问地址，不能填 `0.0.0.0`。两者用途不同；存在 NAT 或代理时，访问地址和本机监听地址也可能不同。
+`FRONTIERCS_JUDGE_BIND_IP=0.0.0.0` 表示在 judge 本机所有接口发布端口；也可以改为 judge 本机实际网卡的 IP，不能填写另一台机器的 IP。任务配置中的 `--judge-url http://10.0.0.20:8081` 则是客户端访问地址，不能填 `0.0.0.0`。两者用途不同；存在 NAT 或代理时，访问地址和本机监听地址也可能不同。
 
 所有 trial 向这一个服务提交请求，共享队列、worker pool 和 checker 缓存。原生分数按 100 归一化为 reward；任务结束不会关闭 judge。HTTP API 没有认证，需通过私网及防火墙限制访问，确保每个任务容器都能连接配置的 URL。judge 本机的 curl 成功只代表服务已启动，不代表训练侧网络已经可达。
 
@@ -128,32 +128,30 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 
 ## 4. 正式训练
 
-在 head worker 中启动 Ray：
+启动脚本会自动启动 Ray head，再按 hostfile 通过 SSH 启动其余 worker，无需手动执行 `ray start`。在 head 上准备 hostfile，第一列为节点 IP，包括 head；下面是默认同步训练的 4 个节点：
 
 ```bash
-export MASTER_ADDR=10.0.0.10
-ray start --head --node-ip-address "$MASTER_ADDR" --port=6379 \
-  --dashboard-host=0.0.0.0 --num-gpus=8 --disable-usage-stats
+cat > /shared/ray-hostfile <<'EOF'
+10.0.0.10 slots=8
+10.0.0.11 slots=8
+10.0.0.12 slots=8
+10.0.0.13 slots=8
+EOF
 ```
 
-分别在另外三个 worker 中执行，`EASYPPO_NODE_IP` 使用当前节点自己的地址：
+hostfile 只包含本次训练的 GPU 节点，不包含独立 judge。`MASTER_ADDR` 必须是其他节点可达的 head IP，并与 hostfile 中的 head 行一致；若该行使用主机名，则另设 `MLP_WORKER_0_HOST` 为该名称，以便跳过 head。
 
-```bash
-export MASTER_ADDR=10.0.0.10
-export EASYPPO_NODE_IP=10.0.0.11
-ray start --address "$MASTER_ADDR:6379" \
-  --node-ip-address "$EASYPPO_NODE_IP" --num-gpus=8 --disable-usage-stats
-```
+head 需要能免密 `ssh root@<worker IP>`，且远端 SSH shell 中的 `ray` 来自已配置好的 Miles 环境。若训练环境在容器里，SSH 必须进入该容器环境，而不是宿主机的另一套 Python。各 worker 需能访问相同代码、模型和数据路径。按站点网络配置 `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME`。
 
-在 head 上用 `ray status` 确认 4 个节点、32 张 GPU。后续从 head 的同一 Miles 环境提交，设置 `MILES_SCRIPT_EXTERNAL_RAY=1` 使用已经加入的集群。按站点网络配置 `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME`。
+自动启动会清理这些节点上的旧 Miles/SGLang/Ray 进程，hostfile 应只列出本次独占使用的节点。若平台已经管理好 Ray 集群，设置 `MILES_SCRIPT_EXTERNAL_RAY=1`，脚本会跳过 head 启动和 SSH worker 加入；`--no-join-ray-workers` 则只关闭 SSH 加入。
 
 从 head 提交正式训练：
 
 ```bash
 cd /shared/EasyPPO
 export MASTER_ADDR=10.0.0.10
-MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+  --action train --ray-hostfile /shared/ray-hostfile \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
   --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs \

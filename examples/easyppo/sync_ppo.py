@@ -72,11 +72,13 @@ def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:
         + _recipe._resource_args(args)
         + shlex.split(U.get_default_wandb_args(script_path, run_id=args.run_id))
     )
-    args.create_backend().execute_train(
+    backend = args.create_backend()
+    backend.execute_train(
         train_args=shlex.join(argv),
         train_script="train.py",
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="qwen3.5-27B",
         megatron_path=args.megatron_path,
         extra_env_vars={"PYTHONPATH": args.megatron_path},
+        before_ray_job_submit=_recipe._ray_worker_startup(args, backend),
     )
