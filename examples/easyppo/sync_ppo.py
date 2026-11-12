@@ -2,7 +2,7 @@
 
 import shlex
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 from examples.easyppo import async_ppo as _recipe
 
@@ -17,7 +17,7 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
     score_centering_candidates: int = 0
     score_centering_is: Literal["none"] = "none"
     score_centering_recompute_loss: bool = False
-    save_retain_interval: Optional[int] = None
+    max_keep: int = 0
 
     def __post_init__(self):
         super().__post_init__()
@@ -68,8 +68,8 @@ def _prepare(args: _SyncScriptArgs, *, dataset: str) -> None:
 def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:
     _validate(args, dataset=dataset)
     checkpoint_args = _recipe._checkpoint_args(args)
-    if args.save_retain_interval is not None:
-        checkpoint_args += ["--save-retain-interval", str(args.save_retain_interval)]
+    if args.max_keep:
+        checkpoint_args += ["--max-keep", str(args.max_keep)]
     argv = (
         checkpoint_args
         + _recipe._rollout_args(args)

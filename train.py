@@ -1,15 +1,13 @@
 import asyncio
 import logging
 import os
-import re
-import shutil
-from pathlib import Path
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.training_utils.checkpoint.tracker import (
-    CHECKPOINT_TRACKER_FILENAME,
-    read_checkpoint_tracker_iteration,
+from miles.backends.training_utils.checkpoint.ppo import (
+    add_checkpoint_arguments,
+    finalize_checkpoint,
+    prepare_checkpoint_retention,
 )
 from miles.ray.placement_group import (
     create_rollout_components,
@@ -18,80 +16,20 @@ from miles.ray.placement_group import (
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.rollout.data_source import compute_global_dataset_state_path
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
-from miles.utils.file_utils import atomic_write_text
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.lora.utils import lora_rollout_enabled
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.orchestration_utils import init_orchestration_script
 
 logger = logging.getLogger(__name__)
-PPO_CHECKPOINT_TRACKER = "latest_complete_ppo_checkpoint.txt"
-
-
-def _recover_checkpoint(args) -> None:
-    if args.finetune or (args.requested_load, args.critic_load) != (args.save, args.critic_save):
-        return
-
-    actor_root, critic_root = Path(args.save), Path(args.critic_save)
-    tracker = actor_root / PPO_CHECKPOINT_TRACKER
-    actor_step = read_checkpoint_tracker_iteration(actor_root)
-    critic_step = read_checkpoint_tracker_iteration(critic_root)
-    if not tracker.is_file():
-        # Adopt a complete checkpoint written before the joint tracker was introduced.
-        if actor_step is not None and actor_step == critic_step:
-            state_path = Path(compute_global_dataset_state_path(args.save, rollout_id=actor_step))
-            if not args.rollout_global_dataset or state_path.is_file():
-                atomic_write_text(tracker, f"{actor_step}\n")
-        return
-
-    rollout_id = int(tracker.read_text())
-    for root, step in ((actor_root, actor_step), (critic_root, critic_step)):
-        if step != rollout_id:
-            logger.warning("Recovering %s from rollout %s to complete PPO checkpoint %s", root, step, rollout_id)
-            atomic_write_text(root / CHECKPOINT_TRACKER_FILENAME, f"{rollout_id}\n")
-        for path in root.glob("iter_*"):
-            match = re.fullmatch(r"iter_(\d{7,})", path.name)
-            if match and int(match[1]) > rollout_id and path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-
-
-def _finalize_checkpoint(args, rollout_id: int, retain_interval: int) -> None:
-    roots = (Path(args.save), Path(args.critic_save))
-    state_path = Path(compute_global_dataset_state_path(args.save, rollout_id=rollout_id))
-    if any(read_checkpoint_tracker_iteration(root) != rollout_id for root in roots) or (
-        args.rollout_global_dataset and not state_path.is_file()
-    ):
-        raise RuntimeError(f"Checkpoint {rollout_id} is incomplete. Skipping checkpoint pruning.")
-
-    tracker = roots[0] / PPO_CHECKPOINT_TRACKER
-    previous = int(tracker.read_text()) if tracker.is_file() else 0
-    atomic_write_text(tracker, f"{rollout_id}\n")
-    if 0 < previous < rollout_id and previous % retain_interval:
-        for root in roots:
-            path = root / f"iter_{previous:07d}"
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-        Path(compute_global_dataset_state_path(args.save, rollout_id=previous)).unlink(missing_ok=True)
 
 
 async def train(args, *, disposer: Disposer):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    retain_interval = getattr(args, "save_retain_interval", None) if args.use_critic else None
-    if retain_interval is not None:
-        if (
-            args.megatron_config is not None
-            or not args.save
-            or not args.critic_save
-            or Path(args.save).resolve() == Path(args.critic_save).resolve()
-        ):
-            raise ValueError("PPO checkpoint retention requires separate actor and critic save directories")
-        # Megatron would prune the actor and critic independently as each save completes.
-        args.save_retain_interval = None
-        _recover_checkpoint(args)
+    max_keep = prepare_checkpoint_retention(args)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
 
     if args.colocate_memory_peak_device == "gpu":
@@ -143,7 +81,7 @@ async def train(args, *, disposer: Disposer):
             await actor_model.clear_memory()
 
     async def save(rollout_id, force_sync=False):
-        force_sync = force_sync or rollout_id == args.num_rollout - 1 or retain_interval is not None
+        force_sync = force_sync or rollout_id == args.num_rollout - 1 or max_keep > 0
 
         async def save_training_model(model):
             if args.use_critic and args.offload_train:
@@ -158,8 +96,8 @@ async def train(args, *, disposer: Disposer):
         if args.use_critic:
             await save_training_model(critic_model)
         await rollout_executor.save(rollout_id)
-        if retain_interval is not None:
-            _finalize_checkpoint(args, rollout_id, retain_interval)
+        if max_keep > 0:
+            finalize_checkpoint(args, rollout_id, max_keep)
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
@@ -250,5 +188,5 @@ async def train(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = parse_args(add_custom_arguments=add_checkpoint_arguments)
     asyncio.run(with_disposer(train, args))
