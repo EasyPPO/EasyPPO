@@ -32,14 +32,6 @@ logger = logging.getLogger(__name__)
 PPO_CHECKPOINT_TRACKER = "latest_complete_ppo_checkpoint.txt"
 
 
-def _checkpoint_directories(root: Path) -> dict[int, Path]:
-    return {
-        int(match[1]): path
-        for path in root.iterdir()
-        if (match := re.fullmatch(r"iter_(\d{7,})", path.name)) and path.is_dir() and not path.is_symlink()
-    }
-
-
 def _recover_checkpoint(args) -> None:
     if args.finetune or (args.requested_load, args.critic_load) != (args.save, args.critic_save):
         return
@@ -61,8 +53,9 @@ def _recover_checkpoint(args) -> None:
         if step != rollout_id:
             logger.warning("Recovering %s from rollout %s to complete PPO checkpoint %s", root, step, rollout_id)
             atomic_write_text(root / CHECKPOINT_TRACKER_FILENAME, f"{rollout_id}\n")
-        for iteration, path in _checkpoint_directories(root).items():
-            if iteration > rollout_id:
+        for path in root.glob("iter_*"):
+            match = re.fullmatch(r"iter_(\d{7,})", path.name)
+            if match and int(match[1]) > rollout_id and path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
 
 
@@ -74,21 +67,15 @@ def _finalize_checkpoint(args, rollout_id: int, retain_interval: int) -> None:
     ):
         raise RuntimeError(f"Checkpoint {rollout_id} is incomplete. Skipping checkpoint pruning.")
 
-    iterations_by_root = [_checkpoint_directories(root) for root in roots]
-    actor, critic = iterations_by_root
-    if rollout_id not in actor or rollout_id not in critic:
-        raise RuntimeError(f"Checkpoint directories for rollout {rollout_id} are missing. Skipping checkpoint pruning.")
-
-    atomic_write_text(roots[0] / PPO_CHECKPOINT_TRACKER, f"{rollout_id}\n")
-    for iteration in sorted(actor.keys() | critic.keys()):
-        if iteration >= rollout_id:
-            break
-        if iteration == 0 or iteration % retain_interval == 0:
-            continue
-        Path(compute_global_dataset_state_path(args.save, rollout_id=iteration)).unlink(missing_ok=True)
-        for checkpoints in iterations_by_root:
-            if iteration in checkpoints:
-                shutil.rmtree(checkpoints[iteration])
+    tracker = roots[0] / PPO_CHECKPOINT_TRACKER
+    previous = int(tracker.read_text()) if tracker.is_file() else 0
+    atomic_write_text(tracker, f"{rollout_id}\n")
+    if 0 < previous < rollout_id and previous % retain_interval:
+        for root in roots:
+            path = root / f"iter_{previous:07d}"
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+        Path(compute_global_dataset_state_path(args.save, rollout_id=previous)).unlink(missing_ok=True)
 
 
 async def train(args, *, disposer: Disposer):
