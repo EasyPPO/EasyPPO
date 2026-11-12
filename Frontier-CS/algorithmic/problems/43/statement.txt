@@ -1,0 +1,67 @@
+Bigger Sokoban 40k
+Time Limit: 2 seconds
+Memory Limit: 1024 MB
+
+Problem
+Sokoban is a famous puzzle game where a player moves around in a grid and pushes boxes to their storage locations.
+
+Bigger Sokoban is a variation of Sokoban where both the boxes and the storage locations are larger than 1×1.
+In this version, both boxes and storage locations are 2×2 in size.
+
+The rules are the same as in the original Sokoban:
+
+- Each cell in the grid is either empty or a wall.
+- Some 2×2 areas of empty squares contain a box, and some 2×2 areas are marked as storage locations.
+- The player may move up, down, left, or right into adjacent empty squares, but cannot pass through walls, boxes, or go outside the grid.
+- If the player moves into a box, the box is pushed one square in that direction, provided that doing so does not push it into a wall, another box, or outside the grid.
+- Boxes cannot be pulled.
+- The number of boxes equals the number of storage locations.
+- The puzzle is solved when all boxes are placed on the storage locations.
+
+The grid must satisfy the following constraints:
+- The grid contains one box and one storage location (each 2×2).
+- The player, the box, and the storage location must not overlap.
+- 1 ≤ N, M, N + M ≤ 100
+
+Input
+There is no input for this problem.
+
+Output
+On the first line, print two integers N and M, the grid size.
+Then print N lines of length M, describing the grid.
+Each character must be one of the following:
+- '.' : empty square
+- '#' : wall
+- 'P' : player
+- 'B' : box (2×2 block)
+- 'S' : storage location (2×2 block)
+
+The grid must contain exactly:
+- 1 player (P)
+- 4 'B' cells forming a single 2×2 square
+- 4 'S' cells forming a single 2×2 square
+The grid must be solvable.
+
+Example Output
+(Note: This is just an example of correct format.)
+5 6
+....SS
+....SS
+.#BB#.
+..BB.P
+......
+
+## Scoring
+
+Let x be d, the shortest solution length of the constructed puzzle. A larger shortest solution length is better. The physical reference (the 60-point level) is a=63000. Define the lower-band continuation:
+
+    L(x) = 60*x/63000.
+
+For positive x and positive physical reference a, define the improvement factor r=x/a. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (multiplication by e). A zero maximization objective is not a full-score exception. All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.

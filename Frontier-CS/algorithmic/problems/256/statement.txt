@@ -1,0 +1,83 @@
+Problem: Palindromic Paths
+
+Time limit: 1 second
+
+Memory limit: 256 MB
+
+This is an interactive problem.
+
+You are given a grid n * n, where n is odd. Rows are enumerated from 1 to n from up to down, columns are enumerated from 1 to n from left to right. Cell, standing on the intersection of row x and column y, is denoted by (x, y).
+
+Every cell contains 0 or 1. It is known that the top-left cell contains 1, and the bottom-right cell contains 0.
+
+We want to know numbers in all cells of the grid. To do so we can ask the following questions:
+"? x1 y1 x2 y2", where 1 <= x1 <= x2 <= n, 1 <= y1 <= y2 <= n, and x1 + y1 + 2 <= x2 + y2.
+In other words, we output two different cells (x1, y1) and (x2, y2) of the grid such that we can get from the first to the second by moving only to the right and down, and they aren't adjacent.
+
+As a response to such question you will be told if there exists a path between (x1, y1) and (x2, y2), going only to the right or down, numbers in cells of which form a palindrome.
+
+Determine all cells of the grid. It can be shown that the answer always exists.
+
+Input
+
+The first line contains odd integer n (3 <= n < 50) -- the side of the grid.
+
+Interaction Protocol
+
+You begin the interaction by reading n.
+
+To ask a question about cells (x1, y1), (x2, y2) in a separate line output "? x1 y1 x2 y2".
+Numbers in the query have to satisfy 1 <= x1 <= x2 <= n, 1 <= y1 <= y2 <= n, and x1 + y1 + 2 <= x2 + y2.
+Don't forget to 'flush', to get the answer.
+
+In response, you will receive 1, if there exists a path going from (x1, y1) to (x2, y2) only to the right or down, numbers in cells of which form a palindrome, and 0 otherwise.
+
+In case your query is invalid, the program will print -1 and will finish interaction. You will receive Wrong Answer verdict. Make sure to exit immediately to avoid getting other verdicts.
+
+When you determine numbers in all cells, output "!".
+Then output n lines, the i-th of which is a string of length n, corresponding to numbers in the i-th row of the grid.
+
+After printing a query do not forget to output end of line and flush the output.
+Otherwise, you will get Idleness limit exceeded. To do this, use:
+- fflush(stdout) or cout.flush() in C++;
+- System.out.flush() in Java;
+- flush(output) in Pascal;
+- stdout.flush() in Python;
+- see documentation for other languages.
+
+Scoring
+
+The physical objective is per-case grid query count Q_j; smaller is better. The physical reference is `a = floor(n_j*n_j/2)`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(2*n_j*n_j-Q_j)/(2*n_j*n_j-floor(n_j*n_j/2)))^2.
+
+A valid solution with `Q_j=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / Q_j
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Apply this mapping to each internal case, then average the points. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+Example Input:
+3
+1
+0
+0
+1
+0
+1
+0
+0
+
+Example Output:
+? 1 1 2 3
+? 1 2 3 3
+? 2 2 3 3
+? 1 2 3 2
+? 2 1 2 3
+!
+100
+001
+000

@@ -1,0 +1,62 @@
+Sequence Shift (moqueve)
+
+Problem Description:
+You need to sort a permutation of $1\sim n$ on a strange computer.
+
+You can choose a number $x$, and then each time you can cyclically shift a segment of length $x$ to the left or right (the leftmost/rightmost element moves to the rightmost/leftmost position) (shift amount is $1$).
+
+Please restore the sequence to $1\sim n$ within $230\times n$ operations.
+
+Input Format:
+The first line contains a single integer $n$.
+
+The second line contains $n$ integers, representing the sequence $a$.
+
+Output Format:
+The first line contains a single integer $x$, the chosen segment length.
+
+The second line contains a single integer $m$, the number of operations.
+
+The next $m$ lines each contain three integers $l$, $r$, $d$: the first two represent the shift interval (it must satisfy $r - l + 1 = x$, $1 \le l \le r \le n$), and the last one represents the direction, where $0$ means left and $1$ means right.
+
+Example:
+Input:
+5
+4 2 3 5 1
+
+Output:
+3
+3
+3 5 1
+1 3 1
+2 4 0
+
+Explanation:
+- Right shift (3,5): sequence becomes 4,2,1,3,5
+- Right shift (1,3): sequence becomes 1,4,2,3,5
+- Left shift (2,4): sequence becomes 1,2,3,4,5
+
+Constraints:
+- $n \leq 1000$
+- The sequence $a$ is a permutation of $1\sim n$
+
+Scoring:
+
+The physical objective is number of tree operations T; smaller is better. The physical reference is `a = 23*n`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(230*n-T)/(207*n)).
+
+A valid solution with `T=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / T
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+Time limit:
+5 seconds
+
+Memory limit:
+512 MB

@@ -1,0 +1,66 @@
+You are given a map of an area consisting of unit squares, where each square is either open or occupied by a wall.
+At the beginning, you are placed in one of the open unit squares, but you do not know which square it is or what direction you face.
+ Any two individual open spaces are indistinguishable, and likewise for walls. You may walk around the area, at each step observing the distance to the next wall in the direction you face.
+The goal is to determine your exact position on the map.
+
+InteractionThe first line of input contains two integers $r$ and $c$ ($1 \le r, c \le 100$) specifying the size of the map.
+ This is followed by $r$ lines, each containing $c$ characters. Each of these characters is either a dot (.) denoting an open square, or a number sign (#) denoting a square occupied by a wall.
+At least one of the squares is open. You know you start in one of the open squares on the map, facing one of the four cardinal directions, but your position and direction are not given in the input.
+All squares outside the map area are considered walls.
+
+Interaction then proceeds in rounds. In each round, one line becomes available, containing a single integer $d$ ($0 \le d \le 99$) indicating that you see a wall in front of you at distance $d$.
+If the input is -1, the program should terminate immediately
+This means there are exactly $d$ open squares between your square and the closest wall in the current direction.
+You should then output a line containing one of the following:
+"left" to turn 90 degrees to the left,
+"right" to turn 90 degrees to the right,
+"step" to move one square forward in your current direction,
+"yes i j" to claim that your current position is row $i$, column $j$ ($1 \le i \le r$, $1 \le j \le c$),
+"no" to claim that no matter what you do, it will not be possible to reliably determine your position.
+If you output yes or no, interaction stops and your program should terminate. Otherwise, a new interaction round begins.
+
+Constraint: In order to be accepted, your solution must never step into a wall, and you must minimize the number of interaction rounds used to determine your position (or to conclude that it is impossible).
+
+Example 1:
+Input:
+3 3
+##.
+#..
+...
+
+Output:
+interactor: 1
+user: right
+interactor: 1
+user: step
+interator: 0
+user: left
+interator: 0
+user: right
+interator: 0
+user: right
+interator: 1
+user: yes 2 2
+
+Scoring:
+
+The physical objective is round count C=userSteps including final answer; smaller is better. The physical reference is `a = stdSteps`; matching a positive reference earns 60 points.
+
+stdSteps is the positive reference round count; every command, including the final answer, counts as one round.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(2*stdSteps-C)/stdSteps).
+
+A valid solution with `C=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / C
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+Time limit:
+15 seconds
+
+Memory limit:
+1024 MB

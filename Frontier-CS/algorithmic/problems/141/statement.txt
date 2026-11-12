@@ -1,0 +1,91 @@
+Bakery Survey
+
+This is an interactive problem.
+
+Your city has n bakeries (where n is a power of 2), and bakery i specializes in one type of cake a_i.
+
+You want to determine d — the number of distinct cake types available in the city.
+
+You don't know the values of a_1, ..., a_n. However, your friend can help you by tasting cakes. Your friend has a memory capacity of k (where k is also a power of 2), which works as follows:
+
+Your friend's memory is a queue S. You can perform two types of operations:
+
+1. Query operation: Ask your friend to taste the cake from bakery c. This will:
+   - Tell you whether a_c is already in S (the last k cake types tasted)
+   - Add a_c to the end of S
+   - If |S| > k, remove the front element from S
+
+2. Reset operation: Clear your friend's memory, making S empty.
+
+Your goal is to find d while minimizing the total cost of operations.
+
+This problem is graded based on the total cost of operations. The cost is calculated as:
+Total Cost = (number of resets) × n + (number of queries) + 1
+
+
+You must use at most 100,000 operations in total.
+
+Input
+
+The first line contains two integers n and k (1 ≤ k ≤ n ≤ 1024, both k and n are powers of 2).
+
+Interaction
+
+To perform an operation, output one line in one of the following formats:
+
+? c — Ask your friend to taste the cake from bakery c (1 ≤ c ≤ n).
+R — Reset your friend's memory.
+
+After a query operation, read a single character:
+- Y (Yes) if a_c is in the memory S
+- N (No) if a_c is not in the memory S
+
+When you have found the answer, output:
+! d — where d is the number of distinct cake types.
+
+After printing the answer, your program should terminate immediately.
+
+To flush your output, use:
+- fflush(stdout) or cout.flush() in C++
+- System.out.flush() in Java
+- stdout.flush() in Python
+
+Example
+
+Input:
+4 2
+N
+N
+Y
+N
+N
+N
+N
+
+Output:
+? 1
+? 2
+? 3
+? 4
+R
+? 4
+? 1
+? 2
+! 3
+
+Time limit: 4 seconds
+Memory limit: 512 MB
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+C=n*reset_count+query_count+1 is the total operation cost, and R>0 is the stored reference cost. Define the objective x=C, its physical reference a=A=R, and the lower-band calculation L=60*R/C.
+
+```text
+P = 100,                         if x = 0
+P = L,                           if L <= 60 and x > 0
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Zero is tested on the valid original count, cost, or error, before the lower-band test. A zero reference anchor has no positive improvement branch; positive objectives keep their lower-band score. The +1 in C is part of the defined operation cost, so C is always positive. The checker reports P/100.

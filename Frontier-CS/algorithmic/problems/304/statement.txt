@@ -1,0 +1,109 @@
+# Forest Mycelium Delay Tour (Optimization Challenge)
+
+## Problem
+Vasya is mapping a forest trail network with **mushroom clearings**.
+
+The forest is modeled as an undirected connected graph with `N` clearings (vertices) and `M` trails (edges).
+At clearing `i`, mushrooms grow at a constant rate `r[i]` grams per minute, starting from **0 grams at time 0**.
+
+- Vasya starts at clearing `1` at time `t = 0`.
+- Each minute, Vasya **must** traverse exactly one trail to an adjacent clearing (no waiting).
+- When Vasya **first arrives** at a clearing `i` at time `t`, he instantly collects **all mushrooms grown there so far**, equal to `r[i] * t` grams.
+- After the first collection at clearing `i`, that clearing becomes barren and yields **0** on future visits.
+- Vasya will walk for exactly `K` minutes (i.e., traverse exactly `K` edges), ending anywhere.
+- To be feasible, his walk must visit **every clearing at least once** during times `0..K`.
+
+Your goal is to output a feasible walk that **maximizes the total collected mushroom weight**.
+
+This is an open-ended optimization task: many solutions are valid, and they receive different scores.
+
+## Input
+```
+N M K
+r1 r2 ... rN
+u1 v1
+u2 v2
+...
+uM vM
+```
+
+- `1 ≤ N ≤ 20000`
+- `N-1 ≤ M ≤ 60000`
+- `2·(N-1) ≤ K ≤ 200000`
+- `1 ≤ r[i] ≤ 10^6`
+- `1 ≤ uj, vj ≤ N`, `uj != vj`
+- The graph is connected.
+- Multiple edges may appear; self-loops do not appear.
+
+The constraints guarantee that a walk of length `K` visiting all vertices exists.
+
+## Output
+Output exactly `K` integers:
+```
+x1 x2 ... xK
+```
+where `xt` is the clearing Vasya is at **after** minute `t` (after the `t`-th move).
+
+Feasibility requirements:
+- Vasya starts at clearing `1` at time `0`.
+- For each `t = 1..K`, the move from the previous clearing to `xt` must follow an existing trail (edge).
+- Every clearing `1..N` must appear at least once among the visited clearings at times `0..K` (including the start at time 0).
+
+If the output is infeasible, the solution receives **0 score for that test**.
+
+## Objective
+Let `pos(t)` be Vasya’s clearing at time `t` (`pos(0)=1`, `pos(t)=xt` for `t≥1`).
+
+For each clearing `i`, define its first-visit time:
+- `T[i] = min { t ∈ [0..K] | pos(t) = i }`
+
+Total collected weight:
+\[
+V = \sum_{i=1}^{N} r[i] \cdot T[i]
+\]
+(Notice `T[1]=0`, so clearing 1 contributes `0`.)
+
+You must **maximize** `V`.
+
+## Scoring
+
+The physical objective is weighted walk reward V=computeValue(walk); larger is better. The physical reference is `a = 2.5*B`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 100*max(0,1-B/V) if V>0; 0 otherwise.
+
+If `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference and objective, award:
+
+    r = V / a
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+B is the reward of the deterministic baseline walk. If B=0 and V>0, no positive 60-point physical reference exists; retain the existing 100 branch.
+
+## Constraints
+- Time limit: 2 seconds
+- Memory limit: 256 MB
+
+## Example
+Sample input:
+```
+4 4 6
+5 1 4 10
+1 2
+2 3
+3 4
+1 4
+```
+
+One valid sample output:
+```
+2 3 2 1 4 3
+```
+
+Explanation (high level):
+- Path: time 0 at 1, time 1 at 2, time 2 at 3, time 3 at 2, time 4 at 1, time 5 at 4, time 6 at 3.
+- First-visit times: `T[1]=0, T[2]=1, T[3]=2, T[4]=5`.
+- Objective value: `V = 5·0 + 1·1 + 4·2 + 10·5 = 59`.
+- The judge also computes the baseline value `B` for this test, then computes S=100*max(0,1-B/V) when V>0 and applies the piecewise scoring formula above.

@@ -1,0 +1,24 @@
+version: "3.8"
+services:
+  lightcpverifier:
+    build: .
+    container_name: Competitive-Programming
+    privileged: true              # Required by go-judge
+    shm_size: "4g"                # Recommended >= 2G
+    ulimits:
+      stack:
+        soft: -1
+        hard: -1
+    environment:
+      PORT: "8081"                # Orchestrator API port
+      GJ_ADDR: "http://127.0.0.1:5050"
+      JUDGE_WORKERS: "${JUDGE_WORKERS:-8}"          # Orchestrator concurrency
+      GJ_PARALLELISM: "${GJ_PARALLELISM:-8}"         # go-judge concurrency
+      SAVE_OUTPUTS: "false"       # Save contestant outputs to submissions/sid/case_*.out
+    volumes:
+      - ${PROBLEMS_DIR:-./problems}:/app/problems
+      - ./submissions:/app/submissions
+      - ./data:/app/data          # For results/cache
+    ports:
+      - "${FRONTIERCS_JUDGE_BIND_IP:-0.0.0.0}:8081:8081"
+    restart: unless-stopped

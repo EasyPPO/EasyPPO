@@ -50,10 +50,10 @@ The launcher uses the settings below.
 
 ## Frontier-CS training
 
-Run the Frontier-CS HTTP judge separately, with the problem IDs used by your
-dataset. The optional C++ judge Dockerfile is
-[`docker/Dockerfile.fcs-judge-cpp`](../../docker/Dockerfile.fcs-judge-cpp);
-its build context is the FrontierSmith `Frontier-CS/algorithmic` directory.
+Run the bundled Frontier-CS HTTP judge separately: from
+`Frontier-CS/algorithmic`, execute `docker compose up -d --build`. Its merged
+`problems/` directory contains both FCS and FrontierSmith problem IDs. See
+[the judge guide](../../Frontier-CS/README.md).
 
 Prepare one JSONL row per problem:
 

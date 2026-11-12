@@ -1,0 +1,103 @@
+# Clique Cover Challenge
+
+## Context
+
+You are given an undirected graph G = (V, E) with |V| = N vertices.
+Each vertex must be assigned a positive integer clique ID.
+
+Your output represents a clique cover in the form of a vertex partition:
+all vertices with the same ID must form a clique.
+
+A solution is valid if and only if:
+  for every pair of distinct vertices u ≠ v,
+  if id[u] = id[v] then {u, v} ∈ E.
+
+This is a heuristic optimization problem.
+You are NOT required to find an optimal solution.
+Instead, you should try to minimize the total number of cliques used.
+
+The judge stores a reference solution's objective value. This is the physical
+reference, not a certified optimum. Matching it earns 60 points; improvements
+beyond it continue to earn points according to the scoring rule below.
+
+A clique partition in G is a proper coloring of its complement.
+
+## Task
+
+Given an undirected graph, output a valid clique cover (clique partition)
+using as few cliques as possible.
+
+## Input Format
+
+The first line contains two integers:
+  N M
+where:
+  2 ≤ N ≤ 500
+  1 ≤ M ≤ N*(N-1)/2
+
+The next M lines each contain two integers:
+  u v
+representing an undirected edge {u, v},
+with 1 ≤ u, v ≤ N and u ≠ v.
+
+Multiple edges may appear but should be treated as a single constraint.
+
+## Output Format
+
+Output exactly N lines.
+
+The i-th line must contain one integer:
+  id[i]
+
+Requirements:
+- id[i] ≥ 1
+- For any u ≠ v, if id[u] = id[v], then {u, v} ∈ E
+  (i.e., vertices sharing an ID must be pairwise adjacent)
+
+## Scoring
+
+The physical objective is number of cliques in vertex partition K; smaller is better. The physical reference is `a = R`; matching a positive reference earns 60 points.
+
+R is the positive stored reference number of cliques.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*R/K.
+
+A valid solution with `K=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / K
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+## Example
+
+Input:
+5 6
+1 2
+2 3
+3 4
+4 5
+5 1
+2 5
+
+Output:
+1
+1
+2
+2
+1
+
+Explanation:
+Vertices {1,2,5} share ID 1 and form a clique (all pairs are edges).
+Vertices {3,4} share ID 2 and form a clique.
+The solution uses K = 2 cliques.
+If the reference count is R = 2, then r = 2/2 = 1 and S(r) = 60 points.
+
+## Constraints
+
+- 2 ≤ N ≤ 500
+- 1 ≤ M ≤ N*(N-1)/2
+- Time Limit: 2.0s
+- Memory Limit: 512MB

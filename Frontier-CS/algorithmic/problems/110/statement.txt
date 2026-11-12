@@ -1,0 +1,51 @@
+TIME LIMIT: 1 minute
+MEMORY LIMIT: 814 MB
+
+Description
+Create and print an 8 × 14 table (grid) whose cells contain only digits 0–9. We say a number can be “read” from the grid if it can be formed as follows:
+
+- Start at any cell in the grid.
+- Move to an adjacent cell each step, where adjacency includes up, down, left, right, and the four diagonals (8 directions in total).
+- Append the digit in each visited cell, in order, to form the number.
+
+Additional rules:
+- You may revisit cells you have previously visited while forming a number.
+- You may not skip over cells (i.e., you cannot move to a non-adjacent cell in one step).
+- You may not remain in the same cell to append additional digits without moving (i.e., no “stay” moves).
+
+Example (conceptual, 2 × 3 grid):
+Starting at a cell containing 1, moving down, then right, then up-left, then left, you could form 12314, so the number 12,314 is readable on that grid. If you begin at the cell with 4 and traverse the reverse path, you could read 41,321. However, you cannot jump to skip cells (so 46 would be unreadable if it requires a jump), and you cannot repeatedly stay on one cell (so 11 would be unreadable if it requires staying).
+
+Input
+There is no input. DO NOT TRY TO READ INPUT. WE WILL GIVE YOU THE WRONG ANSWER VERDICT.
+
+Output
+Print an 8 × 14 grid consisting only of digits 0–9.
+
+Sample Output
+10203344536473
+01020102010201
+00000000008390
+00000000000400
+00000000000000
+55600000000089
+78900066000089
+00000789000077
+
+Explanation of Sample
+For the grid above, all integers from 1 through 112 can be read, but 113 cannot, so the raw objective is 112.
+
+NOTE: THE CODE IS REQUIRED, NOT THE ACTUAL OUTPUT, AND YOU CODE HAS 1 MINUTE TO GENERATE AN 8X14 GRID. AND DO NOT JUST HAVE THE CODE PRINT OUT A GRID YOU PREDETERMINED.
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original maximizing quantity or quality and a for its physical 60-point reference. The improvement factor is r=x/a, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+X is the largest integer such that every number 1 through X can be read from the submitted grid, and R>0 is this same quantity for the stored reference grid. Define the objective x=X, its physical reference a=A=R, and the lower-band calculation L=60*X/R.
+
+```text
+P = L,                           if L <= 60
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Zero value of a maximizing objective is not a perfect solution and earns no special full-score award. The checker reports P/100.

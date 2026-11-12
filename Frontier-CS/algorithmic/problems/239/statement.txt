@@ -1,0 +1,48 @@
+Problem Description:
+You are given a directed graph G on vertices numbered $0$ to $n$. Initially, G contains exactly n edges of the
+form $v → v + 1$. Your task is to add some edges to this graph in such a way that for every two vertices
+$v, u (v < u)$ there exists a directed path from v to u consisting of at most three edges. You can add an edge $a → c$ if and only if there exists such $b$ that edges $a → b$ and $b → c$ are already
+present in $G$.
+
+find the minimum edges you need to add such that  for every two vertices
+$v, u (v < u)$ there exists a directed path from v to u consisting of at most three edges
+
+Input
+Input a single line contains a single integer $n(0\leq n \leq 2^{12})$
+
+Output
+First line contains a single integer $m$
+
+Following $m$ lines, each line contains a three integer $u, c, v$, representing there is an edge from $u$ to $c$, and an edge from $c$ to v, you add an edge from $u$ to $v$
+
+Example 1:
+Input:
+5
+
+Output:
+2
+2 3 4
+1 2 4
+
+Scoring:
+
+The physical objective is number of added shortcut edges m; smaller is better. The physical reference is `a = m_ref`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(3*m_ref-m)/(2*m_ref)).
+
+A valid solution with `m=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / m
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+If m_ref=0, a valid zero-edge construction receives 100 and a positive edge count receives 0.
+
+Time limit:
+2 seconds
+
+Memory limit:
+512 MB

@@ -1,0 +1,43 @@
+# Max-2-SAT
+
+## Problem
+
+You are given a Boolean formula in CNF form, where each clause contains exactly two literals.
+Your task is to assign truth values to variables to satisfy as many clauses as possible.
+
+## Input Format
+
+- Line 1: two integers n and m
+  (1 ≤ n ≤ 1000, 0 ≤ m ≤ 40000)
+- Next m lines: two integers a b
+  - Each integer is in [-n, n], non-zero
+  - Positive x means variable x
+  - Negative -x means ¬x
+
+Each clause is (a ∨ b).
+
+## Output Format
+
+- Output exactly one line:
+  - n integers x₁ x₂ … xₙ
+  - each xᵢ ∈ {0, 1}
+  - 1 means TRUE, 0 means FALSE
+
+## Scoring
+
+The physical objective is number of satisfied clauses t; larger is better. The physical reference is `a = 0.6*m`; matching a positive reference earns 60 points.
+
+Here m is the total number of clauses.
+
+Define the historical low-score expression (in points):
+
+    P_low = 100*t/m.
+
+If `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference and objective, award:
+
+    r = t / a
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+For m=0, the empty instance retains 100 points.

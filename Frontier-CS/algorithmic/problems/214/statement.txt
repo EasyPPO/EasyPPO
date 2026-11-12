@@ -1,0 +1,79 @@
+Sequence Reversal (requese)
+
+Problem Description:
+You need to sort a permutation of $1\sim n$ on a strange computer.
+
+You can choose a number $x$, and then each time you can reverse a segment of length $x+1$ or a segment of length $x-1$.
+
+Please restore the sequence to $1\sim n$ within $200\times n$ operations.
+
+(Note from problem setter: The current optimal solution can achieve below 15000 operations. Please try to optimize your algorithm.)
+
+Input Format:
+The input consists of $2$ lines:
+
+The first line contains a single integer $n$.
+
+The second line contains $n$ integers, representing the sequence $a$.
+
+Output Format:
+The output consists of $m + 2$ lines.
+
+The first two lines each contain $1$ integer: $x$ and $m$, where $m$ represents the number of operations.
+
+The next $m$ lines each contain two integers, representing the left and right endpoints of the reversal interval.
+
+This problem uses a special judge (SPJ). As long as the reversal operations are correct, you will receive points.
+
+Example 1:
+Input:
+2
+2 1
+
+Output:
+1
+1
+1 2
+
+Explanation:
+- Reverse (1,2): sequence becomes 1,2
+
+Example 2:
+Input:
+5
+5 2 3 4 1
+
+Output:
+4
+2
+1 5
+2 4
+
+Explanation:
+- Reverse (1,5): sequence becomes 1,4,3,2,5
+- Reverse (2,4): sequence becomes 1,2,3,4,5
+
+Constraints:
+- For $100\%$ of the data: $1 \leq n, a_i \leq 10^3$
+- The sequence $a$ is guaranteed to be a permutation of $1\sim n$
+
+Scoring:
+
+The physical objective is number of submitted operations m=rr; smaller is better. The physical reference is `a = 20*N`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(200*N-m)/(180*N)).
+
+A valid solution with `m=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / m
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+Time limit:
+2 seconds
+
+Memory limit:
+512 MB

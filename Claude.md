@@ -9,7 +9,7 @@
 在训练集群初次获取代码：
 
 ```bash
-git clone --branch miles https://github.com/EasyPPO/EasyPPO.git /shared/EasyPPO
+git clone --branch miles https://github.com/dyxg/EasyPPO.git /shared/EasyPPO
 cd /shared/EasyPPO
 git submodule update --init third_party/compaction
 mkdir -p /shared/models /shared/data /shared/runs
@@ -44,70 +44,30 @@ docker compose version
 
 - `/shared` 在训练集群所有 worker 和任务 Docker daemon 宿主机上具有相同绝对路径与内容。
 - 容器内的 Miles worker 要挂载 `/shared` 和 `/var/run/docker.sock`，且安装 Docker CLI、Compose 插件；bind mount 的源路径由 Docker 宿主机解析。
-- 独立 judge 机器安装 Docker Engine、Compose 插件和 rsync，允许运行 privileged 容器；不需要安装 Miles、CUDA、模型或加入 Ray。部署所需文件按第 2 节复制到该机器本地磁盘。
+- 独立 judge 机器安装 Git、Docker Engine 和 Compose 插件，允许运行 privileged 容器；不需要安装 Miles、CUDA、模型或加入 Ray。
 - 训练节点有足够的主机内存承载 offload，并按集群要求配置网络和 RDMA 设备。
 - 默认 Megatron 路径是 `/root/Megatron-LM`；安装位置不同则给模型准备和训练命令都增加 `--megatron-path`。
 
 ## 2. judge 部署
 
-先准备一台独立 CPU 机器，取得它从任务容器网络可达的 IP 或 DNS 名称。下面假设实际分配的地址为 `10.0.0.20`，监听端口为 `8081`。`--judge-url` 只设置客户端请求地址，不会创建机器、配置网络或远程部署服务。跨网络部署需要先打通路由或 VPN，并允许任务容器流量访问该端口。
+仓库已内嵌 FCS judge 和合并题库，位置为 `Frontier-CS/algorithmic/`。`problems/` 中同时包含 180 道 FCS 题和 200 道 FrontierSmith 题。训练数据准备时仍选择 190 道 Smith 题用于训练、179 道 FCS 题用于评测。
 
-**在训练集群的 head 上**，使用已安装的项目环境准备题目数据和 judge 配置：
-
-```bash
-cd /shared/EasyPPO
-CUDA_VISIBLE_DEVICES='' python scripts/make_miles_frontiersmith_data.py \
-  --source-dir /shared/data/FrontierSmith \
-  --frontier-cs-source-dir /shared/data/Frontier-CS-eval \
-  --tasks-dir /shared/data/harbor \
-  --out /shared/data \
-  --judge-url http://10.0.0.20:8081 \
-  --judge-timeout 3600
-```
-
-该命令下载固定版本的题目源码，生成：
-
-```text
-/shared/data/frontiersmith.train.jsonl   # 190 道训练题
-/shared/data/fcs.eval.jsonl              # 179 道评测题
-/shared/data/harbor/                    # Harbor 任务目录
-/shared/data/frontier-judge.compose.yaml
-```
-
-judge 同时加载这 369 道题，使用固定版本 Frontier-CS judge 以及各自固定版本的 checker/testdata。
-
-**仍在 head 上**，把两份题目源码、Compose 文件和 judge Dockerfile 复制到独立 judge 机器。以下 SSH 账号需有目标目录的写权限，两端安装 rsync：
+在**独立 judge 机器**上克隆本分支，进入目录直接用 Docker Compose 构建和启动：
 
 ```bash
-export JUDGE_SSH=ubuntu@10.0.0.20
-ssh "$JUDGE_SSH" 'mkdir -p /shared/data /shared/EasyPPO/docker'
-rsync -a /shared/data/FrontierSmith /shared/data/Frontier-CS-eval \
-  "$JUDGE_SSH:/shared/data/"
-rsync -a /shared/data/frontier-judge.compose.yaml "$JUDGE_SSH:/shared/data/"
-rsync -a /shared/EasyPPO/docker/Dockerfile.fcs-judge-cpp \
-  "$JUDGE_SSH:/shared/EasyPPO/docker/"
-```
-
-judge 上的 `/shared` 在这里是本地目录，不必是共享文件系统。当前生成的 Compose 使用绝对路径，因此复制后需保持这些路径一致；若改用其他目录，必须同时修改 Compose 的 `build.context`、`build.dockerfile` 和各题目的 `volumes[].source`。不用复制模型、checkpoint 或 Harbor 任务目录到 judge。
-
-**SSH 登录独立 judge 机器后**，在该机器的 Docker daemon 上启动服务：
-
-```bash
+git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO-judge
+cd EasyPPO-judge/Frontier-CS/algorithmic
 export FRONTIERCS_JUDGE_BIND_IP=0.0.0.0
-export FRONTIER_JUDGE_PORT=8081
 export JUDGE_WORKERS=8 GJ_PARALLELISM=8
-docker compose -p easyppo-frontier-judge \
-  -f /shared/data/frontier-judge.compose.yaml up -d --build --wait
-curl --fail http://127.0.0.1:8081/problems
+docker compose up -d --build
+curl --fail --retry 10 --retry-connrefused --retry-delay 2 http://127.0.0.1:8081/problems
 ```
 
-`FRONTIERCS_JUDGE_BIND_IP=0.0.0.0` 表示在 judge 本机所有接口发布端口；也可以改为 judge 本机实际网卡的 IP，不能填写另一台机器的 IP。任务配置中的 `--judge-url http://10.0.0.20:8081` 则是客户端访问地址，不能填 `0.0.0.0`。两者用途不同；存在 NAT 或代理时，访问地址和本机监听地址也可能不同。
+所有 Harbor trial 共用这个 judge。Compose 直接挂载本目录下的 `problems/`、`data/` 和 `submissions/`，没有跨机器的文件路径依赖，也不用从训练节点生成或传输配置。judge 目录可放在任意位置。
 
-所有 trial 向这一个服务提交请求，共享队列、worker pool 和 checker 缓存。原生分数按 100 归一化为 reward；任务结束不会关闭 judge。HTTP API 没有认证，需通过私网及防火墙限制访问，确保每个任务容器都能连接配置的 URL。judge 本机的 curl 成功只代表服务已启动，不代表训练侧网络已经可达。
+`FRONTIERCS_JUDGE_BIND_IP` 是 judge 本机监听地址；训练时的 `--frontier-judge-url` 填任务容器可达的 judge IP 或 DNS，例如 `http://10.0.0.20:8081`。HTTP API 没有认证，应在可信网络中开放 8081 端口。
 
-**地址写入生成的任务配置。** 改地址或超时必须重跑数据准备；只在 `--action train` 命令中改 `--frontier-judge-url` 不会更新已有任务。默认地址 `http://host.docker.internal:8081` 只适合 judge 与任务 Docker daemon 在同一宿主机的情况，多机应显式使用 judge 私网地址。
-
-`--judge-timeout 3600` 包含排队时间；Harbor verifier 的总超时额外增加 90 秒。判题拥堵时需结合 CPU 容量调整 worker 数、生成并发和超时。
+查看日志或停止服务时，在相同目录执行 `docker compose logs -f` 或 `docker compose down`。判题记录保留在本地 `data/` 和 `submissions/`。
 
 ## 3. 模型准备
 
@@ -124,7 +84,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --output-dir /shared/runs
 ```
 
-此命令会下载固定 revision 的 `Qwen/Qwen3.5-27B`，再次准备 Frontier 数据，并转换 Megatron checkpoint。应产生 `/shared/models/Qwen3.5-27B` 和 `/shared/models/Qwen3.5-27B_torch_dist`。这里的 judge 地址必须与第 2 节一致。
+此命令会下载固定 revision 的 `Qwen/Qwen3.5-27B`，从仓库内嵌题库生成 Harbor 任务及训练/评测 JSONL，并转换 Megatron checkpoint。应产生 `/shared/models/Qwen3.5-27B` 和 `/shared/models/Qwen3.5-27B_torch_dist`。judge 地址必须指向第 2 节启动的服务。地址和超时会写入生成的任务配置，改变它们后需重新执行 prepare。
 
 ## 4. 正式训练
 

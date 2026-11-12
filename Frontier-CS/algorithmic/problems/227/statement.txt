@@ -1,0 +1,41 @@
+Given a permutation $p$ of length $n$, you need to divide it into four disjoint subsequences $a$ $b$ $c$ $d$ such that the sum of $\operatorname{LIS}(a) + \operatorname{LDS}(b) + \operatorname{LIS}(c) + \operatorname{LDS}(d)$ is maximized.
+
+- $\operatorname{LIS}(a)$ is the length of the Longest Increasing Subsequence (LIS) of $a$.
+- $\operatorname{LDS}(b)$ is the length of the Longest Decreasing Subsequence (LDS) of $b$.
+
+A permutation of length $n$ is a sequence that contains every integer from $1$ to $n$ exactly once.
+
+A subsequence of a sequence is a sequence formed by deleting any number of elements (including zero or all elements) while maintaining the order of the remaining elements. The subsequences $a$ and $b$ are disjoint, meaning they do not share any elements.
+
+## Input format
+- The first line contains an integer $n$, the length of the permutation $p$.
+- The second line contains $n$ integers $p_1, p_2, p_3, \dots, p_n$, the permutation $p$.
+
+## Output format
+- The first line contains four integers $r, s, p, q$, the lengths of the subsequences $a, b, c, d$.
+- The second line contains $r$ integers $a_1, a_2, a_3, \dots, a_r$, the subsequence $a$.
+- The third line contains $s$ integers $b_1, b_2, b_3, \dots, b_s$, the subsequence $b$.
+- The fourth line contains $p$ integers $c_1, c_2, c_3, \dots, c_p$, the subsequence $c$.
+- The fifth line contains $q$ integers $d_1, d_2, d_3, \dots, d_q$, the subsequence $d$.
+- $r, s, p, q$ must satisfy $r + s + p + q = n$
+- $a, b, c, d$ must be disjoint subsequences of $p$
+
+## Constraints
+- $1 \leq n \leq 100000$
+- $p$ is a permutation of length $n$
+
+
+Scoring
+
+The physical objective is sum of four monotone subsequence lengths L; larger is better. The physical reference is `a = 0.6*n`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 100*L/n.
+
+If `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference and objective, award:
+
+    r = L / a
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.

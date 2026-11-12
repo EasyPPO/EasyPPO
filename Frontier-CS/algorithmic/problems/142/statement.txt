@@ -1,0 +1,56 @@
+Ball Game
+
+You are given n+1 poles numbered from 1 to n+1. Initially, poles 1 through n each contain m balls stacked vertically, while pole n+1 is empty. There are n*m balls in total, with n different colors, where each color appears exactly m times.
+
+Your task is to rearrange the balls so that all balls of the same color are on the same pole. The final distribution of colors to poles does not matter, as long as each pole contains balls of at most one color.
+
+You can perform operations to move balls between poles. In one operation, you can move the topmost ball from pole x to the top of pole y, subject to the following constraints:
+- Pole x must have at least one ball
+- Pole y must have at most m-1 balls
+
+Your goal is to minimize the number of operations needed. You must use at most 2,000,000 operations.
+
+Input
+
+The first line contains two integers n and m (2 ≤ n ≤ 50, 2 ≤ m ≤ 400) — the number of colors and the number of balls of each color.
+
+The next n lines each contain m integers. The i-th line describes the color of balls on pole i from bottom to top. (colors are numbered from 1 to n).
+
+Output
+
+On the first line, print a single integer k (0 ≤ k ≤ 2,000,000) — the number of operations in your solution.
+
+The next k lines should each contain two integers x and y (1 ≤ x, y ≤ n+1, x ≠ y), indicating that you move the topmost ball from pole x to pole y.
+
+It is guaranteed that a valid solution exists.
+
+Time limit: 4 seconds
+Memory limit: 512 MB
+
+Sample Input:
+2 3
+1 1 2
+2 1 2
+
+Sample Output:
+6
+1 3
+2 3
+2 3
+3 1
+3 2
+3 2
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Q is the number of ball moves and R is the stored reference move count. Define the objective x=Q, its physical reference a=A=R, and the lower-band calculation L=60*(R+1)/(Q+1).
+
+```text
+P = 100,                         if x = 0
+P = L,                           if L <= 60 and x > 0
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Zero is tested on the valid original count, cost, or error, before the lower-band test. A zero reference anchor has no positive improvement branch; positive objectives keep their lower-band score. The +1 shift is used only in L, not in the logarithm. The checker reports P/100.

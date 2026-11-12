@@ -1,0 +1,80 @@
+Problem: Balanced Graph Partitioning (DIMACS10-style, EC & CV)
+
+Overview
+--------
+You are given an undirected, unweighted graph G = (V, E) and an integer k (a power of two).
+Assign each vertex to one of k parts so that:
+  1) the balance constraint is satisfied, and
+  2) two quality measures are minimized with equal importance:
+     • Edge Cut (EC): the number of edges whose endpoints are in different parts.
+     • Communication Volume (CV): defined below.
+
+This statement precisely defines the graph model, balance rule, metrics, I/O, and scoring.
+
+Definitions
+-----------
+Graph model
+• Input may contain duplicate edges and self-loops; the judge reduces to a simple undirected graph
+  by ignoring self-loops and merging parallel edges.
+• Vertices are labeled 1..n.
+
+Partition
+• A k-way partition is p : V → {1,2,…,k}. Empty parts are allowed.
+• k is always a power of two in the official tests.
+
+Balance constraint
+• Let n = |V| and k be given. Let ideal = ceil(n / k). Let eps be the slack from the input.
+• Every part must satisfy:  size(part) ≤ floor((1 + eps) * ideal).
+
+Edge Cut (EC)
+• EC(p) = |{ {u,v} ∈ E : p(u) ≠ p(v) }| (minimize).
+
+Communication Volume (CV)
+• For a vertex v with part P = p(v), define F(v) = number of DISTINCT other parts Q ≠ P such that
+  v has at least one neighbor in part Q.
+• For each part Q, Comm(Q) = Σ_{v : p(v)=Q} F(v).
+• CV(p) = max_{Q} Comm(Q) (minimize).
+
+Input
+-----
+Line 1:  n m k eps
+Lines 2..m+1:  u v   (1 ≤ u,v ≤ n).
+
+Output
+------
+Print exactly n integers, the labels p_1 … p_n with 1 ≤ p_i ≤ k. Whitespace is free.
+
+## Scoring
+
+The answer file stores four integers in this order: bestEC, bestCV, baselineEC, baselineCV. For each metric separately, let x be its actual cost (edge cut EC or communication volume CV), R its stored best value, and B its baseline. In the released data R=0 is an ideal theoretical lower bound, not a claim that zero is attainable. Baselines describe random balanced partitions or organizer-selected comparisons.
+
+For B>R, retain the original checker's percentage score through 60 points:
+
+    L(x) = 100*clamp((B-x)/(B-R), 0, 1).
+    a = B-0.6*(B-R) = 0.4*B+0.6*R.
+
+Here a is the actual cost at the original 60-point level. In particular, the released R=0 gives a=0.4*B, not a=0. Define the improvement factor r=a/x for positive costs. Each metric receives:
+
+    P = 100,                          if x=0;
+    P = L(x),                         if x>0 and L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+The logarithm is natural and has coefficient 1 in percentage points. On an uncapped upper branch, r=exp(P-60): each additional metric point requires dividing that metric's actual cost by e. The reference is a continuous scale and need not be an attainable integer cost. For B<=R, retain the original binary branch: award 100 if x<=R and 0 otherwise; an exact valid x=0 always receives 100.
+
+Score EC and CV separately and take their arithmetic mean. Thus doubling the improvement factor of only one metric adds ln(2)/2 to the file score while both metrics remain on their uncapped upper branches; doubling both adds ln(2). All graph and balance checks apply before scoring; invalid output receives 0. Across test files, use the arithmetic mean of file scores.
+
+
+Constraints
+-----------
+• Time:   1 s per test
+• Memory: 512 MB
+• k: power of two
+• eps = 0.03 in this dataset
+• Graphs are large and structure-rich (R-MAT, BA, SBM-like, regular/expander-ish, torus, 3D grid).
+
+Validation by the checker
+-------------------------
+• Exactly n labels read; each in [1..k].
+• Balance enforced: size(part) ≤ floor((1 + eps) * ceil(n / k)).
+• EC and CV computed on the simplified simple graph.
+• Points are awarded according to Scoring above.

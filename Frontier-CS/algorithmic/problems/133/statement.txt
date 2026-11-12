@@ -1,0 +1,43 @@
+Time limit:20 second
+Memory limit:1024 megabytes
+One day, Little Z selected n points on a piece of paper and connected them pairwise with a pencil to form n*(n-1)/2 line segments. Due to the thinness of the pencil, it can be assumed that the width of these line segments is 0.
+Looking at these line segments, Little Z fell into meditation. He believes that some of these line segments are important and need to be emphasized. Therefore, Little Z took out a brush and stroked them. A brush drawn on paper will form a circle with a circle with radius r. When stroking a line segment, the center of the brush (i.e. the center of the circle) will start from one endpoint of the line segment and trace along the line segment towards the other endpoint.
+Now, Little Z really wants to know how much area on the paper is emphasized after the stroke. Can you help him answer this question?
+
+Input
+The first line of the input file is a positive integer n (n <= 2410), representing the number of selected points.
+From the second line to the n+1 line, where the i+1 line contains two real numbers x_i and y_i (|x_i|,|y_i| <= 100.0), representing the coordinates of point i as (x_i, y_i).
+The n+2 line is a positive integer m (m <= n*(n-1)/2) , representing the number of line segments that Little Z considers important.
+From line n+3 to line n+m+2, each line has two positive integers a, b (1 <= a, b <= n), representing a line segment. Among them, a and b represent the numbering of the two endpoints of the line segment, respectively.
+In the n+m+3 line, there is a real number r (0 < r <= 5.0) representing the radius of the circle formed by the brush on the paper.
+In line n+m+4 , there are four real numbers p_1, p_2, p_3, p_4, which are legacy input parameters and do not affect the current score.
+
+Output
+Only one number per line represents the total area of the highlighted area after the stroke.
+
+Example
+standard input
+2
+1 1
+1 2
+1
+1 2
+1
+0.00001 0.001 0.1 1
+
+standard output
+5.1415927
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+E is the absolute difference between the submitted area estimate and the stored reference area. Define the objective x=E, its physical reference a=A=(2/3)*1e-6, and the lower-band calculation L=100/(1+E/1e-6).
+
+```text
+P = 100,                         if x <= 1e-9
+P = L,                           if L <= 60 and x > 1e-9
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Absolute error at most 1e-9 is treated as zero before the lower-band test. The reference areas are stored to nine decimal places, so this tolerance avoids requiring the exact rounding of the stored reference. For example, outputs 45.922141146 and 45.9221411465 both receive 100 points against reference 45.922141146. Errors above this tolerance retain the scoring curve above. The checker reports P/100.

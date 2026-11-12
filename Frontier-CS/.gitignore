@@ -1,0 +1,5 @@
+/algorithmic/data/
+/algorithmic/submissions/
+__pycache__/
+*.pyc
+!/algorithmic/problems/**/testdata/*.out

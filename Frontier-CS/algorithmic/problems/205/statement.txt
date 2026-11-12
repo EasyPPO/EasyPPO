@@ -1,0 +1,72 @@
+Sequence Transformation
+
+Problem Description:
+You are given two valid parenthesis sequences s1 and s2, both of length 2n. Your goal is to transform s1 into s2 using the minimum number of operations.
+
+Available Operations:
+- Op 1: Transform p(((A)B)C)q into p((A)B)(C)q
+- Op 2: Transform p((A)(B)C)q into p((A)B)(C)q
+- Op 3: Transform p(A)((B)C)q into p((A)B)(C)q
+- Op 4: Transform p(A)(B)(C)q into p((A)B)(C)q
+
+Where A, B, C are valid parenthesis sequences (possibly empty), and p, q are arbitrary sequences.
+
+Special Operations (Each can be used at most 2 times per case):
+- Op 5: Insert a pair of empty parentheses "()" at any position (max 2 times).
+- Op 6: Remove a pair of empty parentheses "()" from any position (max 2 times).
+
+Input Format:
+- First line: an integer n (1 <= n <= 100,000)
+- Second line: a string s1 of length 2n
+- Third line: a string s2 of length 2n
+
+Output Format:
+- First line: an integer Q (the number of operations, must not exceed 3n)
+- Next Q lines: each line contains two integers op and x
+  - op: operation number (1-6)
+  - x: position where the operation is applied
+
+Position definition:
+- For operations 1-4: x is the starting position of the leftmost '(' in the pattern
+- For operations 5-6: x is the position to insert/remove "()"
+- All positions are 0-indexed
+
+Example:
+Input:
+3
+(())()
+((()))
+
+Output:
+3
+5 6
+4 0
+6 6
+
+Explanation:
+Initial: (())()
+After Op 5 at position 6: (())()()
+After Op 4 at position 0: ((()))()
+After Op 6 at position 6: ((()))
+
+Constraints:
+- 1 <= n <= 100,000
+- Total operations must not exceed 3n.
+- Op 5 can be used at most 2 times.
+- Op 6 can be used at most 2 times.
+- Both s1 and s2 are valid parenthesis sequences.
+
+Scoring
+
+The physical objective is number of bracket operations Q; smaller is better. The physical reference is `a = 1.9*n`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(3*n-Q)/(1.1*n)).
+
+A valid solution with `Q=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / Q
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.

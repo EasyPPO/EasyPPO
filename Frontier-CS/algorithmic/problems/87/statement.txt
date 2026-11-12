@@ -1,0 +1,54 @@
+Graph Coloring
+
+You are given an undirected graph G with n nodes. Each node is colored either black (0) or white (1). You are given the initial coloring state and the target coloring state. Your task is to transform the graph from the initial state to the final state using a sequence of valid transformations.
+
+In one transformation, each node simultaneously changes its color to either:
+- Its current color (stays the same), or
+- The color of one of its neighbors
+
+Your goal is to minimize the number of transformations needed. You can use at most 20,000 transformations.
+
+Input
+The first line contains two integers n (1 ≤ n ≤ 1000) and m (1 ≤ m ≤ 1e5) — the number of nodes and edges in the graph.
+The second line contains n integers representing the initial state.
+The third line contains n integers representing the target state.
+The next m lines each contain two integers u and v, indicating an undirected edge between nodes u and v. The graph has no self-loops or multiple edges.
+It is guaranteed that a solution exists
+
+Output
+On the first line, print a single integer k — the number of transformation steps in your solution.
+The next k+1 lines should each contain n integers representing the coloring state at each step.
+
+Time limit: 2 seconds
+Memory limit: 512 MB
+
+Sample Input:
+6 6
+1 1 0 1 0 1
+1 0 0 0 1 0
+1 2
+2 3
+3 5
+5 4
+4 6
+6 5
+
+Sample Output:
+2
+1 1 0 1 0 1
+1 1 0 0 1 0
+1 0 0 0 1 0
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Q is the number of state transformations and R is the stored reference transformation count. Define the objective x=Q, its physical reference a=A=R, and the lower-band calculation L=60*(R+1)/(Q+1).
+
+```text
+P = 100,                         if x = 0
+P = L,                           if L <= 60 and x > 0
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Zero is tested on the valid original count, cost, or error, before the lower-band test. A zero reference anchor has no positive improvement branch; positive objectives keep their lower-band score. The +1 shift is used only in L, not in the logarithm. The checker reports P/100.

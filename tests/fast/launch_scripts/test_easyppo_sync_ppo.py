@@ -160,7 +160,7 @@ def test_prepare_uses_the_fixed_training_and_evaluation_corpus(launcher, monkeyp
     preparation = backend.commands[2]
     if args.dataset == "frontiersmith":
         assert preparation[1].endswith("make_miles_frontiersmith_data.py")
-        assert "--frontier-cs-source-dir" in preparation
+        assert preparation[preparation.index("--source-dir") + 1] == str(REPO_ROOT / "Frontier-CS")
         assert preparation[preparation.index("--judge-url") + 1] == args.frontier_judge_url
         assert preparation[preparation.index("--judge-timeout") + 1] == str(args.frontier_judge_timeout)
         assert args.validation_data.endswith("fcs.eval.jsonl")

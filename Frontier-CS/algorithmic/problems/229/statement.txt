@@ -1,0 +1,33 @@
+Farmer John has found historical data from $n$ consecutive days. The temperature on the $i$-th day was $t_i$. He decides to make an analysis of historical temperatures and find a subsequence of days (not necessarily consecutive) where the temperature is strictly increasing.
+
+Formally, FJ is interested in finding the length of the longest increasing subsequence (LIS) of $(t_1, t_2, \dots , t_n)$, that is, the largest possible $k$ for which it is possible to choose an increasing sequence of indices $1 \leq a_1 < a_2 < \dots < a_k \leq n$ such that $t_{a_1} < t_{a_2} < . . . < t_{a_k}$.
+
+FJ wants to find a really long subsequence and that is why he decided to cheat a bit. In one operation, he can choose a non-empty interval of days and an integer $d$ $(-x \leq d \leq x)$ and he will increase the temperature in each of those days by $d$. It is allowed to choose $d = 0$.
+What is the largest possible length of the LIS after 10 such operations?
+
+### Input Format
+
+- The first line of the input contains two space-separated integers $n$ and $x$ $(1 \leq n \leq 200000, 0 \leq x \leq 10^9)$, the number of days and the limit for the absolute value of $d$.
+- The second line contains $n$ integers $t_1, t_2, \dots , t_n$ $(1 \leq t_i \leq 10^9 )$ separated by spaces, the sequence of historical temperatures.
+
+### Output Format
+
+- The output should contain 11 lines
+- The first line should contain the largest possible length of the LIS after 10 changes
+- For each of the next lines, $i$-th line should contain three integers $l$, $r$, $d$ $(1 \leq l \leq r \leq n, -x \leq d \leq x)$, the interval of days and the change in temperature.
+
+
+### Scoring
+
+The physical objective is LIS length after ten range additions len; larger is better. The physical reference is `a = 0.6*n`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 100*len/n.
+
+If `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference and objective, award:
+
+    r = len / a
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.

@@ -1,0 +1,52 @@
+# Problem
+
+You are given an n by m grid. You want to place as many black points (cells) as possible so that no four of them form the four corners of an axis-parallel rectangle.
+
+Formally, if you place black points at positions (r, c) with 1 ≤ r ≤ n and 1 ≤ c ≤ m, your set S of chosen positions must not contain four distinct pairs (r1, c1), (r1, c2), (r2, c1), (r2, c2) with r1 ≠ r2 and c1 ≠ c2.
+
+## Input
+A single line with two integers n and m (1 ≤ n, m and n · m ≤ 100000).
+
+## Output
+Print:
+- The first line: an integer k — the number of black points you place (0 ≤ k ≤ n · m).
+- The next k lines: two integers ri and ci each (1 ≤ ri ≤ n, 1 ≤ ci ≤ m), denoting the coordinates of the i-th black point.
+
+All listed pairs must be distinct. You may print the points in any order.
+
+## Goal
+Maximize k subject to the validity constraint (no axis-parallel rectangle formed by four chosen points).
+
+## Scoring
+
+Let x be K, the number of selected points. U=floor(min(n*sqrt(m)+m,m*sqrt(n)+n,n*m)). The constraints give U>0. The physical reference (the 60-point level) is a=0.9*U. Define the lower-band continuation:
+
+    L(x) = 100*min(1,max(0,x/(1.5*U))).
+
+For positive x and positive physical reference a, define the improvement factor r=x/a. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (multiplication by e). A zero maximization objective is not a full-score exception. All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.
+
+
+## Time limit
+1 second
+
+## Memory limit
+512 MB
+
+## Sample
+Input
+2 2
+
+Output
+3
+1 1
+1 2
+2 1
+
+(The sample illustrates the format and a valid solution; for a 2×2 grid, 3 is optimal under the given constraint.)

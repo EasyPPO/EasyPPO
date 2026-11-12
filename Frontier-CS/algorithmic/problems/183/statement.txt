@@ -1,0 +1,90 @@
+# Maximum Independent Set Challenge
+
+## Context
+
+You are given an undirected graph G = (V, E) with |V| = N vertices and |E| = M edges.
+You must select a subset of vertices S ⊆ V to form an **Independent Set**.
+
+A subset S is a valid independent set if and only if:
+  for every pair of distinct vertices u, v ∈ S, there is NO edge between them.
+  (i.e., {u, v} ∉ E).
+
+This is a heuristic optimization problem.
+You are NOT required to find the theoretically optimal solution.
+Instead, you should try to **maximize** the size of the set S (denoted as |S|).
+
+Points depend on your set size relative to the stored reference; see Scoring.
+
+## Input Format
+
+The first line contains two integers:
+  N M
+where:
+  2 ≤ N ≤ 10,000
+  1 ≤ M ≤ 500,000
+
+The next M lines each contain two integers:
+  u v
+representing an undirected edge {u, v},
+with 1 ≤ u, v ≤ N and u ≠ v.
+
+Multiple edges between the same pair of vertices may appear but imply the same constraint.
+
+## Output Format
+
+Output exactly N lines.
+
+The i-th line must contain one integer x_i ∈ {0, 1}:
+- 1 indicates that vertex i is included in the independent set (i ∈ S).
+- 0 indicates that vertex i is excluded from the independent set (i ∉ S).
+
+Requirements:
+- For any pair of vertices u, v where x_u = 1 and x_v = 1, it must be true that {u, v} ∉ E.
+
+## Scoring
+
+The physical objective is independent-set cardinality K; larger is better. The physical reference is `a = R`; matching a positive reference earns 60 points.
+
+R is the positive stored reference independent-set size.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*K/R.
+
+If `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference and objective, award:
+
+    r = K / a
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+## Example
+
+Input:
+4 3
+1 2
+2 3
+3 4
+
+Output:
+1
+0
+0
+1
+
+Explanation:
+The edges are {1,2}, {2,3}, {3,4}.
+The output selects vertices 1 and 4 (S={1, 4}).
+- Is {1,4} an edge? No.
+- Vertices 2 and 3 are not selected, so their connections don't violate independence.
+Total size K = 2.
+If the stored reference independent-set size is R=2, then r=2/2=1 and P=60 points.
+
+(Note: Selecting {1, 2} would be invalid because there is an edge between them.)
+
+## Constraints
+
+- 2 ≤ N ≤ 10,000
+- 1 ≤ M ≤ 500,000
+- Time Limit: 2.0s
+- Memory Limit: 512MB

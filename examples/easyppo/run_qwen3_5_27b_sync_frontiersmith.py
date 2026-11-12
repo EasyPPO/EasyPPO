@@ -1,7 +1,7 @@
 """Synchronous clipped PPO on FrontierSmith with Frontier-CS evaluation.
 
 Requires a running shared Frontier judge, the Miles GPU environment, Docker,
-MASTER_ADDR and an SSH hostfile for multi-node training. The prepare action downloads the pinned model/data and
+MASTER_ADDR and an SSH hostfile for multi-node training. The prepare action downloads the pinned model, prepares the bundled data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
 and support full_detach or actor-summary memory. Score centering is disabled.
 

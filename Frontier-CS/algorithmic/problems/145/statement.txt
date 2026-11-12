@@ -1,0 +1,95 @@
+# Number Loop Construction
+
+You are given a fixed 12 by 12 clue template. Some cells are clue cells, and the
+remaining cells are blank. Your task is to fill every clue cell with a digit and
+construct a Number Loop puzzle.
+
+The goal has two levels:
+
+1. Make the puzzle have as few valid loop solutions as possible.
+2. Among puzzles with the same number of valid loop solutions, maximize the
+   number of clue cells equal to `1`.
+
+## Number Loop Rules
+
+A loop is drawn on the grid lines around the 12 by 12 cells.
+
+* Each grid vertex must have degree either `0` or `2`.
+* The selected grid edges must form exactly one non-empty closed loop.
+* For every clue cell containing digit `d`, exactly `d` of its four surrounding
+  grid edges must be selected.
+* Blank cells impose no clue constraint.
+
+A valid loop solution is one loop satisfying all clue constraints in your
+output puzzle.
+
+## Template
+
+Your output must preserve the following blank positions exactly. Every `?`
+position must be replaced by a digit.
+
+```text
+?   ?   ??? 
+?? ??  ?   ?
+? ? ?  ?   ?
+? ? ?  ???? 
+? ? ?  ?    
+?   ?  ?    
+            
+?  ?   ?????
+? ?      ?  
+??   ? ? ?  
+? ?  ? ? ?  
+?  ? ??? ?  
+```
+
+There are 56 clue cells.
+
+## Input Format
+
+The input contains a single integer:
+
+* `0`: each clue cell may be one of `0`, `1`, `2`, or `3`.
+* `1`: each clue cell may be one of `1`, `2`, or `3`.
+
+## Output Format
+
+Output exactly 12 lines, each with exactly 12 characters.
+
+* A blank position in the template must be output as a space.
+* A `?` position in the template must be output as an allowed digit.
+
+Trailing spaces are significant for the 12 by 12 format.
+
+## Sample Output
+
+The following output only illustrates the required 12 by 12 format. It is not
+necessarily a high-scoring construction.
+
+```text
+0   0   000 
+00 00  0   0
+0 0 0  0   0
+0 0 0  0000 
+0 0 0  0    
+0   0  0    
+            
+0  0   00000
+0 0      0  
+00   0 0 0  
+0 0  0 0 0  
+0  0 000 0  
+```
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Let c be the number of valid puzzle solutions, capped at six for classification, and let u be the number of clue cells containing 1 divided by 56. Define the base points L:
+
+```text
+c=0: 0; c>=6: 1+9u; c=5: 10+10u; c=4: 20+10u;
+c=3: 30+10u; c=2: 40+10u; c=1: 50+50u.
+```
+
+All buckets except c=1 retain L. In the unique-solution bucket use the physical deficit E=56*(1-u) and physical reference a=A=44.8: award 100 if E=0, retain L if L<=60, otherwise set x=E and r=a/x, and award min(100,60+ln(r)). Zero solutions earn zero. The primary preference for uniqueness is preserved, followed by more 1 clues within a bucket.

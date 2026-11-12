@@ -1,0 +1,39 @@
+# Graph 3-Coloring
+
+## Problem
+
+You are given an undirected graph with n vertices and m edges.
+Your task is to assign each vertex one of three colors.
+
+The objective is to minimize the number of conflicting edges.
+An edge is conflicting if its two endpoints have the same color.
+
+## Input Format
+
+- Line 1: two integers n and m (1 ≤ n ≤ 1000, 0 ≤ m ≤ n(n−1)/2)
+- Next m lines: two integers u v (1 ≤ u, v ≤ n, u ≠ v)
+
+The graph may be disconnected.
+There are no multiple edges or self-loops.
+
+## Output Format
+
+- Output exactly one line:
+  - n integers c₁ c₂ … cₙ
+  - each cᵢ ∈ {1, 2, 3}
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+E is the number of edges whose endpoints have the same color, and m is the number of graph edges. Define the objective x=E, its physical reference a=A=0.4*m, and the lower-band calculation L=100*(1-E/m) when m>0.
+
+If m=0, every valid coloring receives 100; the following rule otherwise applies.
+
+```text
+P = 100,                         if x = 0
+P = L,                           if L <= 60 and x > 0
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Zero is tested on the valid original count, cost, or error, before the lower-band test. A zero reference anchor has no positive improvement branch; positive objectives keep their lower-band score. The checker reports P/100.

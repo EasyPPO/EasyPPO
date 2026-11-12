@@ -1,0 +1,126 @@
+Story
+--------
+AtCoder's CEO Takahashi prepares for Halloween tomorrow.
+At AtCoder's Halloween party, Takahashi will dress up in disguise and receive a piece of candy from 100 employees in turn by saying, "trick or treat!"
+He prepares a square box that can contain $10\times 10$ pieces of candy in a grid pattern, and each employee puts a piece of candy in an empty space so that no candies overlap.
+There are $3$ types of candies: strawberry, watermelon, and pumpkin flavors.
+He knows which flavor of candy each employee will put in by preliminary survey, but he doesn't know where each employee will put it.
+Since he is a clean freak, he will move the pieces of candy by tilting the box forward, backward, left, or right, just once for each piece of candy received, and eventually wants to make sure that the same type of candy is clustered together as much as possible.
+Please help him by writing a program to determine the direction to tilt.
+
+Problem Statement
+--------
+There is a box that can contain $10\times 10$ pieces of candy in a grid pattern.
+The box is initially empty, and $100$ pieces of candy will be placed in order.
+There are $3$ flavors of candy, and we know in advance the flavor $f_t (1\leq f_t\leq 3)$ of the $t$-th candy.
+On the other hand, we do not know in advance to which cell each candy will be placed, and it will be chosen uniformly at random among the empty cells.
+You cannot change the order in which the pieces of candy are received.
+
+Each time you receive one piece of candy, you must tilt the box forward, backward, left, or right exactly once.
+When you tilt the box, each piece of candy moves in that direction simultaneously until it reaches the edge or hits another candy.
+For example, tilting the box forward packs the candies toward the front of each column while preserving their order within that column.
+
+Raw task objective
+--------
+The formulas in this section define the raw reward V, not final benchmark points. The Scoring section specifies the per-file award and its aggregation.
+
+We define the connectivity of pieces of candy as follows and consider the connected components.
+> Two pieces of candy are connected if and only if they are of the same flavor and can reach each other through only pieces of candy of the same flavor in the four directions (front, back, left, right).
+
+Let $n_1,\cdots,n_k$ be the list of sizes of connected components in the final state after receiving 100 pieces of candy, and let $d_i$ be the total number of pieces of candy of flavor $i$.
+The raw task reward V is
+
+\\[\mathrm{round}\left(10^6\times\frac{\sum_{i=1}^k n_i^2}{\sum_{i=1}^3 d_i^2}\right)\\]
+
+Your task is to write a program to determine the tilting directions so that you can get as high a score as possible.
+
+
+Input and Output
+--------
+First, the flavor of each piece of candy is given from Standard Input in the following format.
+~~~
+$f_1$ $f_2$ $\cdots$ $f_{100}$
+~~~
+
+Each $f_t$ is an integer value between $1$ and $3$, representing the flavor of the $t$-th piece of candy.
+
+After reading the above information, repeat the following process $100$ times.
+
+In the $t$-th process ($1\leq t\leq 100$), a single integer $p_t$ between $1$ and $101-t$ is given from Standard Input.
+Number the empty cells from $1$ to $101-t$ by scanning rows from front to back and, within each row, from left to right, skipping occupied cells.
+Then the $t$-th piece of candy is placed in the $p_t$-th empty cell.
+
+After reading $p_t$, by representing forward, backward, left, and right by `F`, `B`, `L`, and `R`, respectively, output a single character to Standard Output to indicate which direction to tilt the box.
+
+<font color="red">**The output must be followed by a new line, and you have to flush Standard Output.**</font>
+Otherwise, the submission might be judged as <span class='label label-warning' data-toggle='tooltip' data-placement='top' title="Time Limit Exceeded">TLE</span>.
+<font color="red">**Note that $p_{t+1}$ will not be given until you output the $t$-th direction.**</font>
+Since nothing happens at the 100th tilt, you may skip the output.
+
+#### Example
+
+<table class="table table-bordered">
+<thead>
+<tr>
+<th>$t$</th>
+<th>Input</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prior information</td>
+<td><pre>2 2 1 3 1 2 1 2 1 $\cdots$ 3</pre></td>
+<td></td>
+</tr>
+<tr>
+<td>1</td>
+<td><pre>3</pre></td>
+<td><pre>R</pre></td>
+</tr>
+<tr>
+<td>2</td>
+<td><pre>98</pre></td>
+<td><pre>B</pre></td>
+</tr>
+<tr>
+<td>$\vdots$</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>100</td>
+<td><pre>1</pre></td>
+<td><pre>L</pre></td>
+</tr>
+</tbody>
+</table>
+
+
+<a href="https://img.atcoder.jp/ahc015/b639c75d.html?lang=en&seed=0&output=R%0D%0AB%0D%0AB%0D%0AR%0D%0AF%0D%0AR%0D%0AF%0D%0AR%0D%0AR%0D%0AF%0D%0AB%0D%0AL%0D%0AB%0D%0AL%0D%0AF%0D%0AF%0D%0AB%0D%0AF%0D%0AB%0D%0AL%0D%0AL%0D%0AL%0D%0AL%0D%0AB%0D%0AF%0D%0AF%0D%0AR%0D%0AR%0D%0AF%0D%0AL%0D%0AL%0D%0AB%0D%0AL%0D%0AL%0D%0AL%0D%0AB%0D%0AL%0D%0AR%0D%0AF%0D%0AL%0D%0AB%0D%0AL%0D%0AF%0D%0AF%0D%0AF%0D%0AL%0D%0AL%0D%0AR%0D%0AB%0D%0AB%0D%0AF%0D%0AL%0D%0AF%0D%0AR%0D%0AB%0D%0AL%0D%0AF%0D%0AF%0D%0AR%0D%0AL%0D%0AR%0D%0AL%0D%0AR%0D%0AR%0D%0AB%0D%0AR%0D%0AB%0D%0AR%0D%0AR%0D%0AF%0D%0AB%0D%0AF%0D%0AR%0D%0AR%0D%0AF%0D%0AB%0D%0AF%0D%0AB%0D%0AF%0D%0AR%0D%0AB%0D%0AF%0D%0AF%0D%0AF%0D%0AB%0D%0AB%0D%0AL%0D%0AL%0D%0AR%0D%0AF%0D%0AB%0D%0AL%0D%0AB%0D%0AF%0D%0AB%0D%0AR%0D%0AF%0D%0AF%0D%0AL%0D%0AL%0D%0A">Show example</a>
+
+
+Input Generation
+--------
+Let $\mathrm{rand}(L,U)$ be a function that generates a uniform random integer between $L$ and $U$, inclusive.
+Each $f_t$ is generated by $\mathrm{rand}(1,3)$.
+Each $p_t$ is generated by $\mathrm{rand}(1,101-t)$.
+
+
+Tools (Input generator and visualizer)
+--------
+- <a href="https://img.atcoder.jp/ahc015/b639c75d.html?lang=en">Web version</a>: This is more powerful than the local version providing animations and manual play.
+- <a href="https://img.atcoder.jp/ahc015/b639c75d.zip">Local version</a>: You need a compilation environment of <a href="https://www.rust-lang.org/">Rust language</a>.
+	- <a href="https://img.atcoder.jp/ahc015/b639c75d_windows.zip">Pre-compiled binary for Windows</a>: If you are not familiar with the Rust language environment, please use this instead.
+
+Please be aware that sharing visualization results or discussing solutions/ideas during the contest is prohibited.
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original maximizing quantity or quality and a for its physical 60-point reference. The improvement factor is r=x/a, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Let V be the raw task reward defined in the problem, and let B and R be the stored baseline and reference rewards. They are calibration values, not assertions of optimality. The stored reward reference R is distinct from the physical reference a used in the logarithm; a is defined by the inverse or stage-specific formula below. If R<=B, set U=1000000, L=100*max(0,(V-B)/(U-B)), and T=B+0.6*(U-B). Otherwise set L=60*max(0,(V-B)/(R-B)) and T=R. For nonzero minimizing objectives, and all maximizing objectives, keep L exactly whenever L<=60. The following describes the upper band and any valid zero-cost optimum.
+
+Let X be the integer sum of squared same-color connected-component sizes, and D the sum of squared total populations of each color. Its physical reference is a=A=T*D/1e6. When L>60, take x=X, a=A, and r=x/a; award min(100,60+ln(r)).
+
+The checker reports points/100.

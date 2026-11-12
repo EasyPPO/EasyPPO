@@ -1,0 +1,45 @@
+Problem Statement
+
+There are n vertices forming a simple cycle. It is guaranteed that the graph satisfies the following property:
+
+- There exists a permutation p of length n such that for every i (1 ≤ i < n), the vertices p_i and p_{i+1} are adjacent in the graph, and also p_n and p_1 are adjacent.
+
+At the beginning of the interaction, a token is placed at a predetermined starting vertex s (1 ≤ s ≤ n).
+The value of n is hidden from the contestant. The contestant may interact with the judge in order to determine n.
+
+---
+Interaction Protocol
+
+The contestant may issue the following commands:
+
+1. walk x
+   - Input: a nonnegative integer x (0 ≤ x ≤ 10^9).
+   - Effect: the token moves x steps forward along the cycle from its current position.
+   - Output: the label of the vertex reached after the move.
+
+2. guess g
+   - Input: an integer g (1 ≤ g ≤ 10^9).
+   - Effect: ends the interaction.
+   - If g = n, the answer is considered correct. Otherwise, it is considered wrong.
+
+Constraints:
+- 1 ≤ n ≤ 10^9
+- 1 ≤ s ≤ n
+- The number of walk operations must not exceed 200000.
+
+---
+## Scoring
+
+Let x be q, the number of walk queries. For x>=1, f is linear in log10(x) between (x,f)=(1,100),(10000,95),(20000,60),(50000,30),(200000,0). The physical reference (the 60-point level) is a=1. Define the lower-band continuation:
+
+    L(x) = 0.6*f(x).
+
+For positive x and positive physical reference a, define the improvement factor r=a/x. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = 100,                          if x=0;
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (division by e). All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.

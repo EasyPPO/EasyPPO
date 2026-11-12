@@ -1,15 +1,13 @@
-"""Prepare pinned FrontierSmith synthetic problems as Harbor/Miles terminal data.
+"""Prepare bundled FrontierSmith and Frontier-CS problems as Harbor/Miles data.
 
-Install the terminal extra (the adapter is loaded from the pinned checkout):
+Install the terminal extra, then prepare the embedded corpus:
     python -m pip install -e '.[terminal]'
-    python scripts/make_miles_frontiersmith_data.py --source-dir /data/FrontierSmith \
-        --tasks-dir /data/harbor --out /data/prepared
+    python scripts/make_miles_frontiersmith_data.py \
+        --tasks-dir /data/harbor --out /data/prepared --judge-url http://judge-host:8081
 
-A missing source checkout is cloned at its pinned revision. Training uses 190
-synthetic problems after excluding 10 known aliases of Frontier-CS evaluation
-problems. Evaluation uses the official pinned 179-problem algorithmic set.
-Writes one shared judge Compose file beside the JSONL inputs. Set --judge-url
-to an address reachable from all task containers; preparation starts no services.
+Training uses 190 synthetic problems after excluding 10 known evaluation aliases.
+Evaluation uses the pinned 179-problem Frontier-CS algorithmic set. The shared
+judge is started independently with Docker Compose in Frontier-CS/algorithmic.
 """
 
 import argparse
@@ -33,25 +31,11 @@ SOURCE_URL = "https://github.com/FrontierCS/FrontierSmith.git"
 SOURCE_REVISION = "ac3046cce7a270e3177cbb41376f36e03de1d518"
 EVAL_SOURCE_URL = "https://github.com/FrontierCS/Frontier-CS.git"
 EVAL_SOURCE_REVISION = "59687e5428266a22a49cf51f981b912103bfa91d"
+DEFAULT_SOURCE_DIR = Path(__file__).resolve().parents[1] / "Frontier-CS"
 _MANIFEST = Path("data/sample_lists/frontiersmith_train_200.json")
 _ADAPTER = Path("harbor/adapters/frontier-cs-algorithm")
 DEFAULT_JUDGE_URL = "http://host.docker.internal:8081"
 DEFAULT_JUDGE_TIMEOUT = 3600
-
-
-def _prepare_source(source: Path, *, url: str = SOURCE_URL, revision: str = SOURCE_REVISION) -> None:
-    if not source.exists():
-        source.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--no-checkout", url, str(source)], check=True)
-        subprocess.run(["git", "-C", str(source), "checkout", "--detach", revision], check=True)
-    actual_revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    if actual_revision != revision:
-        raise ValueError(f"{source} must be at {revision}, found {actual_revision}; use a separate pinned checkout")
-    dirty = subprocess.check_output(
-        ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"], text=True
-    )
-    if dirty.strip():
-        raise ValueError(f"{source} has modified tracked files; preparation requires the unmodified pinned source")
 
 
 def _problem_ids(source: Path) -> list[str]:
@@ -61,18 +45,15 @@ def _problem_ids(source: Path) -> list[str]:
     if len(ids) != 200 or set(ids) != expected or manifest["num_problems"] != 200:
         raise ValueError("Expected the complete 200-problem FrontierSmith synthetic training manifest")
     for problem_id in ids:
-        directory = source / "Frontier-CS/algorithmic/problems" / problem_id
+        directory = source / "algorithmic/problems" / problem_id
         for name in ("statement.txt", "config.yaml", "chk.cc", "testdata"):
             if not (directory / name).exists():
                 raise ValueError(f"Missing FrontierSmith fixture: {directory / name}")
     return ids
 
 
-def _adapt(
-    source: Path, destination: Path, ids: list[str], *, overwrite: bool, problems_source: Path | None = None
-) -> None:
-    # Import the adapter from the validated checkout, rather than an unrelated
-    # version with the same package name elsewhere on PYTHONPATH.
+def _adapt(source: Path, destination: Path, ids: list[str], *, overwrite: bool) -> None:
+    # Import the bundled adapter rather than another version on PYTHONPATH.
     adapter_source = source / _ADAPTER / "src"
     code = """import sys
 from pathlib import Path
@@ -89,7 +70,7 @@ FrontierCSAdapter(
             "-c",
             code,
             str(adapter_source),
-            str(problems_source or source / "Frontier-CS"),
+            str(source),
             str(destination),
             str(int(overwrite)),
             *ids,
@@ -123,56 +104,6 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
         "#!/bin/bash\nset -euo pipefail\nmkdir -p /logs/verifier\npython3 /tests/evaluate.py 2>&1 | tee /logs/verifier/evaluation.log\n"
     )
     entrypoint.chmod(0o755)
-
-
-def _write_shared_judge(
-    out: Path, *, source_dir: Path, evaluation_source: Path, training_ids: list[str], evaluation_ids: list[str]
-) -> None:
-    problem_mounts = [
-        {
-            "type": "bind",
-            "source": str(source / "algorithmic/problems" / problem_id),
-            "target": f"/app/problems/{problem_id}",
-            "read_only": True,
-            "bind": {"create_host_path": False},
-        }
-        for source, ids in ((source_dir / "Frontier-CS", training_ids), (evaluation_source, evaluation_ids))
-        for problem_id in ids
-    ]
-    judge = {
-        "image": f"easyppo-frontier-judge:{EVAL_SOURCE_REVISION[:12]}",
-        "build": {
-            "context": str(evaluation_source / "algorithmic"),
-            "dockerfile": str(Path(__file__).resolve().parents[1] / "docker/Dockerfile.fcs-judge-cpp"),
-        },
-        "privileged": True,
-        "shm_size": "4g",
-        "ulimits": {"stack": {"soft": -1, "hard": -1}},
-        "ports": ["${FRONTIERCS_JUDGE_BIND_IP:-0.0.0.0}:${FRONTIER_JUDGE_PORT:-8081}:8081"],
-        "environment": {
-            "PORT": "8081",
-            "GJ_ADDR": "http://127.0.0.1:5050",
-            "JUDGE_WORKERS": "${JUDGE_WORKERS:-8}",
-            "GJ_PARALLELISM": "${GJ_PARALLELISM:-8}",
-            "SAVE_OUTPUTS": "false",
-        },
-        "volumes": [*problem_mounts, "judge-data:/app/data", "judge-submissions:/app/submissions"],
-        "healthcheck": {
-            "test": ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/problems"],
-            "interval": "10s",
-            "timeout": "5s",
-            "retries": 6,
-        },
-    }
-    (out / "frontier-judge.compose.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "services": {"judge": judge},
-                "volumes": {"judge-data": {}, "judge-submissions": {}},
-            },
-            sort_keys=False,
-        )
-    )
 
 
 def _records(
@@ -272,10 +203,9 @@ def _evaluation_records(destination: Path, root: Path, ids: list[str]) -> list[d
 
 def prepare(
     *,
-    source_dir: Path,
+    source_dir: Path = DEFAULT_SOURCE_DIR,
     tasks_dir: Path,
     out: Path,
-    frontier_cs_source_dir: Path | None = None,
     eval_count: int = 0,
     seed: int = 42,
     overwrite: bool = False,
@@ -295,15 +225,12 @@ def prepare(
     judge_url = judge_url.rstrip("/")
     source_dir = source_dir.resolve()
     tasks_dir = tasks_dir.resolve()
-    _prepare_source(source_dir)
     ids = _problem_ids(source_dir)
     aliases = _parity_aliases(source_dir)
     excluded_ids = {row["problem_id"] for row in aliases}
     if not excluded_ids <= set(ids):
         raise ValueError("Parity aliases do not belong to the synthetic training corpus")
-    frontier_cs_source_dir = (frontier_cs_source_dir or source_dir.parent / "Frontier-CS-eval").resolve()
-    _prepare_source(frontier_cs_source_dir, url=EVAL_SOURCE_URL, revision=EVAL_SOURCE_REVISION)
-    evaluation_ids = _evaluation_ids(frontier_cs_source_dir)
+    evaluation_ids = _evaluation_ids(source_dir)
     if not {row["frontiercs_id"] for row in aliases} <= set(evaluation_ids):
         raise ValueError("Parity alias targets must be in the Frontier-CS evaluation corpus")
     if not 0 <= eval_count < len(ids) - len(excluded_ids):
@@ -314,9 +241,7 @@ def prepare(
         destination, tasks_dir, ids, eval_count=eval_count, seed=seed, excluded_ids=excluded_ids
     )
     evaluation_destination = tasks_dir / "frontier-cs"
-    _adapt(
-        source_dir, evaluation_destination, evaluation_ids, overwrite=overwrite, problems_source=frontier_cs_source_dir
-    )
+    _adapt(source_dir, evaluation_destination, evaluation_ids, overwrite=overwrite)
     benchmark = _evaluation_records(evaluation_destination, tasks_dir, evaluation_ids)
     # Update excluded alias task directories too, so rerunning preparation never
     # leaves an old per-trial judge behind in the generated task tree.
@@ -324,13 +249,6 @@ def prepare(
         for config_path in directory.rglob("task.toml"):
             _install_verifier(config_path.parent, judge_url=judge_url, judge_timeout=judge_timeout)
     out.mkdir(parents=True, exist_ok=True)
-    _write_shared_judge(
-        out,
-        source_dir=source_dir,
-        evaluation_source=frontier_cs_source_dir,
-        training_ids=[pid for pid in ids if pid not in excluded_ids],
-        evaluation_ids=evaluation_ids,
-    )
     write_jsonl(out / "frontiersmith.train.jsonl", training)
     write_jsonl(out / "frontiersmith.eval.jsonl", evaluation)
     write_jsonl(out / "fcs.eval.jsonl", benchmark)
@@ -373,9 +291,8 @@ def prepare(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-dir", type=Path, required=True)
+    parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--tasks-dir", type=Path, required=True)
-    parser.add_argument("--frontier-cs-source-dir", type=Path, default=None)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--eval-count", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)

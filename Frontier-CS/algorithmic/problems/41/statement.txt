@@ -1,0 +1,56 @@
+# Problem
+
+Anton owns \(n\) umbrellas, each labeled with a distinct integer from \(1\) to \(n\). He wants to arrange some of them in a line to form a brilliant sequence of umbrellas (BSU).
+
+A sequence of \(k\) umbrellas with numbers \(a_1, a_2, \ldots, a_k\) is a BSU if:
+
+- \(a_i > a_{i-1}\) for all \(2 \le i \le k\);
+- \(\gcd(a_i, a_{i-1}) > \gcd(a_{i-1}, a_{i-2})\) for all \(3 \le i \le k\).
+
+Here, \(\gcd(x, y)\) denotes the greatest common divisor of integers \(x\) and \(y\).
+
+## Input
+A single line containing an integer \(n\) — the number of umbrellas \((1 \le n \le 10^{12})\).
+
+## Output
+Print two lines:
+
+- The first line should contain an integer \(k\), the length of your BSU \((1 \le k \le 10^6)\).
+- The second line should contain \(k\) integers \(a_1, a_2, \ldots, a_k\) \((1 \le a_i \le n)\), forming a valid BSU.
+
+## Goal
+Maximize the objective:
+\[
+V \;=\; \text{length}(\text{BSU}) \times \sum_{i=1}^{k} a_i \;=\; k \times \Big(\sum_{i=1}^{k} a_i\Big).
+\]
+
+## Scoring
+
+Let x be V=k*sum(a_i). B is k*sum(a_i) for the stored comparison construction. Its value is positive on valid tests. The physical reference (the 60-point level) is a=1.05*B. Define the lower-band continuation:
+
+    L(x) = 60*x/a.
+
+For positive x and positive physical reference a, define the improvement factor r=x/a. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (multiplication by e). A zero maximization objective is not a full-score exception. All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.
+
+
+## Time limit
+1 second
+
+## Memory limit
+512 MB
+
+## Sample
+**Input**
+22
+**Output**
+5
+1 2 4 8 16
+
+(The sample only illustrates format and validity; it is not necessarily optimal for the new objective.)

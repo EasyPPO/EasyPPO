@@ -1,0 +1,94 @@
+Problem
+You are given an integer n. Place n unit squares (side length 1) inside an axis-parallel square container of side length L so that:
+- Every unit square lies entirely inside the container.
+- Unit squares have no common interior points (touching edges/corners is allowed).
+- Each unit square may be rotated by an arbitrary angle.
+
+Your goal is to minimize L.
+
+Input
+A single integer n (1 ≤ n ≤ 100000).
+
+Output
+- First line: a real number L (the claimed container side length).
+- Next n lines: three real numbers xi, yi, ai for i = 1..n:
+  - (xi, yi) is the center of the i-th unit square.
+  - ai is its rotation angle in degrees counterclockwise, 0 ≤ ai < 180.
+
+All numbers must be finite reals. Any reasonable precision is allowed; at least 6 decimal places is recommended.
+
+Validity
+Your output is valid if and only if:
+- Containment: Every point of every unit square lies inside [0, L] × [0, L].
+- Non-overlap (interiors): The interiors of any two unit squares are disjoint. Touching along edges or at corners is allowed.
+- Angles: 0 ≤ ai < 180 for all i.
+
+The judge verifies geometry with epsilon = 1e-7:
+- Containment: A square is accepted if its maximum outward violation beyond the container is ≤ 1e-7.
+- Non-overlap: Two squares are accepted as interior-disjoint if the minimum signed distance between their boundaries is ≥ −1e-7.
+
+Invalid submissions score 0 for that test.
+
+Goal
+Minimize L subject to the validity constraints.
+
+Baseline
+A simple baseline packs all squares unrotated (ai = 0) on the unit grid, with centers at (0.5 + x, 0.5 + y), using the smallest integer-sided container that fits all n. The baseline side length is
+- L0(n) = ceil(sqrt(n)).
+
+For example, for n = 11, the baseline uses L0 = 4.000000.
+
+## Scoring
+
+Let x be L, the container side length. For non-square n, s(n) is the comparison side length stored with the test. It is the recorded comparison for n<=100 and uses s(n)=2*s(ceil(n/4)) for larger n; do not replace it by ceil(sqrt(n)). For square n, use the separate exact-target rule: 100 if L<=sqrt(n)+1e-12, otherwise 0. The physical reference (the 60-point level) is a=s(n). Define the lower-band continuation:
+
+    L(x) = 60*s(n)/x.
+
+For positive x and positive physical reference a, define the improvement factor r=a/x. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = 100,                          if x=0;
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (division by e). All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.
+
+
+Time limit
+1 second
+
+Memory limit
+512 MB
+
+Sample
+Input
+11
+
+Output
+4.000000
+0.500000 0.500000 0.000000
+1.500000 0.500000 0.000000
+2.500000 0.500000 0.000000
+3.500000 0.500000 0.000000
+0.500000 1.500000 0.000000
+1.500000 1.500000 0.000000
+2.500000 1.500000 0.000000
+3.500000 1.500000 0.000000
+0.500000 2.500000 0.000000
+1.500000 2.500000 0.000000
+2.500000 2.500000 0.000000
+
+(The sample is a valid baseline packing for n = 11 with L = 4.000000.)
+
+Additional clarifications
+- Unit squares: Side length exactly 1, centered at (xi, yi), rotated by ai degrees around the center.
+- Ordering: Squares may be listed in any order.
+- Precision: Inputs are read as doubles; small rounding differences are tolerated per epsilon.
+- Touching: Squares may touch each other and the container boundary; only interior overlap is forbidden.
+
+Design notes (for organizers and contestants)
+- The reference and integer-grid construction have different roles. Neither
+  is assumed to be the smallest possible side length for non-square n.
+- Precision: the geometric validity tolerance remains 1e-7. The scoring ratio
+  is reported with twelve decimal places to retain small improvements.

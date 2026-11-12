@@ -1,0 +1,120 @@
+# Pack the Polyominoes (Reflections Allowed)
+
+## Problem
+You are given a set of n polyominoes placed on a unit square grid. Each polyomino consists of between 1 and 10 unit cells, connected edge-to-edge (4-connectivity). Your task is to place all polyominoes—allowing **rotations, reflections, and translations**—into an axis-aligned rectangle of the grid with no overlaps and no cells outside the rectangle, minimizing the rectangle’s area.
+
+A placement specifies, for every polyomino, an integer translation, an optional reflection, and a rotation by a multiple of 90°, such that:
+
+- every cell lands on integer grid coordinates,
+- no two placed cells overlap,
+- all placed cells lie within a single axis-aligned rectangle of width W and height H.
+
+The objective is to minimize A = W × H. In case of ties on area, prefer smaller H, then smaller W.
+
+---
+
+## Input Format
+- Line 1: integer n (100 <= n <= 10^4) — number of polyominoes.
+- For each polyomino i = 1 … n:
+  - One line: integer kᵢ (1 ≤ kᵢ ≤ 10) — number of cells.
+  - Next kᵢ lines: two integers xᵢⱼ, yᵢⱼ — cell coordinates in the polyomino’s local frame.
+    These coordinates define a 4-connected polyomino.
+
+Notes:
+- Coordinates may be negative.
+- Shapes may have internal holes.
+- Shapes are defined by structure; initial placement does not matter.
+
+---
+
+## Output Format
+- Line 1: two integers W and H — width and height of the chosen rectangle.
+- Then n lines — one per polyomino i, each containing:
+$$X_i\ Y_i\ R_i\ F_i$$
+
+Where:
+- (Xᵢ, Yᵢ): integer translation
+- Rᵢ ∈ {0,1,2,3}: number of 90° clockwise rotations
+- Fᵢ ∈ {0,1}: reflection flag (**1 = reflect across the y-axis before rotation**, 0 = no reflection)
+
+All transformed cells must satisfy:
+0 ≤ xᵢⱼ′ < W, 0 ≤ yᵢⱼ′ < H
+
+---
+
+## Rules
+1. All cells occupy unit squares with integer coordinates.
+2. **Allowed transforms: reflection (optional) → rotation (0°, 90°, 180°, 270°) → translation (in that order).**
+3. Distinct polyomino cells must not overlap.
+4. Every cell must lie inside [0, W) × [0, H).
+5. Scoring: Minimize A = W × H.
+
+---
+
+## Constraints
+- 100 ≤ n ≤ 10000
+- 1 ≤ kᵢ ≤ 10
+
+---
+
+## Validation
+A solution is valid if:
+- All rules are satisfied.
+- The judge verifies non-overlap and bounding-box compliance.
+
+---
+
+## Scoring
+
+Let x be A=W*H, the rectangle area. C is the total number of occupied cells in the pieces. The physical reference (the 60-point level) is a=C/0.6. Define the lower-band continuation:
+
+    L(x) = 100*C/x.
+
+For positive x and positive physical reference a, define the improvement factor r=a/x. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = 100,                          if x=0;
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (division by e). All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.
+
+
+## Example
+
+This small example illustrates placement and scoring. Official inputs have n >= 100.
+
+Input
+```
+3
+1
+0 0
+3
+0 0
+1 0
+0 1
+4
+0 0
+1 0
+0 1
+1 1
+```
+
+Output
+```
+3 3
+2 0 0 0
+2 2 2 0
+0 0 0 0
+```
+
+This places the monomino at (2,0), rotates the triomino by 180° (R=2), and fits all shapes into a 3×3 rectangle without reflections. The pieces occupy C=8 cells and A=9, giving 60+ln((8/0.6)/9), approximately 60.393 points.
+
+---
+
+## Generation
+
+Let $S$ be the set of all pieces from size 1-10. Each piece is chosen uniformly at random with replacement from $S$.
+
+$n$ is chosen as $10^p$, where $p \sim U(2, 4)$.

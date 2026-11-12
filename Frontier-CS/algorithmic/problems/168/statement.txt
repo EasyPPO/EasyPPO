@@ -1,0 +1,111 @@
+Story
+--------
+
+At the AtCoder office, preparations are underway for a slightly belated Christmas party. CEO Takahashi has decided to go cut down rooted trees to use as the Christmas trees.
+
+Each vertex in a rooted tree has a **beauty value**, and the party venue looks more attractive if beautiful vertices are located high. However, if the rooted tree is too tall, it will hit the ceiling of the AtCoder office. Therefore, there is a limit to the height of rooted trees that can be brought into the venue.
+
+Your task is to cut out several rooted trees from a given graph to maximize the **attractiveness** of the party venue.
+
+Problem Statement
+--------
+
+You are given a connected, undirected planar graph $G$ with $N$ vertices and $M$ edges. The vertices are numbered from $0$ to $N-1$, and the edges are numbered from $0$ to $M-1$. The coordinates of vertex $v$ are $(x_v, y_v)$, and edge $i$ connects vertices $u_i$ and $v_i$. Each vertex has a **beauty value**, which is a positive integer. The **beauty value** of vertex $v$ is $A_v$.
+
+The **attractiveness** of a rooted tree $T$ is defined as follows:
+Let the **height** $h_v$ of vertex $v$ in $T$ be the number of edges in the path from the root to $v$.
+The **attractiveness** $a(T)$ of the rooted tree $T$ is defined as $a(T):=\sum_{v \in T} (h_v + 1) A_v$.
+
+Your task is to construct a set of rooted trees from the given graph $G$ that satisfies the following conditions, and make the sum of **attractiveness** as large as possible:
+
+- All edges in each rooted tree $T$ must belong to $G$.
+- Each vertex in $G$ belongs to exactly one rooted tree.
+- The height of all vertices in each rooted tree must be less than or equal to $H$.
+
+Raw task objective
+--------
+The formulas in this section define the raw reward V, not final benchmark points. The Scoring section specifies the per-file award and its aggregation.
+
+Let $F$ be the set of rooted trees you construct. The raw task reward V is $1+\sum_{T\in F}a(T)$.
+
+
+Input
+--------
+Input is given from Standard Input in the following format:
+
+~~~
+$N$ $M$ $H$
+$A_0$ $\cdots$ $A_{N-1}$
+$u_0$ $v_0$
+$\vdots$
+$u_{M-1}$ $v_{M-1}$
+$x_0$ $y_0$
+$\vdots$
+$x_{N-1}$ $y_{N-1}$
+~~~
+
+The input satisfies the following constraints:
+
+- $N = 1000$
+- $1000 \leq M \leq 3000$
+- $H = 10$
+- $1 \leq A_v \leq 100$
+- $0 \leq u_i < v_i \leq N-1$
+- $0 \leq x_v, y_v \leq 1000$
+- $(x_v, y_v)$ are all distinct.
+- All inputs are integers.
+- The given graph is a connected planar graph. If vertex $v$ is placed at coordinate $(x_v, y_v)$, and each edge is drawn as a line segment connecting its endpoints, no two edges share points other than their endpoints.
+
+Output
+--------
+Let $p_v$ be the parent of vertex $v$ in the constructed set of rooted trees.
+If $v$ is a root, let $p_v=-1$.
+Then, output to Standard Output in the following format:
+
+~~~
+$p_0$ $p_1$ $\cdots$ $p_{N-1}$
+~~~
+
+<a href="https://img.atcoder.jp/ahc041/m0Bwp9WL.html?lang=en&seed=0&output=sample">Show example</a>
+
+Your program may output multiple solutions.
+If multiple solutions are output, only the last one is used for scoring.
+You can compare multiple solutions using the web version of the visualizer.
+
+
+Input Generation
+--------
+Let $\mathrm{rand}(L,U)$ be a function that generates a uniform random integer between $L$ and $U$, inclusive.
+
+#### Generation of the graph $G$
+
+Randomly select $N$ points $(x_0,y_0),\cdots,(x_{N-1},y_{N-1})$ from the lattice points contained in a circle with center $(500,500)$ and radius $500$.
+If the Euclidean distance between $(x_i,y_i)$ and an already selected point $(x_j,y_j)$ ($j<i$) is less than or equal to $15$, we select $(x_i,y_i)$ again.
+
+For the vertex set $V$ obtained as described above, compute the [Delaunay triangulation](https://en.wikipedia.org/wiki/Delaunay_triangulation), define the edge set of the triangulation as $E$, and let $G = (V, E)$.
+
+#### Generation of the beauty values $A$
+
+For each vertex $v$, the beauty value $A_v$ is generated using $\mathrm{rand}(1, 100)$.
+
+
+Tools (Input generator, local tester and visualizer)
+--------
+
+- <a href="https://img.atcoder.jp/ahc041/m0Bwp9WL.html?lang=en">Web version</a>: This is more powerful than the local version and can display animations.
+- <a href="https://img.atcoder.jp/ahc041/m0Bwp9WL.zip">Local version</a>: You need a compilation environment of <a href="https://www.rust-lang.org">Rust language</a>.
+	- <a href="https://img.atcoder.jp/ahc041/m0Bwp9WL_windows.zip">Pre-compiled binary for Windows</a>: If you are not familiar with the Rust language environment, please use this instead.
+
+Please be aware that sharing visualization results or discussing solutions/ideas during the contest is prohibited.
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original maximizing quantity or quality and a for its physical 60-point reference. The improvement factor is r=x/a, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Let V be the raw task reward defined in the problem, and let B and R be the stored baseline and reference rewards. They are calibration values, not assertions of optimality. The stored reward reference R is distinct from the physical reference a used in the logarithm; a is defined by the inverse or stage-specific formula below. Set L=60*max(0,(V-B)/(R-B)), with R>B, and T=R. For nonzero minimizing objectives, and all maximizing objectives, keep L exactly whenever L<=60. The following describes the upper band and any valid zero-cost optimum.
+
+Let X=sum_v A_v*(depth_v+1), where A_v is the input node weight. The raw task reward is V=1+X, but the upper band compares X itself with anchor R-1. When L>60 and R>1, take x=X, a=R-1, and r=x/a; award min(100,60+ln(r)); if R=1, use the zero-reference fallback defined below.
+
+When the physical reference a=R-1 is nonpositive, no ratio to a positive physical reference exists. Preserve L when L<=60; above that threshold use calibration improvement r0=(V-B)/(R-B)>1 and award 60+ln(r0) points. This explicit fallback has natural-log coefficient 1, but r0 measures calibrated reward improvement, not a physical target ratio.
+
+The checker reports points/100.

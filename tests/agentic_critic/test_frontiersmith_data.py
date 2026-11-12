@@ -29,12 +29,12 @@ def test_complete_synthetic_manifest_is_required(tmp_path):
     ids = [f"frontiersmith_{i}" for i in range(200)]
     manifest.write_text(json.dumps({"num_problems": 200, "problems": [{"problem_id": value} for value in ids]}))
     for problem_id in ids:
-        task = tmp_path / "Frontier-CS/algorithmic/problems" / problem_id
+        task = tmp_path / "algorithmic/problems" / problem_id
         (task / "testdata").mkdir(parents=True)
         for name in ("statement.txt", "config.yaml", "chk.cc"):
             (task / name).touch()
     assert data._problem_ids(tmp_path) == ids
-    (tmp_path / "Frontier-CS/algorithmic/problems/frontiersmith_199/chk.cc").unlink()
+    (tmp_path / "algorithmic/problems/frontiersmith_199/chk.cc").unlink()
     with pytest.raises(ValueError, match="Missing FrontierSmith fixture"):
         data._problem_ids(tmp_path)
     manifest.write_text(json.dumps({"num_problems": 1, "problems": [{"problem_id": "306"}]}))
@@ -77,24 +77,13 @@ def test_incomplete_or_unexpected_tasks_and_invalid_splits_fail(tmp_path):
             data._records(destination, tmp_path, ids, eval_count=count, seed=42)
 
 
-def test_source_revision_and_tracked_changes_are_checked(monkeypatch, tmp_path):
-    answers = iter(["other-revision\n"])
-    monkeypatch.setattr(data.subprocess, "check_output", lambda *args, **kwargs: next(answers))
-    with pytest.raises(ValueError, match="must be at"):
-        data._prepare_source(tmp_path)
-    answers = iter([data.SOURCE_REVISION, " M Frontier-CS/algorithmic/problems/frontiersmith_0/chk.cc\n"])
-    with pytest.raises(ValueError, match="modified tracked files"):
-        data._prepare_source(tmp_path)
-
-
 def test_prepare_writes_separate_manifests_and_strict_verifier(monkeypatch, tmp_path):
     ids = [f"frontiersmith_{i}" for i in range(3)]
-    monkeypatch.setattr(data, "_prepare_source", lambda source, **kwargs: None)
     monkeypatch.setattr(data, "_problem_ids", lambda source: ids)
     monkeypatch.setattr(data, "_parity_aliases", lambda source: [])
     monkeypatch.setattr(data, "_evaluation_ids", lambda source: ["0", "1"])
 
-    def adapt(source, destination, selected, *, overwrite, problems_source=None):
+    def adapt(source, destination, selected, *, overwrite):
         assert not overwrite
         for problem_id in selected:
             _task(destination, problem_id)
@@ -130,12 +119,11 @@ def test_duplicate_frontiersmith_problem_ids_are_rejected(tmp_path):
 def test_default_frontiersmith_excludes_known_evaluation_aliases(monkeypatch, tmp_path):
     ids = [f"frontiersmith_{i}" for i in range(200)]
     aliases = [{"problem_id": f"frontiersmith_{i}", "frontiercs_id": str(306 + i)} for i in range(10)]
-    monkeypatch.setattr(data, "_prepare_source", lambda source, **kwargs: None)
     monkeypatch.setattr(data, "_problem_ids", lambda source: ids)
     monkeypatch.setattr(data, "_parity_aliases", lambda source: aliases)
     monkeypatch.setattr(data, "_evaluation_ids", lambda source: [str(306 + i) for i in range(10)])
 
-    def adapt(source, destination, selected, *, overwrite, problems_source=None):
+    def adapt(source, destination, selected, *, overwrite):
         for problem_id in selected:
             _task(destination, problem_id)
 
@@ -198,33 +186,30 @@ def test_trial_uses_shared_judge_without_sidecar_or_source_mounts(tmp_path):
         assert services["main"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
 
 
-def test_single_judge_mounts_exact_training_and_evaluation_fixtures(tmp_path):
-    data._write_shared_judge(
-        tmp_path,
-        source_dir=tmp_path / "train",
-        evaluation_source=tmp_path / "eval",
-        training_ids=["frontiersmith_0", "frontiersmith_2"],
-        evaluation_ids=["0", "306"],
-    )
-    compose = yaml.safe_load((tmp_path / "frontier-judge.compose.yaml").read_text())
-    assert set(compose["services"]) == {"judge"}
-    judge = compose["services"]["judge"]
-    assert judge["ports"] == ["${FRONTIERCS_JUDGE_BIND_IP:-0.0.0.0}:${FRONTIER_JUDGE_PORT:-8081}:8081"]
-    assert judge["build"]["context"] == str(tmp_path / "eval/algorithmic")
-    mounts = {mount["target"]: mount for mount in judge["volumes"] if isinstance(mount, dict)}
-    assert set(mounts) == {f"/app/problems/{pid}" for pid in ("frontiersmith_0", "frontiersmith_2", "0", "306")}
-    for target, mount in mounts.items():
-        corpus = "train/Frontier-CS" if "frontiersmith" in target else "eval"
-        assert mount["source"] == str(tmp_path / corpus / "algorithmic/problems" / Path(target).name)
-        assert mount["read_only"] and not mount["bind"]["create_host_path"]
-    assert "judge-data:/app/data" in judge["volumes"]
-    assert "judge-submissions:/app/submissions" in judge["volumes"]
+def test_bundled_judge_serves_both_corpora_from_one_directory():
+    root = data.DEFAULT_SOURCE_DIR
+    training_ids = data._problem_ids(root)
+    evaluation_ids = data._evaluation_ids(root)
+    aliases = data._parity_aliases(root)
+    assert len(training_ids) == 200 and len(evaluation_ids) == 179
+    assert not set(training_ids) & set(evaluation_ids)
+    assert len(set(training_ids) - {row["problem_id"] for row in aliases}) == 190
+    compose = yaml.safe_load((root / "algorithmic/docker-compose.yml").read_text())
+    assert set(compose["services"]) == {"lightcpverifier"}
+    judge = compose["services"]["lightcpverifier"]
+    assert judge["build"] == "."
+    assert judge["ports"] == ["${FRONTIERCS_JUDGE_BIND_IP:-0.0.0.0}:8081:8081"]
+    assert judge["volumes"] == [
+        "${PROBLEMS_DIR:-./problems}:/app/problems",
+        "./submissions:/app/submissions",
+        "./data:/app/data",
+    ]
 
 
 @pytest.mark.parametrize(
     "overrides", [{"judge_url": "not-a-url"}, {"judge_url": "file:///tmp/judge"}, {"judge_timeout": 0}]
 )
-def test_invalid_judge_configuration_fails_before_download(tmp_path, overrides):
+def test_invalid_judge_configuration_fails_before_preparation(tmp_path, overrides):
     with pytest.raises(ValueError, match="judge-"):
         data.prepare(source_dir=tmp_path / "missing", tasks_dir=tmp_path / "tasks", out=tmp_path / "out", **overrides)
     assert not (tmp_path / "missing").exists()

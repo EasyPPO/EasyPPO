@@ -1,0 +1,145 @@
+```markdown
+# Duff's Defensive Lineup
+
+## Problem
+
+Duff has `n` friends. The `i`-th friend has name `s_i` (names are not necessarily unique).
+
+Before asking Malek to collect candies, Duff may reorder her friends into a single queue. Let the final order be a permutation `p` of `1..n`, where friend `p_1` stands first, friend `p_2` stands second, and so on.
+
+Duff then issues `q` complaints. Each complaint is described by three integers `l`, `r`, and `k`.
+
+For one complaint `(l, r, k)`:
+
+- Duff looks at every **adjacent pair of seats** `(i, i+1)` such that `l <= i < r`.
+- For each such pair, she forms the merged badge string
+  `s_{p_i} + s_{p_{i+1}}`
+  (plain concatenation, with **no separator**).
+- Malek must pay
+  `occur(s_k, s_{p_i} + s_{p_{i+1}})`
+  candies for that pair, where `occur(t, x)` is the number of occurrences of string `t` as a contiguous substring of `x`. Overlapping occurrences count.
+
+Your task is to output **any permutation** of the friends. Better permutations lead to fewer total candies.
+
+This is an optimization problem: the judge will compute the total candies for your permutation.
+
+---
+
+## Input
+
+The input contains a single test case.
+
+- The first line contains two integers `n` and `q`.
+- The next `n` lines contain the names `s_1, s_2, ..., s_n`.
+- The next `q` lines each contain three integers `l`, `r`, and `k`, describing one complaint.
+
+---
+
+## Output
+
+Print one line containing a permutation of `1..n`:
+
+`p_1 p_2 ... p_n`
+
+### Feasibility requirements
+
+Your output is **feasible** if and only if:
+
+- it contains exactly `n` integers,
+- each integer is between `1` and `n`,
+- every value from `1` to `n` appears exactly once.
+
+If the output is infeasible, the score for that test file is `0`.
+
+---
+
+## Objective
+
+For a feasible permutation `p`, define its total candy cost as
+
+\[
+C(p)=\sum_{j=1}^{q}\ \sum_{i=l_j}^{r_j-1} occur\big(s_{k_j},\ s_{p_i}s_{p_{i+1}}\big),
+\]
+
+where `(l_j, r_j, k_j)` is the `j`-th complaint.
+
+Your goal is to **minimize** `C(p)`.
+
+---
+
+Scoring
+
+The physical objective is total candy/query permutation cost Y; smaller is better. The physical reference is `a = B`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*(B+1)/(Y+1).
+
+A valid solution with `Y=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / Y
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+B is the cost of the identity permutation.
+
+## Constraints
+
+- `1 <= n <= 2000`
+- `1 <= q <= 200000`
+- `1 <= |s_i| <= 40`
+- All names consist only of lowercase English letters.
+- `1 <= l < r <= n`
+- `1 <= k <= n`
+- The sum of all `|s_i|` does not exceed `100000`.
+
+- Time limit: 5 seconds
+- Memory limit: 512 MB
+
+---
+
+## Example
+
+### Input
+```text
+4 3
+a
+ba
+ab
+b
+1 4 1
+2 4 2
+1 3 3
+```
+
+### Output
+```text
+2 4 1 3
+```
+
+### Explanation
+
+The output permutation is `[2, 4, 1, 3]`, so the adjacent merged strings are:
+
+- seats `(1,2)`: `s_2 + s_4 = "ba" + "b" = "bab"`
+- seats `(2,3)`: `s_4 + s_1 = "b" + "a" = "ba"`
+- seats `(3,4)`: `s_1 + s_3 = "a" + "ab" = "aab"`
+
+Now evaluate the complaints:
+
+1. `(1, 4, 1)` uses target `s_1 = "a"` on all three adjacent pairs
+   `occur("a","bab") + occur("a","ba") + occur("a","aab") = 1 + 1 + 2 = 4`
+
+2. `(2, 4, 2)` uses target `s_2 = "ba"` on pairs `(2,3)` and `(3,4)`
+   `occur("ba","ba") + occur("ba","aab") = 1 + 0 = 1`
+
+3. `(1, 3, 3)` uses target `s_3 = "ab"` on pairs `(1,2)` and `(2,3)`
+   `occur("ab","bab") + occur("ab","ba") = 1 + 0 = 1`
+
+So the submitted cost is `Y = 4 + 1 + 1 = 6`.
+
+Here B=8 and Y=6. The historical score exceeds 60, so the score is 60+ln(8/6), approximately 60.287682 points.
+
+Any feasible permutation is accepted; lower total cost gives a better score.
+```

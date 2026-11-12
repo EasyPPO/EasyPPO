@@ -1,0 +1,57 @@
+Problem:
+Time limit: 3 seconds
+Memory limit: 512 megabytes
+The popular improv website Interpretation Impetus hosts regular improv contests and maintains a rating
+of the best performers. However, since improv can often go horribly wrong, the website is notorious for
+declaring improv contests unrated. It now holds a wager before each improv contest where the participants
+try to predict whether it will be rated or unrated, and they are now more popular than the improv itself.
+Izzy andnother participants take part in each wager. First, they each make their prediction, expressed as
+1 (“rated”) or0 (“unrated”). Izzy always goes last, so she knows the predictions of the other participants
+when making her own. Then, the actual competition takes place and it is declared either rated or unrated.
+You need to write a program that will interactively play as Izzy. There will be m wagers held in 2021,
+and Izzy’s goal is to minimize the number of wrong predictions after all those wagers. Izzy knows nothing about the other participants /emdash.cyr they might
+somehow always guess correctly, or their predictions might be correlated. Izzy’s predictions, though, do
+not aﬀect the predictions of the other participants and the decision on the contest being rated or not /emdash.cyr in
+other words, in each test case, your program always receives the same inputs, no matter what it outputs.
+Interaction Protocol
+First, a solution must read two integers n (1 ≤n ≤1000) and m (1 ≤m ≤10 000). Then, the solution
+must process m wagers. For each of them, the solution must ﬁrst read a string consisting of n 0s and 1s,
+in which the i-th character denotes the guess of the i-th participant. Then, the solution must print Izzy’s
+guess as 0 or 1. Don’t forget to ﬂush the output after printing it! Then, the solution must read the actual
+outcome, also as 0 or 1, and then proceed to the next wager, if this wasn’t the last one.
+## Scoring
+
+Let x be c, your number of wrong predictions. b is the smallest number of mistakes made by another participant. If b=0, award 100 for c=0 and 0 otherwise. The physical reference (the 60-point level) is a=b. Define the lower-band continuation:
+
+    L(x) = 60*max(0,(2*b-x)/b).
+
+For positive x and positive physical reference a, define the improvement factor r=a/x. The physical reference has r=1 and earns 60 points. For a valid output on this branch, the points P are:
+
+    P = 100,                          if x=0;
+    P = L(x),                         if L(x)<=60;
+    P = min(100,60+ln(r)),             otherwise.
+
+Here ln is the natural logarithm. In the upper branch before the 100-point cap, r=exp(P-60): each additional point requires an e-fold improvement in the physical objective (division by e). All feasibility, correctness, and hard resource-limit checks remain required; invalid output receives 0.
+
+Across test files, use the arithmetic mean of the file scores.
+
+Any prediction other than 0 or 1 is invalid, regardless of the other predictions.
+There are 200 test cases in this problem.
+Example
+standard input standard output
+3 4
+000
+1
+100
+1
+001
+0
+111
+1
+0
+0
+1
+1
+Note
+In the example, the participants made 1, 2, and 3 mistakes respectively, so b = 1. Izzy made 3 mistakes, giving L(3)=60*max(0,(2-3)/1)=0 and a score of 0 points.
+Page 12 of 14

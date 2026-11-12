@@ -1,0 +1,84 @@
+Problem Statement
+--------
+AtCoder Inc. operates a food delivery service, AtCoder Foods, that leisurely delivers food that tastes good even if it gets cold.
+This service receives a large number of delivery orders in advance, and processes multiple deliveries simultaneously to improve efficiency.
+The current service area is represented as a square area $\\{(x,y)\mid 0\leq x, y\leq 800\\}$ on a two-dimensional plane, with AtCoder's office located at the center $(400, 400)$.
+There are 1000 orders today, and the $i$ ($1\leq i\leq 1000$)-th order is a food delivery request from a restaurant in $(a_i, b_i)$ to a location in $(c_i, d_i)$.
+
+Today's quota for Takahashi, a delivery man, is to process 50 orders.
+He can freely choose a subset $S\subseteq\\{1,\cdots,1000\\}$ of size exactly 50 from the 1000 orders and deliver on a route $(x_1,y_1),\cdots,(x_n,y_n)$ satisfying the following conditions.
+
+1. For each $i\in S$, visit $(c_i, d_i)$ after visiting $(a_i,b_i)$. That is, there exists an integer pair $(s, t)$ such that $(x_s,y_s)=(a_i,b_i)$, $(x_t,y_t)=(c_i,d_i)$, and $s<t$.
+2. $(x_1,y_1)=(x_n,y_n)=(400, 400)$.
+
+After picking up food at one restaurant, he may pick up food at another restaurant or deliver food to another destination before delivering that food to the destination.
+He is so powerful that he can carry arbitrary numbers of dishes simultaneously.
+
+Moving from $(x_i,y_i)$ to $(x_{i+1},y_{i+1})$ takes time equal to the Manhattan distance $|x_i-x_{i+1}|+|y_i-y_{i+1}|$, and
+the total travel time for the delivery route is $T=\sum_{i=1}^{n-1} |x_i - x_{i+1}|+|y_i - y_{i+1}|$.
+Please optimize $S$ and delivery routes so that the total travel time is as short as possible.
+
+
+Raw task objective
+--------
+The formulas in this section define the raw reward V, not final benchmark points. The Scoring section specifies the per-file award and its aggregation.
+
+For the total travel time $T$ of the output delivery route, the raw task reward V is $\mathrm{round}(10^8/(1000+T))$.
+
+
+Input
+--------
+Input is given from Standard Input in the following format:
+
+~~~
+$a_1$ $b_1$ $c_1$ $d_1$
+$\vdots$
+$a_{1000}$ $b_{1000}$ $c_{1000}$ $d_{1000}$
+~~~
+
+Each $a_i, b_i, c_i, d_i$ is an integer between $0$ and $800$, inclusive, where $(a_i, b_i)$ represents the coordinates of the restaurant, and $(c_i, d_i)$ represents the coordinates of the destination.
+$(a_i,b_i)\neq (c_i,d_i)$ is satisfied, but for different orders $j$, there is a possibility that $\\{(a_i,b_i),(c_i,d_i)\\}\cap\\{(a_j,b_j),(c_j,d_j)\\}\neq\emptyset$.
+
+Output
+--------
+Let the set of chosen orders be $r_1,\cdots,r_m$ ($1\leq r_i\leq 1000$), and the delivery route be $(x_1,y_1),\cdots,(x_n,y_n)$ ($0\leq x_i,y_i\leq 800$), output to Standard Output in the following format.
+
+~~~
+$m$ $r_1$ $\cdots$ $r_m$
+$n$ $x_1$ $y_1$ $\cdots$ $x_n$ $y_n$
+~~~
+
+You may output multiple times for visualization purposes.
+If your program outputs multiple times, only the last output will be used for scoring.
+The final output must satisfy $m=50$, but intermediate outputs with $m\neq 50$ are allowed for visualization.
+
+
+Input Generation
+--------
+Let $\mathrm{rand}(L,U)$ be a function that generates a uniform random integer between $L$ and $U$, inclusive.
+For each $i=1,\cdots,1000$, we generate an order $(a_i, b_i, c_i, d_i)$ as follows.
+
+We generate $a_i=\mathrm{rand}(0, 800)$, $b_i=\mathrm{rand}(0, 800)$, $c_i=\mathrm{rand}(0, 800)$, and $d_i=\mathrm{rand}(0, 800)$.
+Redo the generation as long as the Manhattan distance $|a_i-c_i|+|b_i-d_i|$ is less than 100.
+
+
+Tools (Input generator and visualizer)
+--------
+- <a href="https://img.atcoder.jp/ahc006/c21daebb77aa4d38d65f4d7f7c7249.zip">Local version</a>: You need a compilation environment of <a href="https://www.rust-lang.org/">Rust language</a>.
+- <a href="https://img.atcoder.jp/ahc006/c21daebb77aa4d38d65f4d7f7c7249.html">Web version</a>: This is more powerful than the local version and can display animations.
+
+**Sharing visualization results is not allowed until the end of the contest. **
+
+{sample example}
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Let V be the raw task reward defined in the problem, and let B and R be the stored baseline and reference rewards. They are calibration values, not assertions of optimality. The stored reward reference R is distinct from the physical reference a used in the logarithm; a is defined by the inverse or stage-specific formula below. Set L=60*max(0,(V-B)/(R-B)), with R>B, and T=R. For nonzero minimizing objectives, and all maximizing objectives, keep L exactly whenever L<=60. The following describes the upper band and any valid zero-cost optimum.
+
+Here E is the actual total Manhattan route length. Use physical reference a=A=1e8/R-1000. A valid E=0 earns 100 before testing L. For E>0 and L>60, take x=E, a=A, and r=a/x; award min(100,60+ln(r)). A nonpositive anchor has no defined positive-cost logarithmic comparison, so retain the existing nonzero-cost branch.
+
+The stored reference reward is rounded. Its physical anchor is chosen by analytically inverting the unrounded reward at the center R (or T for a special branch). The lower-band condition keeps every result with the original 60-point reward at exactly 60. A rounded reward is not evidence of zero physical error or cost.
+
+The checker reports points/100.

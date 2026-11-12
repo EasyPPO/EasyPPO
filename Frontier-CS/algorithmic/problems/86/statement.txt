@@ -1,0 +1,59 @@
+Hidden Tree
+
+This is an interactive problem.
+
+There is a hidden tree with n nodes. The nodes are numbered from 1 to n. Your task is to discover the structure of this tree by asking queries.
+
+Each query consists of three distinct node numbers. The interactor will return the node that minimizes the sum of distances to these three nodes.
+
+Your goal is to determine the structure of the tree. You are allowed to make at most 20,000 queries.
+
+
+Input
+
+There is only one test case in each test file.
+
+The first line of the input contains an integer n (3 ≤ n ≤ 1000) indicating the number of nodes in the hidden tree.
+
+Interaction
+
+To ask a query, output one line. First output 0 followed by a space, then print three distinct integers from 1 to n separated by spaces. After flushing your output, your program should read a single integer representing the node that minimizes the sum of distances to the three queried nodes.
+
+When you have determined the tree structure, output one line. First output 1 followed by a space, then print n-1 pairs of integers representing the edges. The format should be: u1 v1 u2 v2 ... u(n-1) v(n-1), where each pair (ui, vi) represents an edge in the tree. All values should be separated by spaces. After flushing your output, your program should exit immediately.
+
+Note that the tree structure for each test case is pre-determined. That is, the interactor is not adaptive.
+
+To flush your output, you can use:
+- fflush(stdout) (if you use printf) or cout.flush() (if you use cout) in C and C++.
+- System.out.flush() in Java.
+- stdout.flush() in Python.
+
+Example
+
+Input:
+3
+
+2
+
+Output:
+
+0 1 2 3
+
+1 1 2 2 3
+
+Time Limit: 2 seconds
+Memory Limit: 512 MB
+
+## Scoring
+
+All feasibility and interaction limits apply before scoring; invalid output receives zero. Points are averaged over test files. For the logarithmic branch, write x for the original minimizing quantity and a for its physical 60-point reference. The improvement factor is r=a/x, and the upper-band award is P=min(100,60+ln(r)). Here ln is natural: r=1 corresponds to 60 points, and on the uncapped logarithmic upper band, r=exp(P-60). Each additional point multiplies the physical improvement factor by e (divides a minimizing objective by e or multiplies a maximizing objective by e, as applicable). The lower-band, zero-objective, and completion rules below still apply.
+
+Q is the number of tree queries and R is the stored nonnegative reference query count. Define the objective x=Q, its physical reference a=A=R, and the lower-band calculation L=60*(R+1)/(Q+1).
+
+```text
+P = 100,                         if x = 0
+P = L,                           if L <= 60 and x > 0
+P = min(100, 60 + ln(r)),      otherwise
+```
+
+Zero is tested on the valid original count, cost, or error, before the lower-band test. A zero reference anchor has no positive improvement branch; positive objectives keep their lower-band score. The +1 shift is used only in L, not in the logarithm. The checker reports P/100.

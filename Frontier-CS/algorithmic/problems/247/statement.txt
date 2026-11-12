@@ -1,0 +1,108 @@
+# Problem Statement
+
+You are given two integer sequences of length $N$: $A=(A_1, A_2, \dots, A_N)$ and $B=(B_1, B_2, \dots, B_N)$.
+
+You may perform operations of the following kind:
+
+* Choose a pair of integers $(i, j)$ with $1 \le i < j \le N$.
+* Replace $A_i$ with $A_j - 1$ and $A_j$ with $A_i + 1$.
+
+Your goal is to make $A = B$ using the minimum number of operations.
+Determine whether the goal is achievable. If it is, output a feasible sequence of operations; shorter sequences receive better scores as defined below.
+
+## Constraints
+
+* $2 \le N \le 100$
+* $1 \le A_i, B_i \le 100$
+* All values in input are integers.
+
+## Input
+
+The input is given from Standard Input in the following format:
+
+```text
+N
+A1 A2 ... AN
+B1 B2 ... BN
+
+Output
+If it is possible to make $A = B$, output Yes;
+otherwise, output No.
+If you output Yes, also output an operation sequence in the following format:
+M
+i_1 j_1
+i_2 j_2
+...
+i_M j_M
+
+Example 1
+Input:
+4
+2 2 1 4
+3 2 2 2
+
+Output:
+Yes
+2
+1 4
+3 4
+
+Example 2
+Input:
+6
+5 4 4 3 4 2
+5 1 2 3 4 1
+
+Output:
+No
+
+Example 3
+Input:
+7
+2 4 2 4 3 2 5
+5 4 3 2 5 1 2
+
+Output:
+Yes
+18
+5 7
+1 7
+2 4
+1 5
+1 5
+1 4
+4 5
+4 5
+3 4
+5 7
+1 5
+1 7
+1 6
+6 7
+1 7
+2 4
+2 5
+4 5
+
+Scoring:
+
+The physical objective is number of transformation operations m; smaller is better. The physical reference is `a = m_std`; matching a positive reference earns 60 points.
+
+Define the historical low-score expression (in points):
+
+    P_low = 60*max(0,(2*m_std-m)/m_std).
+
+A valid solution with `m=0` receives 100 points, including a zero-baseline instance. Otherwise, if `P_low<=60`, retain `max(0,P_low)`. For `P_low>60` and a positive physical reference, award:
+
+    r = a / m
+    P = min(100, 60 + ln(r)).
+
+Here `r` is the improvement factor relative to the physical reference, and `ln` is the natural logarithm with coefficient 1. In the uncapped upper branch, `r = exp(P-60)`: each additional point means an `exp(1)`-fold improvement in the physical objective. The factor is computed from the physical objective and its reference, not from a transformed reward or the old point score. Invalid output retains its existing rejection or zero score; the zero-cost exception applies only after validation. Use one score per file. Both reported ratio channels use points divided by 100. Across official files, take the arithmetic mean.
+
+A correct No answer receives 100. If m_std=0, a valid zero-operation sequence receives 100 and a positive count receives 0.
+
+Time limit:
+2 seconds
+
+Memory limit:
+512 MB

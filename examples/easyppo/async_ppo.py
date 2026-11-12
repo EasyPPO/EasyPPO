@@ -49,8 +49,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = ""
     eval_data: str = ""
     tasks_dir: str = ""
-    frontiersmith_source_dir: str = ""
-    frontier_cs_source_dir: str = ""
+    frontier_source_dir: str = ""
     frontier_judge_url: str = "http://host.docker.internal:8081"
     frontier_judge_timeout: int = 3600
     trials_dir: str = ""
@@ -147,11 +146,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     @property
     def source_dir(self) -> str:
-        return self.frontiersmith_source_dir or str(Path(self.data_dir) / "FrontierSmith")
-
-    @property
-    def eval_source_dir(self) -> str:
-        return self.frontier_cs_source_dir or str(Path(self.data_dir) / "Frontier-CS-eval")
+        return self.frontier_source_dir or str(U.repo_base_dir / "Frontier-CS")
 
     @property
     def trial_root(self) -> str:
@@ -268,8 +263,6 @@ def _prepare(args: ScriptArgs, *, dataset: str) -> None:
             [
                 "--source-dir",
                 args.source_dir,
-                "--frontier-cs-source-dir",
-                args.eval_source_dir,
                 "--tasks-dir",
                 args.task_root,
                 "--out",
