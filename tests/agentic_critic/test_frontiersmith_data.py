@@ -116,7 +116,7 @@ def test_duplicate_frontiersmith_problem_ids_are_rejected(tmp_path):
         data._records(destination, tmp_path, ["frontiersmith_0"], eval_count=0, seed=42)
 
 
-def test_default_frontiersmith_excludes_known_evaluation_aliases(monkeypatch, tmp_path):
+def test_default_frontiersmith_retains_and_reports_known_evaluation_aliases(monkeypatch, tmp_path):
     ids = [f"frontiersmith_{i}" for i in range(200)]
     aliases = [{"problem_id": f"frontiersmith_{i}", "frontiercs_id": str(306 + i)} for i in range(10)]
     monkeypatch.setattr(data, "_problem_ids", lambda source: ids)
@@ -131,23 +131,24 @@ def test_default_frontiersmith_excludes_known_evaluation_aliases(monkeypatch, tm
     output = tmp_path / "prepared"
     data.prepare(source_dir=tmp_path / "source", tasks_dir=tmp_path / "harbor", out=output)
     manifest = json.loads((output / "frontiersmith.manifest.json").read_text())
-    assert len(manifest["train"]) == 190 and not manifest["validation"]
-    assert not set(manifest["train"]) & {row["problem_id"] for row in aliases}
-    assert len(manifest["excluded"]) == 10
+    assert len(manifest["train"]) == 200 and not manifest["validation"]
+    assert {row["problem_id"] for row in aliases} <= set(manifest["train"])
+    assert manifest["excluded"] == manifest["evaluation_excluded"] == []
+    assert manifest["known_train_eval_aliases"] == aliases
     assert manifest["evaluation_source_revision"] == data.EVAL_SOURCE_REVISION
     for config_path in (tmp_path / "harbor").rglob("task.toml"):
         services = yaml.safe_load((config_path.parent / "environment/docker-compose.yaml").read_text())["services"]
         assert set(services) == {"main"}
 
 
-def test_official_evaluation_set_excludes_changed_problem_61(tmp_path):
+def test_full_evaluation_set_includes_problem_61_for_new_solutions(tmp_path):
     for i in range(180):
         task = tmp_path / "algorithmic/problems" / str(i)
         (task / "testdata").mkdir(parents=True)
         (task / "statement.txt").write_text("problem")
         (task / "config.yaml").write_text("type: default")
     selected = data._evaluation_ids(tmp_path)
-    assert len(selected) == 179 and "61" not in selected
+    assert len(selected) == 180 and "61" in selected
 
 
 def test_parity_alias_manifest_is_validated(tmp_path):
@@ -191,9 +192,9 @@ def test_bundled_judge_serves_both_corpora_from_one_directory():
     training_ids = data._problem_ids(root)
     evaluation_ids = data._evaluation_ids(root)
     aliases = data._parity_aliases(root)
-    assert len(training_ids) == 200 and len(evaluation_ids) == 179
+    assert len(training_ids) == 200 and len(evaluation_ids) == 180
     assert not set(training_ids) & set(evaluation_ids)
-    assert len(set(training_ids) - {row["problem_id"] for row in aliases}) == 190
+    assert {row["problem_id"] for row in aliases} <= set(training_ids)
     compose = yaml.safe_load((root / "algorithmic/docker-compose.yml").read_text())
     assert set(compose["services"]) == {"lightcpverifier"}
     judge = compose["services"]["lightcpverifier"]

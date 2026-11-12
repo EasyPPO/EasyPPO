@@ -50,7 +50,7 @@ docker compose version
 
 ## 2. judge 部署
 
-仓库已内嵌 FCS judge 和合并题库，位置为 `Frontier-CS/algorithmic/`。`problems/` 中同时包含 180 道 FCS 题和 200 道 FrontierSmith 题。训练数据准备时仍选择 190 道 Smith 题用于训练、179 道 FCS 题用于评测。
+仓库已内嵌 FCS judge 和合并题库，位置为 `Frontier-CS/algorithmic/`。`problems/` 中同时包含 180 道 FCS 题和 200 道 FrontierSmith 题。默认使用全部 200 道 Smith 题训练、全部 180 道 FCS 题评测。两边有 10 道已公布的重叠题，保留在数据中并在清单里注明。
 
 在**独立 judge 机器**上克隆本分支，进入目录直接用 Docker Compose 构建和启动：
 
@@ -120,7 +120,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 
 命令中的 `--sglang-server-concurrency 1` 对应默认 6 个 engine 下最多 6 个并发 trial，可按任务宿主机和 judge 的容量提高；脚本原始默认值是 128。需要 `actor-summary` 时更换 context mode 和 run ID，不要混用同一套 checkpoint。
 
-正式默认配置会在初始阶段评测，此后每 10 轮及最后一轮评测和保存。每次完整评测为 179 题 × 5 次，即 895 个 trial；首次评测耗时不代表训练卡死。`--eval-max-tasks` 大于零表示固定抽样子集，此时不能把结果当成完整 Frontier-CS 评测。设置 `WANDB_API_KEY` 可启用启动脚本的 W&B 配置。
+正式默认配置会在初始阶段评测，此后每 10 轮及最后一轮评测和保存。每次完整评测为 180 题 × 5 次，即 900 个 trial；首次评测耗时不代表训练卡死。`--eval-max-tasks` 大于零表示固定抽样子集，此时不能把结果当成完整 Frontier-CS 评测。设置 `WANDB_API_KEY` 可启用启动脚本的 W&B 配置。
 
 默认训练 200 轮，每轮 32 组 × 16 个 episode；前 30 轮仅更新 critic，之后每轮 critic 更新 4 次、actor 更新 1 次。此入口使用同步 clipped PPO，不开启 `--score-centering`。
 

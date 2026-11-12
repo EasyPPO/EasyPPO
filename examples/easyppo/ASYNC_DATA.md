@@ -4,19 +4,19 @@ The asynchronous and synchronous recipes use the same bash/mini-swe-agent harnes
 
 | Recipe | Training corpus | Evaluation corpus | Prepared inputs |
 | --- | --- | --- | --- |
-| FrontierSmith | 190 of the 200 released synthetic problems | 179 Frontier-CS algorithmic problems | `frontiersmith.train.jsonl`, `fcs.eval.jsonl` |
+| FrontierSmith | All 200 released synthetic problems | All 180 Frontier-CS algorithmic problems | `frontiersmith.train.jsonl`, `fcs.eval.jsonl` |
 | Terminal | Eligible TMAX-15K Harbor tasks | All 89 Terminal-Bench 2.1 tasks | `tmax.train.jsonl`, `tb21.eval.jsonl` |
 
 The source release explicitly identifies 10 synthetic parity problems as
-aliases of Frontier-CS IDs 306–315. The preparation script removes these
-10 problems **from training**, preserving the full selected Frontier-CS
-evaluation set.
+aliases of Frontier-CS IDs 306–315. The preparation script retains these
+10 problems in training and records the overlap in `known_train_eval_aliases`.
+The training and evaluation corpora are therefore not completely disjoint.
 [Alias manifest](https://github.com/FrontierCS/FrontierSmith/blob/ac3046cce7a270e3177cbb41376f36e03de1d518/data/sample_lists/frontiersmith_parity_10.json).
 
-The fixed Frontier-CS version contains 180 algorithmic directories. Its
-published scoring comparison uses 179 problems, excluding ID 61 after an
-output-format change. `fcs.eval.jsonl` follows that 179-problem set, rather
-than the historical 172 count in older FrontierSmith documentation.
+The fixed Frontier-CS version contains 180 algorithmic directories, all included
+in `fcs.eval.jsonl`. Problem 61 is included for newly generated solutions. The
+upstream instruction to skip problem 61 concerns rescoring old solutions after
+an output-format change; it does not exclude the current problem from evaluation.
 [Pinned evaluation source](https://github.com/FrontierCS/Frontier-CS/tree/59687e5428266a22a49cf51f981b912103bfa91d).
 
 Use Python 3.12+, Docker Engine, Compose v2, and this checkout's terminal extra:
@@ -44,8 +44,7 @@ terminal extra pins Harbor 0.24.0 and mini-swe-agent 1.17.1.
 
 The FrontierSmith command writes the two recipe inputs and
 `frontiersmith.manifest.json`. The manifest records both source revisions,
-training/evaluation IDs, excluded aliases and reasons, and evaluation's
-problem-61 exclusion. Rows include `task_path` relative to `/data/harbor`,
+training/evaluation IDs and the ten retained cross-corpus aliases. Rows include `task_path` relative to `/data/harbor`,
 dataset, canonical `problem_id`, split, source URL/revision, and reward key.
 Duplicate IDs and incomplete task collections cause preparation to fail.
 `--eval-count N --seed 42` optionally reserves an additional synthetic holdout

@@ -5,8 +5,8 @@ Install the terminal extra, then prepare the embedded corpus:
     python scripts/make_miles_frontiersmith_data.py \
         --tasks-dir /data/harbor --out /data/prepared --judge-url http://judge-host:8081
 
-Training uses 190 synthetic problems after excluding 10 known evaluation aliases.
-Evaluation uses the pinned 179-problem Frontier-CS algorithmic set. The shared
+Training uses all 200 synthetic problems, including the 10 published evaluation
+aliases. Evaluation uses all 180 pinned Frontier-CS algorithmic problems. The shared
 judge is started independently with Docker Compose in Frontier-CS/algorithmic.
 """
 
@@ -107,7 +107,7 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
 
 
 def _records(
-    destination: Path, root: Path, ids: list[str], *, eval_count: int, seed: int, excluded_ids: set[str] | None = None
+    destination: Path, root: Path, ids: list[str], *, eval_count: int, seed: int
 ) -> tuple[list[dict], list[dict]]:
     if not 0 <= eval_count < len(ids):
         raise ValueError("--eval-count must be nonnegative and leave at least one training problem")
@@ -126,8 +126,6 @@ def _records(
         raise ValueError(f"Incomplete FrontierSmith tasks; missing {sorted(set(ids) - set(by_id))}")
     ordered_rows = []
     for problem_id in ids:
-        if problem_id in (excluded_ids or set()):
-            continue
         row = by_id[problem_id]
         row["metadata"].update(
             problem_id=problem_id,
@@ -136,8 +134,6 @@ def _records(
             reward_key="reward",
         )
         ordered_rows.append(row)
-    if not 0 <= eval_count < len(ordered_rows):
-        raise ValueError("--eval-count must leave at least one training problem after alias exclusions")
     ranked = sorted(
         (row["metadata"]["problem_id"] for row in ordered_rows),
         key=lambda value: hashlib.sha256(f"{seed}:{value}".encode()).digest(),
@@ -168,16 +164,13 @@ def _evaluation_ids(source: Path) -> list[str]:
         key=int,
     )
     if len(ids) != 180 or "61" not in ids:
-        raise ValueError(
-            "Expected the pinned 180 Frontier-CS algorithmic problems before official problem-61 exclusion"
-        )
-    selected = [value for value in ids if value != "61"]
-    for problem_id in selected:
+        raise ValueError("Expected all 180 pinned Frontier-CS algorithmic problems, including problem 61")
+    for problem_id in ids:
         directory = source / "algorithmic/problems" / problem_id
         for name in ("statement.txt", "config.yaml", "testdata"):
             if not (directory / name).exists():
                 raise ValueError(f"Missing Frontier-CS fixture: {directory / name}")
-    return selected
+    return ids
 
 
 def _evaluation_records(destination: Path, root: Path, ids: list[str]) -> list[dict]:
@@ -227,24 +220,20 @@ def prepare(
     tasks_dir = tasks_dir.resolve()
     ids = _problem_ids(source_dir)
     aliases = _parity_aliases(source_dir)
-    excluded_ids = {row["problem_id"] for row in aliases}
-    if not excluded_ids <= set(ids):
+    if not {row["problem_id"] for row in aliases} <= set(ids):
         raise ValueError("Parity aliases do not belong to the synthetic training corpus")
     evaluation_ids = _evaluation_ids(source_dir)
     if not {row["frontiercs_id"] for row in aliases} <= set(evaluation_ids):
         raise ValueError("Parity alias targets must be in the Frontier-CS evaluation corpus")
-    if not 0 <= eval_count < len(ids) - len(excluded_ids):
-        raise ValueError("--eval-count must leave at least one training problem after alias exclusions")
+    if not 0 <= eval_count < len(ids):
+        raise ValueError("--eval-count must leave at least one training problem")
     destination = tasks_dir / "frontiersmith"
     _adapt(source_dir, destination, ids, overwrite=overwrite)
-    training, evaluation = _records(
-        destination, tasks_dir, ids, eval_count=eval_count, seed=seed, excluded_ids=excluded_ids
-    )
+    training, evaluation = _records(destination, tasks_dir, ids, eval_count=eval_count, seed=seed)
     evaluation_destination = tasks_dir / "frontier-cs"
     _adapt(source_dir, evaluation_destination, evaluation_ids, overwrite=overwrite)
     benchmark = _evaluation_records(evaluation_destination, tasks_dir, evaluation_ids)
-    # Update excluded alias task directories too, so rerunning preparation never
-    # leaves an old per-trial judge behind in the generated task tree.
+    # Rerunning preparation updates every generated task to the shared judge.
     for directory in (destination, evaluation_destination):
         for config_path in directory.rglob("task.toml"):
             _install_verifier(config_path.parent, judge_url=judge_url, judge_timeout=judge_timeout)
@@ -261,24 +250,16 @@ def prepare(
                 "seed": seed,
                 "train": [row["metadata"]["problem_id"] for row in training],
                 "validation": [row["metadata"]["problem_id"] for row in evaluation],
-                "excluded": [
-                    {
-                        "problem_id": row["problem_id"],
-                        "frontiercs_id": row["frontiercs_id"],
-                        "reason": "explicit_alias_of_evaluation_problem",
-                    }
-                    for row in aliases
-                ],
+                "excluded": [],
+                "known_train_eval_aliases": aliases,
                 "evaluation_source_url": EVAL_SOURCE_URL,
                 "evaluation_source_revision": EVAL_SOURCE_REVISION,
                 "judge_source_revision": EVAL_SOURCE_REVISION,
                 "judge_url": judge_url,
                 "judge_timeout": judge_timeout,
                 "evaluation": evaluation_ids,
-                "evaluation_excluded": [
-                    {"problem_id": "61", "reason": "official_179_problem_scoring_set_excludes_changed_output_format"}
-                ],
-                "deduplication_scope": "Known parity aliases only; no claim of exhaustive semantic deduplication",
+                "evaluation_excluded": [],
+                "deduplication_scope": "None; all published problems retained, including the ten parity aliases",
             },
             indent=2,
         )

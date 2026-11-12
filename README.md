@@ -128,13 +128,13 @@ for model conversion. It does not start task containers.
 
 | Dataset | Prepared training input | Full evaluation input |
 |---|---|---|
-| FrontierSmith | `/shared/data/frontiersmith.train.jsonl` — 190 tasks | `/shared/data/fcs.eval.jsonl` — 179 tasks |
+| FrontierSmith | `/shared/data/frontiersmith.train.jsonl` — 200 tasks | `/shared/data/fcs.eval.jsonl` — 180 tasks |
 | TMAX | `/shared/data/tmax.train.jsonl` — 14,601 eligible tasks in the current preparation | `/shared/data/tb21.eval.jsonl` — 89 tasks |
 
 The Frontier judge and both problem corpora are bundled under
 [`Frontier-CS/`](Frontier-CS/README.md). Data preparation uses these local files;
-it does not clone additional repositories. Ten published Smith aliases are excluded
-from training, and evaluation follows the fixed 179-problem Frontier-CS scoring set.
+it does not clone additional repositories. All 200 Smith and 180 FCS problems are used.
+The ten published cross-corpus aliases are retained and recorded in the manifest.
 Keep `/shared/data/harbor` available at the same path on every task Docker host.
 See [ASYNC_DATA.md](examples/easyppo/ASYNC_DATA.md) for source versions and manifests.
 
@@ -164,7 +164,7 @@ which local interface the judge listens on; it is not the client's target URL.
 The upstream API has no authentication; expose port 8081 on a trusted network.
 
 The merged bank contains 200 Smith and 180 FCS problems; the training and evaluation
-JSONL files select 190 and 179 respectively. Each corpus retains its pinned checkers
+JSONL files include all 200 and 180 respectively. Each corpus retains its pinned checkers
 and test data. Checker/interactor scores are scaled from `[0,100]` to `[0,1]`.
 Harbor starts only each trial's `main` sandbox. Its verifier submits
 `/app/solution.cpp` to the shared judge, then writes `reward.json` and
@@ -257,7 +257,7 @@ episodes per task at temperature/top-p/top-k `1/1/-1`.
 
 | Dataset | Trials per validation point | Trials over 21 points in a fresh 200-round run |
 |---|---:|---:|
-| Frontier-CS | 179 × 5 = **895** | **18,795** |
+| Frontier-CS | 180 × 5 = **900** | **18,900** |
 | Terminal-Bench 2.1 | 89 × 5 = **445** | **9,345** |
 
 Full-set results use `fcs` or `tb21`. For an explicit quick subset, add

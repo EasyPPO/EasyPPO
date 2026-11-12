@@ -1,10 +1,9 @@
 # Frontier-CS + FrontierSmith judge
 
 `algorithmic/problems/` contains the merged problem bank: 180 numeric Frontier-CS
-IDs and 200 `frontiersmith_*` IDs. The training recipe selects 190 Smith problems
-after removing the ten published evaluation aliases, and evaluates on 179 FCS
-problems (excluding problem 61). Serving the complete bank does not change those
-training/evaluation splits.
+IDs and 200 `frontiersmith_*` IDs. The training recipe uses all 200 Smith problems and evaluates on all 180 FCS
+problems, including problem 61. The ten published cross-corpus aliases are retained
+and recorded in the data manifest; the two sets are not completely disjoint.
 
 On the judge machine, run:
 

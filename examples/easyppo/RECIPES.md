@@ -30,11 +30,11 @@ optimizer, scheduler, and memory are independent of the actor.
 
 | Dataset | Training | Full evaluation | Source version |
 |---|---:|---:|---|
-| FrontierSmith → Frontier-CS | 190 synthetic tasks | 179 algorithmic tasks | FrontierSmith `ac3046cce7a270e3177cbb41376f36e03de1d518`; Frontier-CS `59687e5428266a22a49cf51f981b912103bfa91d` |
+| FrontierSmith → Frontier-CS | 200 synthetic tasks | 180 algorithmic tasks | FrontierSmith `ac3046cce7a270e3177cbb41376f36e03de1d518`; Frontier-CS `59687e5428266a22a49cf51f981b912103bfa91d` |
 | TMAX → TB2.1 | 14,601 eligible tasks in the current preparation | 89 tasks | Pinned Harbor registry references in [`make_miles_terminal_data.py`](../../scripts/make_miles_terminal_data.py) |
 
-Frontier preparation removes ten explicitly published training aliases and
-excludes problem 61 from the fixed Frontier-CS scoring set. TMAX preparation
+Frontier preparation keeps both complete corpora, including the ten published
+cross-corpus aliases and FCS problem 61. TMAX preparation
 filters exact evaluation overlap, duplicate executable fixtures, and initial
 instructions that exceed the action budget. The manifests and generated
 JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md).
@@ -310,11 +310,11 @@ valid binary result, with the reason saved in metadata.
 
 Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
 episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
-runs **179 × 5 = 895 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
+runs **180 × 5 = 900 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
 result names `fcs` / `tb21`.
 
 A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
-points, **18,795 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.
+points, **18,900 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.
 Checkpoints are saved at rounds 10 through 200, giving 20 points.
 Epoch-triggered extra eval/save is disabled.
 
