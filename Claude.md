@@ -1,5 +1,12 @@
 # Qwen3.5-27B Synchronous PPO on FrontierSmith
 
+The main objective is to test whether, in synchronous agentic PPO, giving the
+critic access to the full episode history improves value estimation compared
+with the current approach of managing critic context through actor-generated
+summaries. We then evaluate whether any improvement in critic estimates
+translates into more effective end-to-end PPO training and stronger final
+policy performance.
+
 Entry point: [`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py).
 Adapt the commands below to the cluster's image, scheduler, storage, and service configuration.
 
