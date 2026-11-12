@@ -114,5 +114,21 @@ and at the end, with 180 tasks × 5 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
 and `trials/`. Resume with the same run ID, context mode, topology, and training
-parameters. Use a new run ID for a new experiment, including a switch to
-`--critic-context-mode actor-summary`.
+parameters. Use a new run ID for each new experiment.
+
+## 5. Primary experiment: full_detach vs. actor-summary
+
+Our current primary focus is comparing **`full_detach` and `actor-summary`**
+to measure how critic access to episode history affects synchronous PPO training.
+
+| Critic mode | Context | Example run ID |
+|---|---|---|
+| `full_detach` | Full chronological episode history, with gradients detached across segment boundaries | `sync-fs-full-detach-001` |
+| `actor-summary` | The actor's context for each segment: task, current summary, and local conversation | `sync-fs-actor-summary-001` |
+
+Run the training command in section 4 once per mode, setting
+`--critic-context-mode` and `--run-id` from the table. Keep the initial model,
+200-task training set, 180-task evaluation set, training hyperparameters,
+resource allocation, and evaluation protocol identical. Start each run from
+the same base checkpoint and use its own output directory through the run ID.
+Compare the training curves and full Frontier-CS evaluation rewards at matched rounds.
