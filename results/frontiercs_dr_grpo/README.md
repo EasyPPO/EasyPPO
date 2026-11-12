@@ -5,7 +5,8 @@ A Dr. GRPO baseline for the FrontierSmith/Frontier-CS setting of this branch, ru
 filtering, as in the Dr. GRPO paper ([Liu et al., 2025](https://arxiv.org/abs/2503.20783)).
 
 <!-- status:begin -->
-**Status: finished** (240 training steps).
+**Status: finished** (240 training steps). Avg@5 went from 4.43 at step 0 to ~12 by step 40 and then stayed at
+12.5–14.6 (peak 14.62 at step 190; 13.10 at step 240). Best@5 peaked at 24.3 (step 190).
 <!-- status:end -->
 
 ## Setup
@@ -96,7 +97,11 @@ bootstrap estimate and comes out lower; it is kept in `val_curve.csv` as `verl_b
 | 225 | 12.48 | 20.19 | 0.371 | 17,542 | 0.6% |
 | 230 | 13.62 | 20.58 | 0.383 | 17,101 | 1.2% |
 | 235 | 14.33 | 21.39 | 0.283 | 16,409 | 1.6% |
+| 240 | 13.10 | — | 0.439 | 16,119 | 0.2% |
 <!-- results:end -->
+
+Step 240: the job ended right after the final validation, before its per-sample dump was synced, so
+only the logged Avg@5 (identical to `verl_mean@5`) is available and Best@5 is missing; it is not in the CSVs.
 
 ![Validation and training curves](curves.png)
 
