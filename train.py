@@ -4,11 +4,6 @@ import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.training_utils.checkpoint.joint_checkpoint import (
-    add_checkpoint_arguments,
-    finalize_checkpoint,
-    prepare_checkpoint_retention,
-)
 from miles.ray.placement_group import (
     create_rollout_components,
     create_training_models,
@@ -29,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 async def train(args, *, disposer: Disposer):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    max_keep = prepare_checkpoint_retention(args)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
 
     if args.colocate_memory_peak_device == "gpu":
@@ -81,7 +75,7 @@ async def train(args, *, disposer: Disposer):
             await actor_model.clear_memory()
 
     async def save(rollout_id, force_sync=False):
-        force_sync = force_sync or rollout_id == args.num_rollout - 1 or max_keep > 0
+        force_sync = force_sync or rollout_id == args.num_rollout - 1
 
         async def save_training_model(model):
             if args.use_critic and args.offload_train:
@@ -96,8 +90,6 @@ async def train(args, *, disposer: Disposer):
         if args.use_critic:
             await save_training_model(critic_model)
         await rollout_executor.save(rollout_id)
-        if max_keep > 0:
-            finalize_checkpoint(args, rollout_id, max_keep)
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
@@ -188,5 +180,5 @@ async def train(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args(add_custom_arguments=add_checkpoint_arguments)
+    args = parse_args()
     asyncio.run(with_disposer(train, args))

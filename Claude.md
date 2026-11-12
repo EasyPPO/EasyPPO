@@ -118,21 +118,12 @@ Ray backend cleans old training processes in the submission environment.
 For SSH-based bootstrap or another deployment backend, follow the
 [cluster integration guide](README.md#2-cluster-integration).
 
-To enable W&B, set `WANDB_API_KEY` in the job environment before running the
-launcher. When resuming a run, append
-`--extra-env-vars 'WANDB_RUN_ID=<wandb-run-id> WANDB_RESUME=must'` to the training
-command below. Use the ID after `/runs/` in the original W&B run URL and keep the
-same W&B entity and project. The launcher uses `--run-id` as the display name;
-the W&B run ID is what attaches new metrics to the existing run.
-
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --action train \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
-  --num-rollout 100 \
-  --save-interval 5 --max-keep 2 \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
@@ -144,17 +135,14 @@ action and 3072 per summary, with compaction at 12000 context tokens. Thinking
 counts toward these limits. Length-limited turns increment `truncated_turns`
 and continue; the cumulative episode generation budget is 120000 tokens.
 
-Training runs for 100 rounds, each with 32 prompt groups × 16 episodes.
+Training runs for 200 rounds, each with 32 prompt groups × 16 episodes.
 Every round performs four critic updates, including the first 30 critic-only
-rounds. Rounds 31–100 also perform one actor update. Checkpoints are saved every
-five rounds. With `--max-keep 2`, only the two most recent complete checkpoint
-sets are kept. Older checkpoints are removed after the new actor, critic, and
-rollout state have all been saved. Evaluation runs initially, every ten rounds, and at the end,
-with 180 tasks × 5 trials per evaluation.
+rounds. Rounds 31–200 also perform one actor update. Evaluation runs initially, every ten rounds,
+and at the end, with 180 tasks × 5 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
-and `trials/`. Use a new run ID for each new experiment. See [section 6](#6-resume-training)
-to resume an existing run.
+and `trials/`. Resume with the same run ID, context mode, topology, and training
+parameters. Use a new run ID for each new experiment.
 
 ## 5. Primary experiment: full_detach vs. actor-summary
 
@@ -180,12 +168,12 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
-  --num-rollout 100 \
+  --num-rollout 200 \
   --num-critic-only-steps 30 \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
-  --save-interval 5 --max-keep 2 \
+  --save-interval 10 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
@@ -202,12 +190,12 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
   --run-id sync-fs-actor-summary-001 \
   --critic-context-mode actor-summary \
-  --num-rollout 100 \
+  --num-rollout 200 \
   --num-critic-only-steps 30 \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
-  --save-interval 5 --max-keep 2 \
+  --save-interval 10 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
@@ -217,17 +205,11 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 
 A step here means one rollout round of 512 episodes. Each round has four critic
 optimizer updates, each on 128 episodes. The first 30 rounds therefore perform
-120 critic updates and zero actor updates. Rounds 31–100 also update the actor
-once per round. Eval runs before training and after rounds 10, 20, …, 100, using
+120 critic updates and zero actor updates; rounds 31–200 also update the actor
+once per round. Eval runs before training and after rounds 10, 20, …, 200, using
 all 180 FCS tasks with five trials each (`--eval-max-tasks 0` selects all tasks).
 
 Keep the initial model, 200-task training set, resource allocation, and other
 hyperparameters identical. Start both runs from the same base checkpoint;
 their run IDs select separate output directories. Compare training curves and
 full Frontier-CS evaluation rewards at matched rounds.
-
-## 6. Resume training
-
-Rerun the same training command from [section 5](#5-primary-experiment-full_detach-vs-actor-summary)
-with the same `--output-dir` and `--run-id`. Training automatically resumes
-from the latest complete checkpoint.
