@@ -17,7 +17,7 @@ All four launchers use an independent Megatron critic and accept
 `--critic-context-mode full_detach|actor-summary`. A run trains one critic in
 one selected mode. They share data preparation, rewards, batching, optimizer,
 token budgets, validation, and checkpoint conventions. Async defaults to
-64 GPUs (16 train + 48 rollout); sync defaults to 32 GPUs (8 train + 24 rollout).
+64 GPUs (16 train + 48 rollout); sync defaults to 32 GPUs shared by rollout and training.
 The launch interface is the same shape, with the dataset selected by filename.
 
 ## Model and data
@@ -269,22 +269,25 @@ and logs. Plan shared storage and host memory for the actual response length.
 | Recipe / allocation | Actor and critic training pool | Rollout |
 |---|---|---|
 | Async default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
-| Sync default: 4 nodes × 8 B200 | 8 GPUs, TP4 × DP2, PP=CP=1 | 24 GPUs, 6 TP4 engines |
+| Sync default: 4 nodes × 8 B200 | All 32 GPUs, TP4 × DP8, PP=CP=1 | Same 32 GPUs, 8 TP4 engines |
 
-Each recipe uses disjoint training and rollout pools. Set `MASTER_ADDR` and
-provide the corresponding 8-node async or 4-node sync allocation through
-`--ray-hostfile`; the launcher starts Ray and joins workers over SSH. Set
-`MILES_SCRIPT_EXTERNAL_RAY=1` to use a cluster already managed by the platform. Async can also use the
-32-GPU layout with `--num-nodes 4 --trainer-num-nodes 1`; sync can request the
-64-GPU layout with `--num-nodes 8 --trainer-num-nodes 2`.
+Async uses disjoint training and rollout pools. Sync sets
+`--colocate --offload-rollout --offload-train`: rollout, critic training, and
+actor training alternate on the same GPUs, offloading between stages.
+Use the platform's Ray cluster with `MILES_SCRIPT_EXTERNAL_RAY=1` and its
+service addresses; see the [startup guide](../../README.md#2-cluster-integration).
+The optional SSH bootstrap is only needed for an allocation without managed Ray.
+Async can use 32 GPUs with `--num-nodes 4 --trainer-num-nodes 1`; sync can
+use 64 GPUs with `--num-nodes 8`. Sync derives trainer nodes and rollout
+GPUs from the full allocation and rejects partial-pool overrides.
 
 The global actor batch remains 512 episodes and each critic mini-batch remains
 128 episodes in both defaults. Async DP4 assigns 128 actor episodes per
-logical DP shard per round and 32 per critic step. Sync DP2 assigns 256 actor
-episodes per logical DP shard per round and 64 per critic step. TP siblings
+logical DP shard per round and 32 per critic step. Sync DP8 assigns 64 actor
+episodes per logical DP shard per round and 16 per critic step. TP siblings
 consume matching shard inputs.
 
-Actor and critic both use Megatron TP4, with DP4 for async and DP2 for
+Actor and critic both use Megatron TP4, with DP4 for async and DP8 for
 sync. The two roles alternate residency on the shared training pool through
 CPU offload.
 

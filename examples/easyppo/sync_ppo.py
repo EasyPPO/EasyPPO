@@ -12,7 +12,7 @@ from miles.utils.external_utils import command_utils as U
 @dataclass
 class _SyncScriptArgs(_recipe.ScriptArgs):
     num_nodes: int = 4
-    trainer_num_nodes: int = 1
+    trainer_num_nodes: int = 0
     score_centering: bool = False
     score_centering_candidates: int = 0
     score_centering_is: Literal["none"] = "none"
@@ -21,6 +21,10 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
     def __post_init__(self):
         super().__post_init__()
         _validate_sync_options(self)
+
+    @property
+    def colocate(self) -> bool:
+        return True
 
 
 def _validate_sync_options(args: _SyncScriptArgs) -> None:

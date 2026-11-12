@@ -98,21 +98,24 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--terminal-max-context-tokens": "32768",
         "--rollout-max-context-len": "32768",
         "--max-tokens-per-gpu": "262144",
-        "--actor-num-nodes": "1",
+        "--actor-num-nodes": "4",
         "--actor-num-gpus-per-node": "8",
-        "--critic-num-nodes": "1",
+        "--critic-num-nodes": "4",
         "--critic-num-gpus-per-node": "8",
-        "--rollout-num-gpus": "24",
         "--rollout-num-gpus-per-engine": "4",
         "--tensor-model-parallel-size": "4",
     }
     assert {flag: value(flag) for flag in expected} == expected
     assert args.num_nodes * args.num_gpus_per_node == 32
-    assert (
-        int(value("--actor-num-nodes")) * int(value("--actor-num-gpus-per-node")) + int(value("--rollout-num-gpus"))
-        == 32
-    )
-    assert {"--filter-truncated-in-actor-loss", "--offload-train", "--calculate-per-token-loss"} <= set(argv)
+    assert int(value("--actor-num-nodes")) * int(value("--actor-num-gpus-per-node")) == args.rollout_num_gpus == 32
+    assert "--rollout-num-gpus" not in argv
+    assert {
+        "--filter-truncated-in-actor-loss",
+        "--colocate",
+        "--offload-rollout",
+        "--offload-train",
+        "--calculate-per-token-loss",
+    } <= set(argv)
     assert not {
         "--keep-old-actor",
         "--use-tis",
@@ -134,13 +137,19 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
     assert value("--prompt-data") == args.train_data
 
     # All remaining flags must be identical to the existing async clipped-PPO
-    # recipe, including order. The schedule and the old-actor copy are the changes.
+    # recipe with equal trainer sizes, including order, apart from GPU placement
+    # and the old-actor copy. Async needs a separate allocation for rollout.
     asynchronous = import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{args.dataset}.py")
     monkeypatch.setattr(asynchronous.ScriptArgs, "create_backend", lambda self: backend)
-    asynchronous.execute(asynchronous.ScriptArgs(**vars(args)))
+    asynchronous.execute(asynchronous.ScriptArgs(**(vars(args) | {"num_nodes": args.num_nodes * 2})))
     async_argv = shlex.split(backend.training[-1]["train_args"])
     assert "--keep-old-actor" in async_argv
-    assert argv == [flag for flag in async_argv if flag != "--keep-old-actor"]
+    rollout_index = async_argv.index("--rollout-num-gpus")
+    assert async_argv[rollout_index + 1] == str(args.rollout_num_gpus)
+    del async_argv[rollout_index : rollout_index + 2]
+    assert [flag for flag in argv if flag not in {"--colocate", "--offload-rollout"}] == [
+        flag for flag in async_argv if flag != "--keep-old-actor"
+    ]
     assert backend.training[-1]["train_script"] == "train_async.py"
 
 
@@ -300,8 +309,9 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     assert options(launcher.main) == options(asynchronous.main)
     assert args.eval_max_tasks == async_args.eval_max_tasks == 0
     assert args.eval_samples_per_prompt == async_args.eval_samples_per_prompt == 5
-    assert (args.num_nodes, args.trainer_num_nodes, args.rollout_num_gpus) == (4, 1, 24)
+    assert (args.num_nodes, args.trainer_num_nodes, args.rollout_num_gpus) == (4, 4, 32)
     assert (async_args.num_nodes, async_args.trainer_num_nodes, async_args.rollout_num_gpus) == (8, 2, 48)
+    assert args.colocate and not async_args.colocate
     assert args.num_nodes * args.num_gpus_per_node == 32
     assert async_args.num_nodes * async_args.num_gpus_per_node == 64
 
@@ -343,3 +353,25 @@ def test_exactly_four_dataset_specific_27b_launchers_remain():
         for schedule in ("sync", "async")
         for dataset in ("frontiersmith", "tmax")
     }
+
+
+@pytest.mark.parametrize("nodes,gpus_per_node", [(1, 4), (1, 8), (4, 8), (8, 8)])
+def test_sync_scales_the_shared_pool_with_the_allocation(launcher, monkeypatch, nodes, gpus_per_node):
+    backend = _backend(monkeypatch, launcher)
+    args = launcher.ScriptArgs(num_nodes=nodes, num_gpus_per_node=gpus_per_node)
+    launcher.execute(args)
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert args.trainer_num_nodes == nodes
+    assert args.rollout_num_gpus == nodes * gpus_per_node
+    assert argv[argv.index("--actor-num-nodes") + 1] == str(nodes)
+    assert argv[argv.index("--critic-num-nodes") + 1] == str(nodes)
+    assert argv[argv.index("--num-gpus-per-node") + 1] == str(gpus_per_node)
+    assert "--colocate" in argv and "--rollout-num-gpus" not in argv
+
+
+@pytest.mark.parametrize("override", [{"trainer_num_nodes": 1}, {"rollout_num_gpus": 24}])
+def test_sync_rejects_separate_gpu_pools_before_backend_commands(launcher, monkeypatch, override):
+    backend = _backend(monkeypatch, launcher)
+    with pytest.raises(ValueError, match="shares all allocated GPUs"):
+        launcher.main(action="train", **override)
+    assert not backend.commands and not backend.conversions and not backend.training

@@ -281,3 +281,37 @@ class TestTerminalLifecycle:
             events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
         )
         assert events.index("manager_shutdown") < events.index("manager_kill")
+
+
+@pytest.mark.parametrize("warmup_steps", [0, 1])
+async def test_shared_ppo_offloads_each_stage_before_the_next_gpu_user(monkeypatch, warmup_steps):
+    events: list[str] = []
+    args = _make_args(
+        num_rollout=2,
+        use_critic=True,
+        num_critic_only_steps=warmup_steps,
+        offload_train=True,
+        offload_rollout=True,
+        offload_rollout_level=["kv_cache", "weight"],
+    )
+    components = _install_driver_fakes(monkeypatch, args, events)
+    monkeypatch.setattr(object_store, "_INSTANCE", FakeObjectStore())
+    components.critic_model.train_outputs = {0: [], 1: []}
+
+    await with_disposer(train_driver.train, args)
+
+    first_round = events[events.index("generate_done:0") : events.index("prepare_rollout:1")]
+    [inference_offload] = [event for event in first_round if event.startswith("offload:")]
+    assert set(inference_offload.removeprefix("offload:").split(",")) == {
+        train_driver.GPU_MEMORY_TYPE_CUDA_GRAPH,
+        train_driver.GPU_MEMORY_TYPE_KV_CACHE,
+        train_driver.GPU_MEMORY_TYPE_WEIGHTS,
+    }
+    expected = ["generate_done:0", inference_offload, "critic_train:0", "critic_offload"]
+    if warmup_steps == 0:
+        expected += ["actor_train:0", "actor_offload"]
+    else:
+        assert "actor_train:0" not in first_round
+    expected += ["onload_weights", "update_weights:0", "onload_kv"]
+    positions = [first_round.index(event) for event in expected]
+    assert positions == sorted(positions)

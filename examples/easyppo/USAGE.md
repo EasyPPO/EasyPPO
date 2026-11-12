@@ -26,15 +26,16 @@ machine-specific launchers, and GPU reservation/queue tools are not included.
 
 Use a Miles-compatible GPU environment with Megatron and SGLang, following
 [Miles installation](../../docs/getting-started/installation.md). The imported
-code targets Transformers 5.12.1. From this checkout:
+code targets Transformers 5.12.1. If the job image lacks this project, install
+it from this checkout:
 
 ```bash
-git submodule update --init third_party/compaction
 python -m pip install -e '.[agentic]'
 ```
 
-The KV algorithm dependency is pinned as a Git submodule. An existing checkout
-can instead be selected with `KV_COMPACTION_REPO=/path/to/compaction`.
+Only the separate KV compression experiments need the algorithm submodule:
+run `git submodule update --init third_party/compaction`, or point
+`KV_COMPACTION_REPO` at an existing checkout. Terminal PPO does not require it.
 
 ## Terminal training
 

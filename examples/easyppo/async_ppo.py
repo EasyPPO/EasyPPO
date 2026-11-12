@@ -123,8 +123,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_batch_size = recipe.batch
         if self.over_sampling_batch_size == 0:
             self.over_sampling_batch_size = max(recipe.oversample, self.rollout_batch_size)
+        if self.colocate and self.trainer_num_nodes == 0:
+            self.trainer_num_nodes = self.num_nodes
         if self.rollout_num_gpus == 0:
-            self.rollout_num_gpus = (self.num_nodes - self.trainer_num_nodes) * self.num_gpus_per_node
+            rollout_nodes = self.num_nodes if self.colocate else self.num_nodes - self.trainer_num_nodes
+            self.rollout_num_gpus = rollout_nodes * self.num_gpus_per_node
+
+    @property
+    def colocate(self) -> bool:
+        return False
 
     @property
     def train_data(self) -> str:
@@ -158,11 +165,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _validate(args: ScriptArgs) -> None:
-    if not 0 < args.trainer_num_nodes < args.num_nodes or args.num_gpus_per_node <= 0:
-        raise ValueError("Reserve positive, separate trainer and rollout node allocations")
+    if args.num_nodes <= 0 or args.num_gpus_per_node <= 0:
+        raise ValueError("Node and per-node GPU counts must be positive")
+    total_gpus = args.num_nodes * args.num_gpus_per_node
     trainer_gpus = args.trainer_num_nodes * args.num_gpus_per_node
-    if trainer_gpus + args.rollout_num_gpus != args.num_nodes * args.num_gpus_per_node or args.rollout_num_gpus <= 0:
-        raise ValueError("Training GPUs plus dedicated rollout GPUs must equal the allocation")
+    if args.colocate:
+        if args.trainer_num_nodes != args.num_nodes or args.rollout_num_gpus != total_gpus:
+            raise ValueError(
+                "Synchronous PPO shares all allocated GPUs: trainer nodes and rollout GPUs must cover the full allocation"
+            )
+    else:
+        if not 0 < args.trainer_num_nodes < args.num_nodes:
+            raise ValueError("Reserve positive, separate trainer and rollout node allocations")
+        if trainer_gpus + args.rollout_num_gpus != total_gpus or args.rollout_num_gpus <= 0:
+            raise ValueError("Training GPUs plus dedicated rollout GPUs must equal the allocation")
     if args.rollout_gpus_per_engine <= 0 or args.rollout_num_gpus % args.rollout_gpus_per_engine:
         raise ValueError("Rollout GPUs must divide into complete inference engines")
     if args.rollout_gpus_per_engine not in (1, 2, 4, 8):
@@ -517,6 +533,9 @@ def _algorithm_args(args: ScriptArgs, *, keep_old_actor: bool = True) -> list[st
 
 
 def _resource_args(args: ScriptArgs) -> list[str]:
+    placement = (
+        ["--colocate", "--offload-rollout"] if args.colocate else ["--rollout-num-gpus", str(args.rollout_num_gpus)]
+    )
     return [
         "--actor-num-nodes",
         str(args.trainer_num_nodes),
@@ -528,8 +547,7 @@ def _resource_args(args: ScriptArgs) -> list[str]:
         str(args.num_gpus_per_node),
         "--num-gpus-per-node",
         str(args.num_gpus_per_node),
-        "--rollout-num-gpus",
-        str(args.rollout_num_gpus),
+        *placement,
         "--rollout-num-gpus-per-engine",
         str(args.rollout_gpus_per_engine),
         "--sglang-mem-fraction-static",

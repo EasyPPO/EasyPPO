@@ -123,12 +123,13 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --critic-lr-warmup-iters 0
   --eps-clip 0.2
   --eps-clip-high 0.28
-  --actor-num-nodes 1
+  --actor-num-nodes 4
   --actor-num-gpus-per-node 8
-  --critic-num-nodes 1
+  --critic-num-nodes 4
   --critic-num-gpus-per-node 8
   --num-gpus-per-node 8
-  --rollout-num-gpus 24
+  --colocate
+  --offload-rollout
   --rollout-num-gpus-per-engine 4
   --sglang-mem-fraction-static 0.7
   --sglang-server-concurrency 128

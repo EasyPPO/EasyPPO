@@ -1,136 +1,83 @@
-# Qwen3.5-27B 同步 PPO：FrontierSmith 运行说明
+# Qwen3.5-27B 同步 PPO：FrontierSmith 启动要求
 
-入口：[`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py)。以下按环境配置、judge 部署、模型准备、正式训练的顺序执行。训练集群使用 `/shared` 共享目录，judge 部署在独立 CPU 机器上；judge 不需要挂载训练集群的共享盘。示例 head 地址为 `10.0.0.10`，judge 地址为 `10.0.0.20:8081`，都必须替换为实际机器的可达地址。
+入口：[`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py)。按环境、judge、模型准备、训练四步执行。先查看实际集群的镜像、调度器、存储和服务地址，沿用已有配置；下面的命令是参数模板，路径和部署方式由执行者按环境调整。
 
-## 1. 环境配置
+## 1. 环境
 
-默认资源为 4 个节点、每节点 8 张 B200：8 张用于 actor/critic 训练，24 张用于 SGLang 推理。训练使用 CPU offload，需要为主机内存和任务容器预留容量。
-
-在训练集群初次获取代码：
+使用兼容本分支的 Miles GPU 镜像。镜像已有的依赖无需重复安装；构建细节见 [installation.md](docs/getting-started/installation.md)。确保运行环境使用本分支代码；只有镜像尚未包含本项目及 terminal 依赖时，才安装：
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO.git /shared/EasyPPO
-cd /shared/EasyPPO
-git submodule update --init third_party/compaction
-mkdir -p /shared/models /shared/data /shared/runs
-```
-
-GPU 训练环境使用 Miles NVIDIA 镜像，安装方法见 [installation.md](docs/getting-started/installation.md)，构建定义见 [docker/Dockerfile](docker/Dockerfile)。所有节点使用同一镜像 digest。
-
-仓库 NVIDIA Dockerfile 已包含以下加速组件，不能只靠安装项目的 Python extras 来补齐：
-
-| 组件 | Dockerfile 中的配置 |
-| --- | --- |
-| SGLang / Megatron-LM | Miles 对应的分支和补丁；不要直接换成任意 PyPI 版本 |
-| FlashAttention 2 | 安装对应 CUDA / PyTorch / 架构的 `flash_attn` wheel |
-| FlashAttention 3 | 安装 `flash_attn_3` wheel；该实现限定 Hopper，不等于所有 GPU 都使用 FA3 |
-| FLA | `flash-linear-attention==0.5.2`，包含 Dockerfile 指定的补丁 |
-| 其他内核 | Transformer Engine、causal-conv1d、mamba-ssm 等，按镜像构建定义安装 |
-
-在每个 Miles worker 的环境内安装本仓库（Python 3.12+）：
-
-```bash
-cd /shared/EasyPPO
+git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO
+cd EasyPPO
 python -m pip install -e '.[agentic,terminal]'
-python -m pip install 'transformers==5.12.1'
-python -c "import miles, agentic_critic, transformers; print(miles.__file__); print(agentic_critic.__file__); print(transformers.__version__)"
-docker version
-docker compose version
 ```
 
-导入路径应指向 `/shared/EasyPPO`。terminal extra 固定 Harbor 0.24.0 和 mini-swe-agent 1.17.1。不要额外安装 Harbor 的 `tinker` 依赖集合，它的 Transformers 版本要求不同。
+当前实验不需要初始化 `third_party/compaction`。这里的 actor 文本摘要由 terminal 实现，外部 KV compaction 包只用于单独的 KV 压缩实验。
 
-部署时需满足：
+默认申请 4 节点 × 8 张 B200。同一批 32 张卡依次执行 rollout、critic 训练和 actor 训练，脚本已开启 colocate 和 offload；训练 TP4/DP8，推理 8 个 TP4 engine。按实际分配设置 `--num-nodes`、`--num-gpus-per-node`，并为 offload 和 Harbor 任务安排足够的 CPU/内存。
 
-- `/shared` 在训练集群所有 worker 和任务 Docker daemon 宿主机上具有相同绝对路径与内容。
-- 容器内的 Miles worker 要挂载 `/shared` 和 `/var/run/docker.sock`，且安装 Docker CLI、Compose 插件；bind mount 的源路径由 Docker 宿主机解析。
-- 独立 judge 机器安装 Git、Docker Engine 和 Compose 插件，允许运行 privileged 容器；不需要安装 Miles、CUDA、模型或加入 Ray。
-- 训练节点有足够的主机内存承载 offload，并按集群要求配置网络和 RDMA 设备。
-- 默认 Megatron 路径是 `/root/Megatron-LM`；安装位置不同则给模型准备和训练命令都增加 `--megatron-path`。
+执行前确定以下路径和服务，本文用环境变量表示：
+
+- `MODEL_DIR`、`DATA_DIR`、`RUN_DIR`：模型、准备后的任务数据、训练输出。由平台挂载或分发到所需进程，不限定共享盘、目录名或部署用户；当前任务的 Docker bind mount 源路径须在对应 daemon 主机上可访问。
+- `JUDGE_URL`：Harbor 任务容器能访问的 judge 服务 URL。
+- 集群的 Ray 作业提交地址和训练通信配置：优先使用平台提供的配置，不自行改写网络接口或重建集群。
+
+Harbor 当前使用 Docker 环境，需要任务执行进程能使用相应 Docker daemon；具体接入由平台决定，不要求固定挂载 `/var/run/docker.sock`。Megatron 不在脚本默认位置时，通过 `--megatron-path` 指定实际位置。
 
 ## 2. judge 部署
 
-仓库已内嵌 FCS judge 和合并题库，位置为 `Frontier-CS/algorithmic/`。`problems/` 中同时包含 180 道 FCS 题和 200 道 FrontierSmith 题。默认使用全部 200 道 Smith 题训练、全部 180 道 FCS 题评测。两边有 10 道已公布的重叠题，保留在数据中并在清单里注明。
+仓库 `Frontier-CS/algorithmic/` 已内嵌 judge 和合并题库：200 道 FrontierSmith 用于训练，180 道 FCS 用于评测。两边已公布的 10 道重叠题保留并记录在清单中。
 
-在**独立 judge 机器**上克隆本分支，进入目录直接用 Docker Compose 构建和启动：
+所有 Harbor trial 共用一个 judge 服务。可以复用兼容的已有服务，也可以在独立 CPU 机器或平台分配的服务环境部署。官方 Compose 启动方式如下，在拥有本分支代码的 judge 环境中执行：
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO-judge
-cd EasyPPO-judge/Frontier-CS/algorithmic
+cd Frontier-CS/algorithmic
 export FRONTIERCS_JUDGE_BIND_IP=0.0.0.0
-export JUDGE_WORKERS=8 GJ_PARALLELISM=8
 docker compose up -d --build
-curl --fail --retry 10 --retry-connrefused --retry-delay 2 http://127.0.0.1:8081/problems
+curl --fail http://127.0.0.1:8081/problems
 ```
 
-所有 Harbor trial 共用这个 judge。Compose 直接挂载本目录下的 `problems/`、`data/` 和 `submissions/`，没有跨机器的文件路径依赖，也不用从训练节点生成或传输配置。judge 目录可放在任意位置。
+Compose 需要 privileged 容器，挂载本地 `problems/`、`data/`、`submissions/`。若平台使用其他服务编排方式，按这份 Compose 的镜像、挂载和权限要求部署。judge 不需要训练集群的模型、共享盘或 Ray；并发容量按 CPU/内存调整 `JUDGE_WORKERS` 和 `GJ_PARALLELISM`。
 
-`FRONTIERCS_JUDGE_BIND_IP` 是 judge 本机监听地址；训练时的 `--frontier-judge-url` 填任务容器可达的 judge IP 或 DNS，例如 `http://10.0.0.20:8081`。HTTP API 没有认证，应在可信网络中开放 8081 端口。
-
-查看日志或停止服务时，在相同目录执行 `docker compose logs -f` 或 `docker compose down`。判题记录保留在本地 `data/` 和 `submissions/`。
+`FRONTIERCS_JUDGE_BIND_IP` 是服务端监听地址；`JUDGE_URL` 使用任务容器可达的服务 DNS 或地址，不能填 `0.0.0.0`。API 无认证，应使用平台内部网络或访问控制。
 
 ## 3. 模型准备
 
-回到训练集群，在一个 8 卡节点的 Miles GPU 环境中执行模型下载和 checkpoint 转换：
+在集群分配的 GPU 作业环境中，从仓库根目录执行。路径变量须已按实际环境设置：
 
 ```bash
-cd /shared/EasyPPO
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --action prepare \
-  --frontier-judge-url http://10.0.0.20:8081 \
-  --frontier-judge-timeout 3600 \
-  --model-dir /shared/models \
-  --data-dir /shared/data \
-  --output-dir /shared/runs
+  --frontier-judge-url "$JUDGE_URL" \
+  --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-此命令会下载固定 revision 的 `Qwen/Qwen3.5-27B`，从仓库内嵌题库生成 Harbor 任务及训练/评测 JSONL，并转换 Megatron checkpoint。应产生 `/shared/models/Qwen3.5-27B` 和 `/shared/models/Qwen3.5-27B_torch_dist`。judge 地址必须指向第 2 节启动的服务。地址和超时会写入生成的任务配置，改变它们后需重新执行 prepare。
+此步骤准备固定 revision 的 `Qwen/Qwen3.5-27B`、Harbor 任务和 JSONL，并转换 Megatron checkpoint。模型产物为 `$MODEL_DIR/Qwen3.5-27B` 和 `$MODEL_DIR/Qwen3.5-27B_torch_dist`；已有兼容产物可直接复用。转换需要 GPU。judge URL 和超时写入任务配置，变更后需重新准备数据。
 
 ## 4. 正式训练
 
-启动脚本会自动启动 Ray head，再按 hostfile 通过 SSH 启动其余 worker，无需手动执行 `ray start`。在 head 上准备 hostfile，第一列为节点 IP，包括 head；下面是默认同步训练的 4 个节点：
+优先通过集群现有的作业入口运行。平台已提供 Ray 集群时设置：
 
 ```bash
-cat > /shared/ray-hostfile <<'EOF'
-10.0.0.10 slots=8
-10.0.0.11 slots=8
-10.0.0.12 slots=8
-10.0.0.13 slots=8
-EOF
+export MILES_SCRIPT_EXTERNAL_RAY=1
+# RAY_ADDRESS 使用平台提供的 Ray Jobs HTTP 地址；在 head 本地运行可沿用默认地址。
+# MASTER_ADDR 使用训练节点可达的 head 地址，沿用平台设置。
 ```
 
-hostfile 只包含本次训练的 GPU 节点，不包含独立 judge。`MASTER_ADDR` 必须是其他节点可达的 head IP，并与 hostfile 中的 head 行一致；若该行使用主机名，则另设 `MLP_WORKER_0_HOST` 为该名称，以便跳过 head。
+此模式不启动或停止 Ray，也不通过 SSH 加入节点。当前 Ray backend 仍会清理提交环境中的旧训练进程，应在本实验的作业容器/进程环境内运行。代码和准备后的模型、任务数据需在执行端可用。
 
-head 需要能免密 `ssh root@<worker IP>`，且远端 SSH shell 中的 `ray` 来自已配置好的 Miles 环境。若训练环境在容器里，SSH 必须进入该容器环境，而不是宿主机的另一套 Python。各 worker 需能访问相同代码、模型和数据路径。按站点网络配置 `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME`。
-
-自动启动会清理这些节点上的旧 Miles/SGLang/Ray 进程，hostfile 应只列出本次独占使用的节点。若平台已经管理好 Ray 集群，设置 `MILES_SCRIPT_EXTERNAL_RAY=1`，脚本会跳过 head 启动和 SSH worker 加入；`--no-join-ray-workers` 则只关闭 SSH 加入。
-
-从 head 提交正式训练：
+仅在平台没有管理 Ray、且分配的环境支持 SSH 时，使用脚本已有的自动启动方式：不设置 `MILES_SCRIPT_EXTERNAL_RAY`，提供实际 `MASTER_ADDR` 和 `--ray-hostfile`。这个可选路径使用 root SSH；不是训练本身的要求。其他平台后端按 Miles 对应部署配置接入。
 
 ```bash
-cd /shared/EasyPPO
-export MASTER_ADDR=10.0.0.10
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train --ray-hostfile /shared/ray-hostfile \
+  --action train \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
-  --model-dir /shared/models --data-dir /shared/data --output-dir /shared/runs \
-  --sglang-server-concurrency 1
+  --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-命令中的 `--sglang-server-concurrency 1` 对应默认 6 个 engine 下最多 6 个并发 trial，可按任务宿主机和 judge 的容量提高；脚本原始默认值是 128。需要 `actor-summary` 时更换 context mode 和 run ID，不要混用同一套 checkpoint。
+节点数按实际资源覆盖。Harbor 并发按任务宿主机和 judge 容量设置 `--sglang-server-concurrency`；默认每 engine 为 128，设置为 1 时默认 8 个 engine 最多运行 8 个 trial。
 
-正式默认配置会在初始阶段评测，此后每 10 轮及最后一轮评测和保存。每次完整评测为 180 题 × 5 次，即 900 个 trial；首次评测耗时不代表训练卡死。`--eval-max-tasks` 大于零表示固定抽样子集，此时不能把结果当成完整 Frontier-CS 评测。设置 `WANDB_API_KEY` 可启用启动脚本的 W&B 配置。
+默认训练 200 轮，每轮 32 组 × 16 个 episode；前 30 轮只训练 critic，之后每轮 critic 更新 4 次、actor 更新 1 次。初始阶段、每 10 轮和最后一轮进行评测；完整评测为 180 题 × 5 次。需要 `actor-summary` 时更换 context mode 和 run ID。
 
-默认训练 200 轮，每轮 32 组 × 16 个 episode；前 30 轮仅更新 critic，之后每轮 critic 更新 4 次、actor 更新 1 次。此入口使用同步 clipped PPO，不开启 `--score-centering`。
-
-输出目录：
-
-```text
-/shared/runs/<run-id>/
-  checkpoints/          # actor
-  checkpoints_critic/   # critic
-  trials/               # Harbor 轨迹与 verifier 结果
-```
-
-恢复时使用相同启动脚本、数据集、context mode、run ID、训练拓扑和原有训练参数重新提交。脚本会从该 run 的 actor/critic checkpoint 目录加载。新实验使用新 run ID；不要把一次全新的训练意外指向旧 checkpoint。
+输出在 `$RUN_DIR/<run-id>/` 的 `checkpoints/`、`checkpoints_critic/` 和 `trials/`。恢复时保持 run ID、context mode、拓扑及训练参数一致；新实验使用新的 run ID。

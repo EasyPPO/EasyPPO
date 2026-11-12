@@ -33,7 +33,7 @@ critic-memory options.
 | Default GPU allocation | 16 trainer + 48 rollout B200s |
 | 32-GPU allocation | `--num-nodes 4 --trainer-num-nodes 1`: 8 trainer + 24 rollout |
 | Actor and critic parallelism | Megatron TP4, PP=CP=1; DP4 on 16 trainer GPUs or DP2 on 8 |
-| Validation | Full FCS 179 / TB2.1 89 tasks, five episodes per task, sampling `1/1/-1` |
+| Validation | Full FCS 180 / TB2.1 89 tasks, five episodes per task, sampling `1/1/-1` |
 | Eval / save cadence | Every 10 outer rounds and the final round; initial evaluation enabled |
 
 The actor and critic have independent weights, optimizers, schedulers, and
@@ -67,8 +67,8 @@ See [Score Centering](PPO_SCORE_CENTERING.md) for the actor loss and
 [data preparation](ASYNC_DATA.md) for dataset sources and judge mounts.
 
 Validation defaults are `--eval-max-tasks 0 --eval-samples-per-prompt 5`.
-Each validation point runs 895 Frontier-CS trials or 445 TB2.1 trials. Initial
-validation plus rounds 10..200 gives 21 points: 18,795 or 9,345 trials per
+Each validation point runs 900 Frontier-CS trials or 445 TB2.1 trials. Initial
+validation plus rounds 10..200 gives 21 points: 18,900 or 9,345 trials per
 experiment. Full-set result names are `fcs` / `tb21`.
 
 An explicit positive `--eval-max-tasks N` selects a seed-42 fixed subset with

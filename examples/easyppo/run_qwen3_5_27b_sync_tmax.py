@@ -1,25 +1,28 @@
 """Synchronous clipped PPO on TMAX-15K with Terminal-Bench 2.1 evaluation.
 
-Requires the Miles GPU environment, Docker, MASTER_ADDR and an SSH hostfile
-for multi-node training. The prepare action downloads the pinned model/data and
+Requires a configured Miles cluster and Harbor Docker access.
+Use MILES_SCRIPT_EXTERNAL_RAY=1 for platform-managed Ray; SSH bootstrap is optional.
+The prepare action downloads the pinned model/data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
 and support full_detach or actor-summary memory. Score centering is disabled.
+Rollout, critic, and actor alternate on all allocated GPUs with CPU offload.
 
 Args:
     --action: prepare, train or all (default).
-    --ray-hostfile: Hosts to join over root SSH (default: /root/mpi_rack_hostfile).
+    --num-nodes: Shared rollout/training allocation (default: 4 nodes, 8 GPUs each).
+    --ray-hostfile: Optional bootstrap hosts to join over root SSH (default: /root/mpi_rack_hostfile).
     --join-ray-workers / --no-join-ray-workers: Automatically join workers (default: on);
         MILES_SCRIPT_EXTERNAL_RAY=1 skips joining an already managed cluster.
     --dataset: Fixed to tmax; use the FrontierSmith launcher for FrontierSmith.
     --critic-context-mode: full_detach (default) or actor-summary.
-    --model-dir / --data-dir / --output-dir: Shared model, task and run paths.
+    --model-dir / --data-dir / --output-dir: Model, task and run paths available in the job environment.
     --score-centering: Rejected; this entrypoint uses ordinary clipped PPO.
     --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and five samples by default.
 
-Example (run on the head of a four-node allocation):
-    MASTER_ADDR=10.0.0.10 python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \\
-        --action train --critic-context-mode actor-summary --model-dir /shared/models \\
-        --data-dir /shared/data --output-dir /shared/runs
+Example (configured four-node allocation; set path variables for the site):
+    MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \\
+        --action train --critic-context-mode actor-summary --model-dir "$MODEL_DIR" \\
+        --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 """
 
 import sys

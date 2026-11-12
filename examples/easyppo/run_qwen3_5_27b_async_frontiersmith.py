@@ -1,26 +1,27 @@
 """One-step asynchronous actor-critic on FrontierSmith with Frontier-CS evaluation.
 
-Requires a running shared Frontier judge, the Miles GPU environment, Docker,
-MASTER_ADDR and an SSH hostfile for multi-node training. The prepare action downloads the pinned model, prepares the bundled data and
+Requires a shared Frontier judge, a configured Miles cluster, and Harbor Docker access.
+Use MILES_SCRIPT_EXTERNAL_RAY=1 for platform-managed Ray; SSH bootstrap is optional.
+The prepare action downloads the pinned model, prepares the bundled data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
 and support full_detach or actor-summary memory. Official SC/TIS is enabled.
 
 Args:
     --action: prepare, train or all (default).
-    --ray-hostfile: Hosts to join over root SSH (default: /root/mpi_rack_hostfile).
+    --ray-hostfile: Optional bootstrap hosts to join over root SSH (default: /root/mpi_rack_hostfile).
     --join-ray-workers / --no-join-ray-workers: Automatically join workers (default: on);
         MILES_SCRIPT_EXTERNAL_RAY=1 skips joining an already managed cluster.
     --dataset: Fixed to frontiersmith; use the separate TMAX launcher for TMAX.
     --critic-context-mode: full_detach (default) or actor-summary.
-    --model-dir / --data-dir / --output-dir: Shared model, task and run paths.
+    --model-dir / --data-dir / --output-dir: Model, task and run paths available in the job environment.
     --frontier-judge-url / --frontier-judge-timeout: Shared judge endpoint and queue-inclusive timeout baked into prepared tasks.
     --no-score-centering: Use the existing asynchronous clipped-PPO baseline.
     --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and five samples by default.
 
-Example (run on the head of an eight-node allocation):
-    MASTER_ADDR=10.0.0.10 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \\
-        --action train --critic-context-mode full_detach --model-dir /shared/models \\
-        --data-dir /shared/data --output-dir /shared/runs
+Example (configured eight-node allocation; set path variables for the site):
+    MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py \\
+        --action train --critic-context-mode full_detach --model-dir "$MODEL_DIR" \\
+        --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 """
 
 import sys
