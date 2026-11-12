@@ -14,6 +14,14 @@ git clone --branch miles https://github.com/EasyPPO/EasyPPO.git EasyPPO
 cd EasyPPO
 ```
 
+To update an existing checkout from **EasyPPO/EasyPPO, branch `miles`**:
+
+```bash
+git remote set-url origin https://github.com/EasyPPO/EasyPPO.git
+git switch miles
+git pull --ff-only origin miles
+```
+
 If the job image needs the project or its terminal dependencies, install:
 
 ```bash

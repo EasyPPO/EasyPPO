@@ -10,8 +10,8 @@ Python 3.12+, Docker Engine, and Docker Compose v2. The default recipe uses
 8 GPUs. Docker must be accessible from the training environment.
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO_fork.git
-cd EasyPPO_fork
+git clone --branch miles https://github.com/EasyPPO/EasyPPO.git
+cd EasyPPO
 python -m pip install -e '.[terminal]'
 ```
 

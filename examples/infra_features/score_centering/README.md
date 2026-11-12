@@ -27,7 +27,7 @@ This fork also accepts `--advantage-estimator ppo` to supply detached critic/GAE
 advantages to the same score-centering loss. Use `--use-rollout-logprobs`; the
 existing PPO setup constructs the critic. GRPO group reward centering does not
 apply to this mode. The actor still uses the SC objective, so PPO clipping flags
-do not take effect. See the [terminal actor-critic recipe](https://github.com/dyxg/EasyPPO/blob/miles/examples/easyppo/PPO_SCORE_CENTERING.md).
+do not take effect. See the [terminal actor-critic recipe](https://github.com/EasyPPO/EasyPPO/blob/miles/examples/easyppo/PPO_SCORE_CENTERING.md).
 
 Choose `--score-centering-is tis` for weights clipped at `--score-centering-tis-clip` (default 2). Choose `mis` to retain ratios in `[--score-centering-mis-low, --score-centering-mis-high]` (defaults 0.5 and 5), setting other weights to zero. These weights are centered together with the score. Use these options instead of `--use-tis` or a custom TIS function.
 

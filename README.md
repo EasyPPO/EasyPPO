@@ -41,9 +41,17 @@ Do not reinstall components already provided by that image. If this checkout
 and its terminal dependencies are missing, install them in the job image:
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO
+git clone --branch miles https://github.com/EasyPPO/EasyPPO.git EasyPPO
 cd EasyPPO
 python -m pip install -e '.[agentic,terminal]'
+```
+
+To update an existing checkout from **EasyPPO/EasyPPO, branch `miles`**:
+
+```bash
+git remote set-url origin https://github.com/EasyPPO/EasyPPO.git
+git switch miles
+git pull --ff-only origin miles
 ```
 
 The current terminal recipes do not require `third_party/compaction`; their
@@ -122,7 +130,7 @@ Use one compatible existing judge service or deploy the bundled service in an
 independent CPU environment. With Docker Compose:
 
 ```bash
-git clone --branch miles https://github.com/dyxg/EasyPPO.git EasyPPO-judge
+git clone --branch miles https://github.com/EasyPPO/EasyPPO.git EasyPPO-judge
 cd EasyPPO-judge/Frontier-CS/algorithmic
 export FRONTIERCS_JUDGE_BIND_IP=0.0.0.0
 export JUDGE_WORKERS=8 GJ_PARALLELISM=8
