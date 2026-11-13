@@ -3522,6 +3522,11 @@ def miles_validate_args(args):
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
     # TODO: refactor
+    # Repair a joint checkpoint before fresh-run fallback mutates load/finetune.
+    if getattr(args, "max_keep", 0):
+        from miles.backends.training_utils.checkpoint.joint_checkpoint import recover_checkpoint
+
+        recover_checkpoint(args)
     args.requested_load = args.load
     if args.megatron_config is None:
         resolve_args_checkpoint_load(args)

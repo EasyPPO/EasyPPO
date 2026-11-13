@@ -54,3 +54,12 @@ async def test_synchronous_run_without_critic_keeps_actor_checkpoint_cadence(mon
     assert components.critic_model is None
     assert components.actor_model.trained == list(range(30))
     assert components.actor_model.saved == [9, 19, 29]
+
+
+async def test_resume_after_last_checkpoint_retries_final_eval(monkeypatch):
+    events = []
+    args = _make_args(num_rollout=100, start_rollout_id=100, eval_interval=10)
+    components = _install_driver_fakes(monkeypatch, args, events)
+    await with_disposer(train_driver.train, args)
+    assert "eval:99" in events
+    assert components.actor_model.trained == []

@@ -52,6 +52,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     frontier_source_dir: str = ""
     frontier_judge_url: str = "http://host.docker.internal:8081"
     frontier_judge_timeout: int = 3600
+    terminal_environment: Literal["docker", "daytona", "modal"] = "docker"
     trials_dir: str = ""
     critic_context_mode: Literal["full_detach", "actor-summary"] = "full_detach"
     critic_load: str = ""
@@ -417,7 +418,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         "--terminal-trials-dir",
         args.trial_root,
         "--terminal-environment",
-        "docker",
+        args.terminal_environment,
         "--terminal-compaction",
         "summary",
         "--terminal-compact-threshold",

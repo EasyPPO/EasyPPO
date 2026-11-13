@@ -18,6 +18,7 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
     score_centering_is: Literal["none"] = "none"
     score_centering_recompute_loss: bool = False
     max_keep: int = 0
+    checkpoint_commit_hook: str = ""
 
     def __post_init__(self):
         super().__post_init__()
@@ -70,6 +71,9 @@ def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:
     checkpoint_args = _recipe._checkpoint_args(args)
     if args.max_keep:
         checkpoint_args += ["--max-keep", str(args.max_keep)]
+    if args.checkpoint_commit_hook:
+        checkpoint_args += ["--checkpoint-commit-hook", args.checkpoint_commit_hook]
+    checkpoint_args += ["--use-checkpoint-opt-param-scheduler"]
     argv = (
         checkpoint_args
         + _recipe._rollout_args(args)

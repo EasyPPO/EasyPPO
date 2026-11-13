@@ -2,6 +2,7 @@ import abc
 import copy
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 import torch
@@ -138,7 +139,14 @@ class RolloutDataSource(DataSource):
         }
         path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state_dict, path)
+        handle, temporary = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+        try:
+            with os.fdopen(handle, "wb") as file:
+                torch.save(state_dict, file)
+                os.fchmod(file.fileno(), 0o644)
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:

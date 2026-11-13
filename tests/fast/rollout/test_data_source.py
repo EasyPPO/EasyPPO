@@ -80,3 +80,42 @@ def test_load_restores_the_state_it_finds(tmp_path: Path) -> None:
     source.load(rollout_id=3)
 
     assert (source.sample_offset, source.epoch_id) == (7, 1)
+
+
+def test_save_and_resume_preserve_dataset_position(tmp_path):
+    source = _bare_source(rollout_global_dataset=True, save=str(tmp_path), load=str(tmp_path))
+    source.sample_offset, source.epoch_id = 123, 2
+    source.sample_group_index, source.sample_index = 45, 67
+    source.metadata = {"seed": 42}
+    source.save(3)
+    restored = _bare_source(rollout_global_dataset=True, load=str(tmp_path))
+    restored.load(3)
+    assert (restored.sample_offset, restored.epoch_id, restored.sample_group_index, restored.sample_index) == (
+        123,
+        2,
+        45,
+        67,
+    )
+    assert restored.metadata == source.metadata
+    assert not list((tmp_path / "rollout").glob("*.tmp"))
+
+
+def test_failed_save_does_not_publish_partial_rollout_state(tmp_path, monkeypatch):
+    import pytest
+    import torch
+
+    source = _bare_source(rollout_global_dataset=True, save=str(tmp_path))
+    source.sample_offset = source.epoch_id = source.sample_group_index = source.sample_index = 0
+    source.save(3)
+    path = tmp_path / "rollout/global_dataset_state_dict_3.pt"
+    before = path.read_bytes()
+
+    def fail_save(state, file):
+        file.write(b"partial")
+        raise OSError("interrupted write")
+
+    monkeypatch.setattr(torch, "save", fail_save)
+    with pytest.raises(OSError, match="interrupted write"):
+        source.save(3)
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob("*.tmp"))

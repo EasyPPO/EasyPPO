@@ -99,12 +99,17 @@ async def train(args, *, disposer: Disposer):
         if max_keep > 0:
             finalize_checkpoint(args, rollout_id, max_keep)
 
-    if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
+    if (
+        args.num_rollout >= args.start_rollout_id
+        and args.num_rollout > 0
+        and args.eval_interval is not None
+        and not args.skip_eval_before_train
+    ):
         await inference_controller.prepare_eval()
         if args.start_rollout_id == 0:
             await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
         else:
-            await eval_dispatcher.dispatch(args.start_rollout_id - 1)
+            await eval_dispatcher.dispatch(args.start_rollout_id - 1, force=args.start_rollout_id == args.num_rollout)
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).

@@ -16,7 +16,10 @@ from pathlib import Path
 
 def _request(url: str, payload: dict | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
-    request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if token := os.environ.get("FRONTIERCS_JUDGE_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.load(response)
 

@@ -52,6 +52,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --critic-save /root/shared_data/260101-000000-000/checkpoints_critic
   --critic-load /root/shared_data/260101-000000-000/checkpoints_critic
   --save-interval 10
+  --use-checkpoint-opt-param-scheduler
   --prompt-data /root/datasets/frontiersmith.train.jsonl
   --input-key prompt
   --metadata-key metadata

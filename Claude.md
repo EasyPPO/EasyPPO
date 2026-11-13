@@ -231,3 +231,17 @@ full Frontier-CS evaluation rewards at matched rounds.
 Rerun the same training command from [section 5](#5-primary-experiment-full_detach-vs-actor-summary)
 with the same `--output-dir` and `--run-id`. Training automatically resumes
 from the latest complete checkpoint.
+
+## 7. Modal launchers
+
+See [Modal setup and resume](modal_launchers/README.md). Preview either experiment:
+
+```bash
+python -m modal_launchers.frontiersmith --mode full_detach --run-id sync-fs-full-detach-001
+python -m modal_launchers.frontiersmith --mode actor-summary --run-id sync-fs-actor-summary-001
+```
+
+Prepare the shared model with `--action prepare`. Add `--launch` to the selected
+command after reviewing its resource plan. The default is one node with eight
+H200 GPUs and 1024 GiB host RAM. Each invocation runs one experiment and resumes
+its latest complete checkpoint; timeouts trigger up to three sequential restarts.

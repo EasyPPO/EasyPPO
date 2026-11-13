@@ -177,6 +177,7 @@ def test_trial_uses_shared_judge_without_sidecar_or_source_mounts(tmp_path):
             "PROBLEM_ID": "frontiersmith_0",
             "JUDGE_URL": url,
             "MAX_POLL_TIME": "900",
+            "FRONTIERCS_JUDGE_TOKEN": "${FRONTIERCS_JUDGE_TOKEN:-}",
         }
         assert config["verifier"]["timeout_sec"] == 990
         assert "FRONTIER_CS_ALGORITHMIC_PATH" not in config["environment"]["env"]

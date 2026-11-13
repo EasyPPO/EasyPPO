@@ -94,3 +94,18 @@ def test_judge_timeout_is_an_error(monkeypatch):
     monkeypatch.setattr(verifier.time, "monotonic", lambda: next(timestamps))
     with pytest.raises(TimeoutError, match="timed out"):
         verifier._judge("http://judge", "frontiersmith_3", "code", timeout=30)
+
+
+def test_modal_judge_token_is_attached_to_requests(monkeypatch):
+    import io
+
+    monkeypatch.setenv("FRONTIERCS_JUDGE_TOKEN", "test-token")
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(verifier.urllib.request, "urlopen", urlopen)
+    assert verifier._request("https://judge/problems") == {"ok": True}
+    assert requests[0].get_header("Authorization") == "Bearer test-token"

@@ -146,15 +146,20 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
     # and the old-actor copy. Async needs a separate allocation for rollout.
     asynchronous = import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{args.dataset}.py")
     monkeypatch.setattr(asynchronous.ScriptArgs, "create_backend", lambda self: backend)
-    asynchronous.execute(asynchronous.ScriptArgs(**(vars(args) | {"num_nodes": args.num_nodes * 2})))
+    shared_args = {
+        name: value for name, value in vars(args).items() if name not in {"max_keep", "checkpoint_commit_hook"}
+    }
+    asynchronous.execute(asynchronous.ScriptArgs(**(shared_args | {"num_nodes": args.num_nodes * 2})))
     async_argv = shlex.split(backend.training[-1]["train_args"])
     assert "--keep-old-actor" in async_argv
     rollout_index = async_argv.index("--rollout-num-gpus")
     assert async_argv[rollout_index + 1] == str(args.rollout_num_gpus)
     del async_argv[rollout_index : rollout_index + 2]
-    assert [flag for flag in argv if flag not in {"--colocate", "--offload-rollout"}] == [
-        flag for flag in async_argv if flag != "--keep-old-actor"
-    ]
+    assert [
+        flag
+        for flag in argv
+        if flag not in {"--colocate", "--offload-rollout", "--use-checkpoint-opt-param-scheduler"}
+    ] == [flag for flag in async_argv if flag != "--keep-old-actor"]
     assert backend.training[-1]["train_script"] == "train_async.py"
 
 
@@ -290,7 +295,7 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     args = launcher.ScriptArgs(run_id="parameter-parity")
     asynchronous = import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{args.dataset}.py")
     async_args = asynchronous.ScriptArgs(run_id=args.run_id)
-    sync_fields = {field.name for field in fields(args)}
+    sync_fields = {field.name for field in fields(args)} - {"max_keep", "checkpoint_commit_hook"}
     assert sync_fields == {field.name for field in fields(async_args)}
     assert {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)} == {
         "score_centering",
@@ -311,7 +316,7 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
             for option in parameter.opts + parameter.secondary_opts
         }
 
-    assert options(launcher.main) == options(asynchronous.main)
+    assert options(launcher.main) - {"--max-keep", "--checkpoint-commit-hook"} == options(asynchronous.main)
     assert args.eval_max_tasks == async_args.eval_max_tasks == 0
     assert args.eval_samples_per_prompt == async_args.eval_samples_per_prompt == 5
     assert (args.num_nodes, args.trainer_num_nodes, args.rollout_num_gpus) == (4, 4, 32)
@@ -380,3 +385,19 @@ def test_sync_rejects_separate_gpu_pools_before_backend_commands(launcher, monke
     with pytest.raises(ValueError, match="shares all allocated GPUs"):
         launcher.main(action="train", **override)
     assert not backend.commands and not backend.conversions and not backend.training
+
+
+def test_modal_environment_and_checkpoint_commit_hook_reach_training(launcher, monkeypatch):
+    backend = _backend(monkeypatch, launcher)
+    launcher.execute(
+        launcher.ScriptArgs(
+            terminal_environment="modal",
+            max_keep=2,
+            checkpoint_commit_hook="modal_launchers.runtime.commit_volume",
+        )
+    )
+    [submitted] = backend.training
+    argv = shlex.split(submitted["train_args"])
+    assert argv[argv.index("--terminal-environment") + 1] == "modal"
+    assert argv[argv.index("--checkpoint-commit-hook") + 1] == "modal_launchers.runtime.commit_volume"
+    assert "--use-checkpoint-opt-param-scheduler" in argv

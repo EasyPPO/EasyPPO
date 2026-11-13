@@ -84,7 +84,11 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
     config = toml.loads(config_path.read_text())
     verifier = config.setdefault("verifier", {})
     verifier["timeout_sec"] = judge_timeout + 90
-    verifier.setdefault("env", {}).update(JUDGE_URL=judge_url, MAX_POLL_TIME=str(judge_timeout))
+    verifier.setdefault("env", {}).update(
+        JUDGE_URL=judge_url,
+        MAX_POLL_TIME=str(judge_timeout),
+        FRONTIERCS_JUDGE_TOKEN="${FRONTIERCS_JUDGE_TOKEN:-}",
+    )
     config.get("environment", {}).get("env", {}).pop("FRONTIER_CS_ALGORITHMIC_PATH", None)
     config_path.write_text(toml.dumps(config))
 
