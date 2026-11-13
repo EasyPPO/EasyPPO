@@ -82,6 +82,9 @@ def _commit_storage(args) -> None:
 
 
 def finalize_checkpoint(args, rollout_id: int, max_keep: int) -> None:
+    # All remote writers must publish their shards and trackers before the
+    # driver inspects completeness on its own filesystem view.
+    _commit_storage(args)
     roots = (Path(args.save), Path(args.critic_save))
     state_path = Path(compute_global_dataset_state_path(args.save, rollout_id=rollout_id))
     if any(read_checkpoint_tracker_iteration(root) != rollout_id for root in roots) or (
@@ -93,7 +96,6 @@ def finalize_checkpoint(args, rollout_id: int, max_keep: int) -> None:
         raise RuntimeError(f"Checkpoint {rollout_id} is missing model or rollout state")
     # Durably publish payloads before the completion marker, and the marker
     # before deleting the previous recovery point (e.g. Modal Volume commits).
-    _commit_storage(args)
     atomic_write_text(roots[0] / PPO_CHECKPOINT_TRACKER, f"{rollout_id}\n")
     _commit_storage(args)
     complete = sorted(

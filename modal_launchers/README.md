@@ -9,26 +9,47 @@ profile to training workers so Harbor can create CPU task sandboxes. Set
 ## Preview and launch
 
 Every command defaults to a local plan. Add `--launch` to allocate resources.
-The default allocation is **one node, 8 H200 GPUs, 32 CPUs, 1024 GiB host RAM**;
-`--gpus 4` and `--gpu B200` are available. Each invocation selects one experiment.
+Select `--nodes 2` or `--nodes 4` and `--gpu H200` or `--gpu B200`.
+
+| Training nodes | GPUs per node | Total GPUs |
+|---|---|---|
+| `--nodes 1` (default) | 8 | 8 |
+| `--nodes 2` | 8 | 16 |
+| `--nodes 4` | 8 | 32 |
+
+Each node requests 32 CPUs and `--memory-gib 1024` host RAM by default.
+`--memory-gib` is per node. H200 is the default GPU; B200 uses the same recipe.
+Multi-node allocations use RDMA and require eight GPUs per node; `--gpus 4`
+is available only with `--nodes 1`. Each invocation selects one experiment.
 Review the allocation before launching. Keep the client running in tmux.
 
-Prepare the shared pinned Qwen3.5-27B model once (CPU download, then GPU conversion):
+Prepare the shared pinned Qwen3.5-27B model once (CPU download, then single-node GPU conversion, even with `--nodes 2/4`):
 
 ```bash
 python -m modal_launchers.frontiersmith --action prepare \
   --mode full_detach --run-id sync-fs-full-detach-001
 ```
 
-The two training plans corresponding to `Claude.md` are:
+Two-node plans (16 GPUs):
 
 ```bash
-python -m modal_launchers.frontiersmith \
-  --mode full_detach --run-id sync-fs-full-detach-001
-
-python -m modal_launchers.frontiersmith \
-  --mode actor-summary --run-id sync-fs-actor-summary-001
+python -m modal_launchers.frontiersmith --nodes 2 --gpu H200 \
+  --mode full_detach --run-id sync-fs-full-detach-2n-h200-001
+python -m modal_launchers.frontiersmith --nodes 2 --gpu H200 \
+  --mode actor-summary --run-id sync-fs-actor-summary-2n-h200-001
 ```
+
+Four-node plans (32 GPUs):
+
+```bash
+python -m modal_launchers.frontiersmith --nodes 4 --gpu B200 \
+  --mode full_detach --run-id sync-fs-full-detach-4n-b200-001
+python -m modal_launchers.frontiersmith --nodes 4 --gpu B200 \
+  --mode actor-summary --run-id sync-fs-actor-summary-4n-b200-001
+```
+
+Either topology accepts either GPU type. Set `--gpu H200` or `--gpu B200`
+and use a corresponding fresh run ID for a new experiment.
 
 Append `--launch` to the selected command to start it. Both use 100 rounds,
 30 critic-only rounds, four critic updates per round, 32 × 16 episodes, and
@@ -58,16 +79,18 @@ manifest rejects changes to the critic mode, topology, image, or other launch
 settings. Do not run two clients with the same run ID concurrently.
 
 Timeouts automatically restart the selected experiment, up to `--max-restarts 3`.
-The old GPU call is cancelled before the judge is replaced. Other training
+The old cluster call is cancelled before the judge is replaced. All nodes restart together. Other training
 errors stop the launcher. Ctrl-C stops the current attempt; rerun to resume.
 The local client must stay alive for automatic restarts. Each attempt has a
 24-hour platform limit and is stopped ten minutes before its judge expires.
 
 A checkpoint becomes resumable only after actor, critic, and rollout state are
-saved and committed to the Volume. The completion marker is committed before
+saved and committed to the Volume. On multiple nodes, every node commits its
+shards, all mounts reload, and only then does the head validate completeness. The completion marker is committed before
 old checkpoints are pruned. Interrupted first saves restart from the base;
 later interrupted saves roll back to the last complete set. A legacy partial
 checkpoint without a completion marker fails explicitly for inspection.
+Recovery runs on the head before workers reload their mounts and join Ray.
 Optimizer, scheduler, RNG, and rollout progress follow the framework checkpoint
 load path. A final checkpoint whose evaluation was interrupted reruns evaluation.
 `training_complete.json` is written only after the training process exits successfully.

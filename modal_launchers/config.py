@@ -19,6 +19,7 @@ class Config:
     source: str = "/workspace/EasyPPO"
     gpu: str = "H200"
     gpus: int = 8
+    nodes: int = 1
     memory_gib: int = 1024
     concurrency: int = 128
     max_restarts: int = 3
@@ -30,7 +31,11 @@ class Config:
         if self.mode not in MODES or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.run_id):
             raise ValueError("Choose a critic mode and a run ID containing only letters, digits, _ or -")
         if self.gpu not in ("H200", "B200") or self.gpus not in (4, 8):
-            raise ValueError("Use H200 or B200 with 4 or 8 GPUs on one node")
+            raise ValueError("Use H200 or B200 with 4 or 8 GPUs per node")
+        if self.nodes not in (1, 2, 4):
+            raise ValueError("nodes must be 1, 2 or 4")
+        if self.nodes > 1 and self.gpus != 8:
+            raise ValueError("Modal multi-node clusters require 8 GPUs per node")
         if min(self.memory_gib, self.concurrency, self.judge_cpus, self.judge_memory_gib, self.judge_workers) < 1:
             raise ValueError("Resources and concurrency must be positive")
         if self.max_restarts < 0:
@@ -55,7 +60,7 @@ class Config:
             "--action",
             action,
             "--num-nodes",
-            "1",
+            str(self.nodes if action == "train" else 1),
             "--num-gpus-per-node",
             str(self.gpus),
             "--no-join-ray-workers",
@@ -127,6 +132,7 @@ def parse_args(argv=None):
         parser.add_argument(f"--{name}", default=getattr(Config, name))
     for name in (
         "gpus",
+        "nodes",
         "memory_gib",
         "concurrency",
         "max_restarts",
@@ -148,7 +154,9 @@ def check_manifest(config, *, wandb_project, wandb_entity):
     path = root / "modal_run.json"
     expected = dict(config.manifest(), wandb_project=wandb_project, wandb_entity=wandb_entity)
     if path.exists():
-        if json.loads(path.read_text()) != expected:
+        actual = json.loads(path.read_text())
+        actual.setdefault("nodes", 1)  # Existing single-node manifests predate this field.
+        if actual != expected:
             raise ValueError(f"Run configuration differs from {path}; use the original settings or a new run ID")
     elif root.exists() and any(root.iterdir()):
         raise ValueError(f"Existing output has no Modal manifest: {root}")

@@ -181,3 +181,22 @@ def test_full_argument_validation_repairs_before_fresh_fallback(tmp_path):
     assert parsed.finetune and parsed.start_rollout_id == 0
     assert parsed.load == str(tmp_path)
     assert parsed.requested_load == args.save
+
+
+def test_storage_hook_makes_remote_checkpoint_visible_before_validation(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    joint.recover_checkpoint(args)
+    commits = []
+
+    def synchronize(_):
+        commits.append(1)
+        if len(commits) == 1:
+            # Other nodes already saved these files, but the driver has not
+            # reloaded their committed filesystem view yet.
+            _save(args, 4)
+        else:
+            assert Path(args.save, joint.PPO_CHECKPOINT_TRACKER).read_text().strip() == "4"
+
+    monkeypatch.setattr(joint, "_commit_storage", synchronize)
+    joint.finalize_checkpoint(args, 4, 2)
+    assert len(commits) == 2

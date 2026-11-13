@@ -234,14 +234,20 @@ from the latest complete checkpoint.
 
 ## 7. Modal launchers
 
-See [Modal setup and resume](modal_launchers/README.md). Preview either experiment:
+See [Modal setup and resume](modal_launchers/README.md). Select two or four nodes
+and either H200 or B200; each node has eight GPUs:
 
 ```bash
-python -m modal_launchers.frontiersmith --mode full_detach --run-id sync-fs-full-detach-001
-python -m modal_launchers.frontiersmith --mode actor-summary --run-id sync-fs-actor-summary-001
+python -m modal_launchers.frontiersmith --nodes 2 --gpu H200 --mode full_detach --run-id sync-fs-full-detach-2n-h200-001
+python -m modal_launchers.frontiersmith --nodes 4 --gpu B200 --mode actor-summary --run-id sync-fs-actor-summary-4n-b200-001
 ```
 
-Prepare the shared model with `--action prepare`. Add `--launch` to the selected
-command after reviewing its resource plan. The default is one node with eight
-H200 GPUs and 1024 GiB host RAM. Each invocation runs one experiment and resumes
-its latest complete checkpoint; timeouts trigger up to three sequential restarts.
+Both critic modes support both topologies and GPU types. Keep allocation and
+GPU type identical when comparing modes. Prepare the shared model with
+`--action prepare` (single-node conversion). Add `--launch` after reviewing the
+resource plan. CPU and host-memory settings are per node; defaults are 32 CPUs
+and 1024 GiB RAM. Omitting `--nodes` retains the single-node default.
+
+Each invocation runs one experiment and resumes its latest complete checkpoint.
+Timeouts trigger up to three sequential cluster restarts. Keep the same node
+count, GPU type and run ID when resuming; use a new ID to change topology.

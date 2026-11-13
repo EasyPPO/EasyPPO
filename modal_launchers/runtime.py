@@ -14,7 +14,14 @@ def commit_volume():
     # The hook runs in the training driver, inside the mounted Modal container.
     import modal
 
-    modal.Volume.from_name(os.environ["EASYPPO_MODAL_VOLUME"]).commit()
+    volume = modal.Volume.from_name(os.environ["EASYPPO_MODAL_VOLUME"])
+    nodes = int(os.environ.get("EASYPPO_MODAL_NODES", "1"))
+    if nodes > 1:
+        from modal_launchers.multinode import commit_cluster_volume
+
+        commit_cluster_volume(volume, nodes=nodes, head_ip=os.environ["MASTER_ADDR"])
+    else:
+        volume.commit()
 
 
 def prepare_run(config, judge_url):
@@ -60,7 +67,7 @@ def check_models(config):
         raise FileNotFoundError("Model weights are incomplete")
 
 
-def train(config, judge_url, judge_token):
+def train(config, judge_url, judge_token, *, run_command=subprocess.run):
     os.chdir(config.source)
     os.environ.update(FRONTIERCS_JUDGE_TOKEN=judge_token, WANDB_RUN_ID=config.run_id, WANDB_RESUME="allow")
     # Ray inherits the credentials from its parent. Never serialize API keys in
@@ -79,7 +86,11 @@ def train(config, judge_url, judge_token):
         ),
     ]
     try:
-        subprocess.run(command, check=True)
+        run_command(command, check=True)
         atomic_write_text(Path(config.output, "training_complete.json"), json.dumps({"rounds": 100}) + "\n")
     finally:
-        commit_volume()
+        # On failure the cluster may already be terminating; flush this node's
+        # pending writes without waiting for unavailable peers.
+        import modal
+
+        modal.Volume.from_name(config.volume).commit()

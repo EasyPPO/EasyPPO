@@ -36,6 +36,7 @@ def _training_image(modal, config):
     return (
         modal.Image.from_registry(config.image)
         .entrypoint([])
+        .apt_install("libibverbs1", "ibverbs-providers")
         .pip_install("harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.12.1", "modal==1.6.2")
         .add_local_dir(ROOT, config.source, ignore=IGNORE, copy=True)
         .run_commands(f"python3 -m pip install --no-deps -e {config.source}")
@@ -98,12 +99,26 @@ def _build_training(modal, config):
         prepare_run(config, judge_url)
         return False
 
-    @app.function(gpu=f"{config.gpu}:{config.gpus}", cpu=32, memory=config.memory_gib * 1024, timeout=86400, **common)
     def training(judge_url, judge_token):
         from modal_launchers.runtime import train
 
-        volume.reload()
-        train(config, judge_url, judge_token)
+        if config.nodes > 1:
+            from modal_launchers.multinode import run_node
+
+            run_node(modal.Cluster.from_context(), config, volume, judge_url, judge_token)
+        else:
+            volume.reload()
+            train(config, judge_url, judge_token)
+
+    if config.nodes > 1:
+        training = modal.clustered(size=config.nodes, rdma=True)(training)
+    training = app.function(
+        gpu=f"{config.gpu}:{config.gpus}",
+        cpu=32,
+        memory=config.memory_gib * 1024,
+        timeout=86400,
+        **(common | {"max_containers": config.nodes}),
+    )(training)
 
     return app, volume, preflight, training
 
@@ -283,7 +298,13 @@ def main(argv=None):
             {
                 "action": args.action,
                 "launch": args.launch,
-                "gpu_count": 0 if args.action == "cpu-smoke" else config.gpus,
+                "nodes": 0 if args.action == "cpu-smoke" else (1 if args.action == "prepare" else config.nodes),
+                "gpus_per_node": 0 if args.action == "cpu-smoke" else config.gpus,
+                "gpu_count": (
+                    0
+                    if args.action == "cpu-smoke"
+                    else config.gpus * (1 if args.action == "prepare" else config.nodes)
+                ),
                 "settings": config.manifest(),
                 "max_timeout_restarts": config.max_restarts,
                 "command": config.command(args.action if args.action == "prepare" else "train"),
