@@ -253,6 +253,9 @@ Both launchers read their generation defaults from [`frontiersmith.py`](frontier
 increments `truncated_turns` and the episode continues. An inserted end-of-turn
 token has loss mask 0 and does not count toward the generation budget. Recorded
 generated tokens retain their original masks and log-probabilities.
+FCS segments containing a length-limited completion are marked `TRUNCATED` for
+the actor-only truncation filter; other segments can still train. Sample metadata
+records `summary_span` as half-open offsets into the segment's original tokens.
 
 ### TMAX / Terminal-Bench
 
@@ -270,13 +273,17 @@ is checked before each action, using the configured limits:
 L >= min(compact_threshold,max_context_tokens-max(max_new_tokens,summary_tokens+O))
 ```
 
+FCS uses `L > compact_threshold` for the soft threshold, while retaining the
+same hard-context reserve. Equality alone does not request a summary.
+
 The actor then resumes from the original task plus the sampled progress
 summary. Each call's limit is further bounded by its remaining context and
 remaining episode generation budget.
 
 The **120000-token cumulative generation cap** includes actions, thinking,
-EOS, and summaries. It excludes prompts and tool outputs. Other limits are
-300 action-loop steps, 120 seconds per shell command, and 16000 characters
+EOS, and summaries. It excludes prompts and tool outputs. FCS uses the
+[submission and turn limits](#rewards-validation-and-checkpoints). Terminal tasks
+allow 300 action-loop steps, 120 seconds per shell command, and 16000 characters
 per tool output. Harbor's task-specific agent/verifier timeouts also apply.
 Exhausting the episode budget, step limit, or a Harbor timeout marks the
 episode truncated.

@@ -35,6 +35,13 @@ class FcsSubmissionAgent(TerminalAgent):
         feedback = self.messages[-1]["content"].removesuffix("\n" + NEXT_PROMPT)
         return self.messages[:-1] + [{"role": "user", "content": feedback + "\n\n" + COMPACT_PROMPT}]
 
+    def _should_compact(self, current_size: int, reserve: int) -> bool:
+        # The reference triggers strictly above the soft threshold. Preserve
+        # the harness's hard-context reserve even when the threshold is higher.
+        return (
+            current_size > self.options.compact_threshold or current_size >= self.options.max_context_tokens - reserve
+        )
+
     def _summary_resume(self, summary: str) -> list[dict]:
         summary = answer_text(summary)
         if eos := getattr(self.tokenizer, "eos_token", None):

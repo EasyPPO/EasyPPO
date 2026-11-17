@@ -21,6 +21,7 @@ from agentic_critic.terminal_env import TerminalConfig
 from scripts import frontiersmith_verifier as verifier
 from tests.agentic_critic.test_terminal_data import make_task
 from tests.agentic_critic.test_terminal_env import Tokenizer, completion
+from tests.agentic_critic.test_terminal_thinking import tokenizer  # noqa: F401
 
 
 def episode(replies, scores, **config):
@@ -237,3 +238,118 @@ async def test_native_trial_selects_submit_agent_and_resolves_judge_configuratio
         fcs_max_turns=7,
     )
     assert rewards == {"reward": 0.5}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("truncated_call", [None, 0, 1, 2])
+async def test_fcs_samples_match_reference_with_real_template(monkeypatch, tmp_path, request, truncated_call):
+    tokenizer_impl = request.getfixturevalue("tokenizer")
+
+    from agentic_critic import harbor_terminal, miles_terminal
+    from agentic_critic.fcs_env import TurnFormat, run_episode
+    from agentic_critic.miles_fcs import episode_samples
+    from miles.utils import http_utils
+    from miles.utils.types import Sample
+    from tests.agentic_critic.test_miles_terminal import args_for
+
+    texts = [
+        "plan</think>\n\n```cpp\n// " + "x " * 800 + "\nint main(){}\n```",
+        "summarize</think>\n\nKeep the first algorithm.",
+        "improve</think>\n\n```cpp\nint main(){return 0;}\n```",
+    ]
+    token_lists = [
+        tokenizer_impl.encode(
+            text + ("" if i == truncated_call else tokenizer_impl.eos_token), add_special_tokens=False
+        )
+        for i, text in enumerate(texts)
+    ]
+    reference_prompts = []
+    reference_calls = iter(enumerate(token_lists))
+    reference_scores = iter([80, 20])
+
+    def generate(prompt):
+        reference_prompts.append(prompt)
+        i, tokens = next(reference_calls)
+        return tokens, i != truncated_call
+
+    reference = run_episode(
+        statement="statement",
+        fmt=TurnFormat(tokenizer_impl),
+        generate=generate,
+        judge=lambda code: JudgeResult(next(reference_scores), "done"),
+        max_submissions=2,
+        compact_threshold_tokens=1200,
+    )
+    expected = episode_samples(reference, [[-0.5] * len(tokens) for tokens in token_lists])
+    requests = []
+    calls = iter(enumerate(token_lists))
+
+    async def post(url, payload, **kwargs):
+        requests.append(payload["input_ids"])
+        i, tokens = next(calls)
+        return {
+            "text": texts[i],
+            "meta_info": {
+                "output_token_logprobs": [(-0.5, token, None) for token in tokens],
+                "finish_reason": {"type": "length" if i == truncated_call else "stop"},
+            },
+        }
+
+    async def trial(**kwargs):
+        scores = iter([80, 20])
+
+        async def submit(code):
+            return JudgeResult(next(scores), "done")
+
+        agent = FcsSubmissionAgent(
+            tokenizer=kwargs["tokenizer"],
+            decode=kwargs["decode"],
+            submit=submit,
+            config=kwargs["config"],
+            max_submissions=kwargs["fcs_max_submissions"],
+            max_turns=16,
+        )
+        return await agent.run_async("statement"), {"reward": 0.8}, "/trial"
+
+    monkeypatch.setattr(http_utils, "post", post)
+    monkeypatch.setattr(harbor_terminal, "run_trial", trial)
+    make_task(tmp_path)
+    args = args_for(tmp_path)
+    args.terminal_max_new_tokens = 4096
+    args.terminal_summary_tokens = 1024
+    args.terminal_max_context_tokens = args.rollout_max_context_len = 16000
+    args.terminal_continue_on_length = True
+    args.fcs_max_submissions = 2
+    result = await miles_terminal.generate(
+        SimpleNamespace(
+            args=args,
+            sample=Sample(index=1, metadata={"task_path": "task", "agent_protocol": "fcs-submit"}),
+            state=SimpleNamespace(tokenizer=tokenizer_impl),
+            evaluation=False,
+            sampling_params={"max_new_tokens": 4096, "temperature": 1.0},
+        )
+    )
+    assert requests == reference_prompts
+    assert len(result.samples) == len(expected) == 2
+    for actual, wanted in zip(result.samples, expected, strict=True):
+        for field in ("tokens", "response_length", "loss_mask", "rollout_log_probs"):
+            assert getattr(actual, field) == wanted[field]
+        assert (actual.status == Sample.Status.TRUNCATED) == wanted["truncated"]
+        assert actual.reward == reference.reward
+    summary_start = len(reference_prompts[1])
+    summary_end = summary_start + len(token_lists[1])
+    assert result.samples[0].metadata["summary_span"] == (summary_start, summary_end)
+    assert result.samples[0].tokens[summary_start:summary_end] == token_lists[1]
+    assert result.samples[1].metadata["summary_span"] is None
+
+
+@pytest.mark.asyncio
+async def test_exact_soft_threshold_does_not_request_an_extra_summary():
+    replies = ["```cpp\nfirst\n```", "```cpp\nsecond\n```"]
+    baseline, prompts, _ = episode(replies, [80, 20], compaction="none")
+    await baseline.run_async("statement")
+    agent, actual, _ = episode(replies, [80, 20], compact_threshold=len(prompts[1]))
+    trace = await agent.run_async("statement")
+    assert actual == prompts and trace.n_compactions == 0
+    assert agent._should_compact(len(prompts[1]) + 1, 1)
+    assert agent._should_compact(agent.options.max_context_tokens - 100, 100)

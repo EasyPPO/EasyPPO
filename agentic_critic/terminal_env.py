@@ -232,6 +232,8 @@ class TerminalTrace:
                 "prompt_tokens": len(prompt),
                 "output_tokens": len(result.tokens),
                 "finish_reason": result.finish_reason,
+                "segment": len(self.segments) - 1,
+                "token_span": [len(prompt), len(prompt) + len(result.tokens)],
             }
         )
 
@@ -269,6 +271,16 @@ class TerminalTrace:
             for sample, ids, logps in zip(samples, self.topk_token_ids, self.topk_log_probs, strict=True):
                 sample.update(rollout_topk_token_ids=ids, rollout_topk_log_probs=logps)
         return samples
+
+    def segment_metadata(self, index: int) -> dict:
+        calls = [call for call in self.calls if call["segment"] == index]
+        summaries = [call["token_span"] for call in calls if call["kind"] == "summary"]
+        if len(summaries) > 1:
+            raise ValueError("Multiple summary completions in one segment")
+        return {
+            "summary_span": tuple(summaries[0]) if summaries else None,
+            "generation_truncated": any(call["finish_reason"] == "length" for call in calls),
+        }
 
 
 class EpisodeLimit(Exception):
@@ -379,8 +391,7 @@ class TerminalAgent(DefaultAgent):
         request = self._summary_request()
         summary_overhead = len(self._prompt(request)) - current_size
         reserve = max(self.options.max_new_tokens, self.options.summary_tokens + summary_overhead)
-        threshold = min(self.options.compact_threshold, self.options.max_context_tokens - reserve)
-        if current_size < threshold:
+        if not self._should_compact(current_size, reserve):
             return
         if self.options.compaction == "summary":
             summary = await self._complete(request, limit=self.options.summary_tokens, kind="summary")
@@ -443,6 +454,9 @@ class TerminalAgent(DefaultAgent):
 
     def _summary_request(self) -> list[dict]:
         return self.messages + [{"role": "user", "content": _SUMMARIZE}]
+
+    def _should_compact(self, current_size: int, reserve: int) -> bool:
+        return current_size >= min(self.options.compact_threshold, self.options.max_context_tokens - reserve)
 
     def _summary_resume(self, summary: str) -> list[dict]:
         return self.original_messages + [{"role": "user", "content": "Progress summary:\n" + summary}]

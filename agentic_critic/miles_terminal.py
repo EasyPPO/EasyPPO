@@ -210,6 +210,7 @@ async def generate(input):
     _validate_runtime(args, evaluation=input.evaluation)
     candidate_count = args.rollout_top_logprobs_num if not input.evaluation else 0
     metadata = base.metadata or {}
+    agent_protocol = metadata.get("agent_protocol", getattr(args, "terminal_agent_protocol", "terminal"))
     config = _config(args, metadata)
     task_path = Path(metadata["task_path"])
     if not task_path.is_absolute():
@@ -252,7 +253,7 @@ async def generate(input):
         tokenizer=input.state.tokenizer,
         decode=decode,
         config=config,
-        agent_protocol=metadata.get("agent_protocol", getattr(args, "terminal_agent_protocol", "terminal")),
+        agent_protocol=agent_protocol,
         fcs_max_submissions=getattr(args, "fcs_max_submissions", DEFAULT_MAX_SUBMISSIONS),
         fcs_max_turns=getattr(args, "fcs_max_turns", DEFAULT_MAX_TURNS),
     )
@@ -271,6 +272,7 @@ async def generate(input):
     reward, reward_metadata = _reward(args, metadata, rewards)
     samples = []
     for i, sample_fields in enumerate(trace.sample_fields()):
+        segment_metadata = trace.segment_metadata(i)
         sample = deepcopy(base)
         sample.rollout_id = base.rollout_id if base.rollout_id is not None else base.index
         if sample.rollout_id is None:
@@ -279,10 +281,14 @@ async def generate(input):
             setattr(sample, name, value)
         sample.response = input.state.tokenizer.decode(sample.tokens[-sample.response_length :])
         sample.reward = reward
-        sample.status = Sample.Status.TRUNCATED if trace.truncated else Sample.Status.COMPLETED
+        # FCS continues length-limited turns, but the reference masks affected
+        # segments out of actor training. Terminal tasks retain their episode policy.
+        truncated = trace.truncated or (agent_protocol == "fcs-submit" and segment_metadata["generation_truncated"])
+        sample.status = Sample.Status.TRUNCATED if truncated else Sample.Status.COMPLETED
         sample.metadata = {
             **metadata,
             **reward_metadata,
+            **segment_metadata,
             "segment": i,
             "n_compactions": trace.n_compactions,
             "truncated_turns": trace.truncated_turns,
