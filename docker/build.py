@@ -8,6 +8,7 @@ Usage:
     python docker/build.py --variant cu13 --image-tag dev --dry-run
 """
 
+import json
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -39,6 +40,13 @@ VARIANTS = {
         "tag_postfix": "",
         "build_args": {},
     },
+    "rubin": {
+        "image": "radixark/miles",
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "-rubin",
+        "dockerfile": "docker/Dockerfile.rubin",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -47,7 +55,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
-            "SGLANG_IMAGE_TAG": "v0.5.20-rocm724-mi35x",
+            "SGLANG_IMAGE_TAG": "v0.5.22-rocm724-mi35x",
             "WHEELS_TAG_ROCM": "rocm724-gfx950-v0.5.20",
             "APPLY_ROCR_VMMFIX": "1",
             "TE_USE_WHEEL": "1",
@@ -61,10 +69,25 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
-            "SGLANG_IMAGE_TAG": "v0.5.20-rocm10-mi35x",
+            "SGLANG_IMAGE_TAG": "v0.5.22-rocm10-mi35x",
             "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
             "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",
+        },
+    },
+    "rocm10-mi30x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm10-mi30x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx942",
+            "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
+            "SGLANG_IMAGE_TAG": "v0.5.22-rocm10-mi30x",
+            "WHEELS_TAG_ROCM": "rocm10-gfx942-v0.5.20",
+            "APEX_USE_PREBUILT": "1",
+            "TE_USE_WHEEL": "1",
+            "AITER_PREBUILD_JIT": "1",
         },
     },
 }
@@ -137,6 +160,22 @@ def build_and_push(
     for key, value in config.get("build_args", {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
 
+    lock_path = context / "release-lock.json"
+    # This lock targets the CUDA 13 runtime; other Dockerfiles keep their own ABI/source pins.
+    if dockerfile == "docker/Dockerfile" and lock_path.exists():
+        lock = json.loads(lock_path.read_text())
+        for key in (
+            "sglang_repo",
+            "sglang_branch",
+            "sglang_commit",
+            "megatron_repo",
+            "megatron_branch",
+            "megatron_commit",
+            "torch_memory_saver_commit",
+        ):
+            if key in lock:
+                cmd += ["--build-arg", f"{key.upper()}={lock[key]}"]
+
     # Caller overrides (e.g. release builds pinning SGLANG_COMMIT / MILES_COMMIT
     # from release-lock.json) come last so they win over variant defaults.
     for spec in extra_build_args:
@@ -160,8 +199,10 @@ class Variant(str, Enum):
     cu13 = "cu13"
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
+    rubin = "rubin"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
+    rocm10_mi30x = "rocm10-mi30x"
 
 
 class ImageTag(str, Enum):

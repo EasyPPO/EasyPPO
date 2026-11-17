@@ -2,9 +2,11 @@
 
 import ast
 import logging
+from collections.abc import Sequence
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, NamedTuple
 
 import pytest
 import torch
@@ -35,9 +37,18 @@ def _checkpoint_loader(args, native_loader):
     # Execute the production entry point, replacing only unavailable Megatron
     # imports. The model, head, state dict and weight mutations are real torch.
     path = Path(__file__).resolve().parents[4] / "miles/backends/megatron_utils/checkpoint.py"
-    names = {"_hide_critic_value_head", "load_checkpoint"}
+    names = {"_CheckpointLoadResult", "_hide_critic_value_head", "load_checkpoint"}
     nodes = [node for node in ast.parse(path.read_text()).body if getattr(node, "name", None) in names]
+    args.ckpt_step = getattr(args, "ckpt_step", None)
+    args.finetune = getattr(args, "_initialize_critic_value_head", False)
     scope = {
+        "Sequence": Sequence,
+        "Any": Any,
+        "NamedTuple": NamedTuple,
+        "torch": torch,
+        "_has_linear_attention": lambda models: False,
+        "get_checkpoint_name": lambda path, step, **kwargs: str(Path(path) / f"iter_{step:07d}"),
+        "ModelCompanionSampleConsumptionUtils": SimpleNamespace(clear_for_finetune=lambda *a, **kw: None),
         "get_args": lambda: args,
         "Path": Path,
         "logger": logging.getLogger(__name__),
@@ -83,7 +94,7 @@ def test_pretrained_native_load_excludes_and_restores_fresh_scalar_head(tmp_path
         with pytest.raises(OSError, match="checkpoint read failed"):
             load([model], None, None, None, False)
     else:
-        assert load([model], None, None, None, False) == (0, 0, False)
+        assert load([model], None, None, None, False) == (0, False)
         torch.testing.assert_close(model.backbone.weight, torch.full_like(model.backbone.weight, 0.125))
         torch.testing.assert_close(masters["backbone.weight"], model.backbone.weight)
     assert model.output_layer is head
@@ -109,7 +120,7 @@ def test_native_critic_resume_restores_value_head_and_keeps_checkpoint_step(tmp_
             chunk.output_layer.weight.fill_(1.5)
         return 39, 0
 
-    assert _checkpoint_loader(args, native_loader)([model], None, None, None, False) == (39, 0, False)
+    assert _checkpoint_loader(args, native_loader)([model], None, None, None, False) == (39, True)
     torch.testing.assert_close(model.output_layer.weight, torch.full_like(model.output_layer.weight, 1.5))
 
 
@@ -122,4 +133,4 @@ def test_actor_checkpoint_load_keeps_its_vocabulary_head(tmp_path):
         assert kwargs["ddp_model"][0].output_layer.weight.shape == (128, 4)
         return 9, 0
 
-    assert _checkpoint_loader(args, native_loader)([model], None, None, None, False) == (9, 0, False)
+    assert _checkpoint_loader(args, native_loader)([model], None, None, None, False) == (9, True)

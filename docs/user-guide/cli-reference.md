@@ -317,6 +317,7 @@ contract, session behavior, and model-family selection.
 |---|---|---|---|
 | `--custom-generate-function-path` | `<module>.<fn>` | – | Set to `miles.rollout.generate_hub.agentic_tool_call.generate` for the built-in agentic wrapper. |
 | `--custom-agent-function-path` | `<module>.<fn>` | – | Async agent-environment loop. Registered after selecting the built-in agentic wrapper. |
+| `--custom-agent-function-mode` | `subproc` / `inline` | `subproc` | Where each agent call runs: a child process of its own, or the rollout's event loop. See [Where the agent runs](/user-guide/agentic-rollout#where-the-agent-runs). |
 | `--use-session-server` | optional `v1` / `v2` | off | Bare flag (or `v1`) selects the linear append-only server; `v2` selects tree serving. Requires `--hf-checkpoint`. |
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
@@ -333,8 +334,8 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--mtp-num-layers` | int | `0` | Number of MTP layers in the checkpoint. |
-| `--enable-mtp-training` | flag | off | Train MTP alongside the policy. |
+| `--mtp-num-layers` | int | – | MTP layers the model has; built only with `--enable-mtp-training`. |
+| `--enable-mtp-training` | flag | off | Build and train the MTP layers alongside the policy (Megatron only). |
 | `--mtp-loss-scaling-factor` | float | `0.2` | Weight of MTP loss. |
 
 ### Fault tolerance

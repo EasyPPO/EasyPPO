@@ -8,11 +8,9 @@ from unittest.mock import AsyncMock
 
 import numpy as np
 import pytest
+
 from agentic_critic.critic_input import Segment
 from agentic_critic.miles_samples import critic_episode
-from tests.fast.fixtures.driver_fakes import FakeObjectStore
-from tests.fast.fixtures.score_centering_fixtures import _args as _conversion_args
-
 from miles.ray.rollout import rollout_executor as executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.ray.rollout.train_data_conversion import (
@@ -21,7 +19,26 @@ from miles.ray.rollout.train_data_conversion import (
     split_full_history_shards,
 )
 from miles.utils import object_store
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.types import Sample
+from tests.fast.fixtures.driver_fakes import FakeObjectStore
+from tests.fast.fixtures.score_centering_fixtures import _args as _conversion_args
+
+
+def _parallel(**overrides):
+    return TrainParallelConfig(
+        **(
+            dict(
+                dp_size=1,
+                cp_size=1,
+                vpp_size=None,
+                microbatch_group_size_per_vp_stage=None,
+                independent_dp=False,
+                supports_precomputed_schedule=True,
+            )
+            | overrides
+        )
+    )
 
 
 def _samples():
@@ -73,7 +90,9 @@ def test_memory_modes_build_own_episode_and_return_actor_spans(mode):
             "rollout_ids": [s.rollout_id for s in items],
         }
 
-    actor_shards, critic_shards = split_full_history_shards(args, rows(samples), rows(critic), spans, {"dp_size": 1})
+    actor_shards, critic_shards = split_full_history_shards(
+        args, rows(samples), rows(critic), spans, _parallel(dp_size=1)
+    )
     responses = [sample.tokens[-sample.response_length :] for sample in critic]
     shipped = [responses[row][start : start + length] for row, start, length in critic_shards[0]["value_slices"]]
     assert shipped == [sample.tokens[-sample.response_length :] for sample in samples]
@@ -155,8 +174,10 @@ async def test_executor_sc_actor_and_memory_critic_have_separate_conversion_cont
     executor = object.__new__(RolloutExecutor)
     executor.args = args
     executor.data_source = SimpleNamespace()
+    executor.last_get_rollout_id_of_model_id = {}
+    executor._output_snapshotter = executor_module._RolloutExecutorOutputSnapshotter(args=args)
     executor._rollouts_since_publish_of_model_id = defaultdict(int)
-    executor._train_parallel_configs_of_model_id = {None: {"dp_size": 1}}
+    executor._train_parallel_configs_of_model_id = {None: _parallel(dp_size=1)}
     executor.custom_convert_samples_to_train_data_func = None
     executor.custom_reward_post_process_func = None
     executor._get_rollout_data = AsyncMock(return_value=(samples, {}, {}))

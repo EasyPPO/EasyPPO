@@ -33,11 +33,28 @@ def _judge_image(modal):
 
 
 def _training_image(modal, config):
+    lock = json.loads((ROOT / "release-lock.json").read_text())
+    sglang_commit = lock["sglang_commit"]
+    megatron_commit = lock["megatron_commit"]
+    memory_saver_commit = lock["torch_memory_saver_commit"]
     return (
         modal.Image.from_registry(config.image)
         .entrypoint([])
         .apt_install("libibverbs1", "ibverbs-providers")
-        .pip_install("harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.12.1", "modal==1.6.2")
+        .pip_install("setuptools-scm==10.3.4")
+        .run_commands(
+            "python3 -c \"import torch; assert torch.__version__.split('+')[0] == '2.14.1'\"",
+            "cd /sgl-workspace/sglang && "
+            f"git fetch https://github.com/{lock['sglang_repo']}.git {sglang_commit} && "
+            f"git checkout -f {sglang_commit} && "
+            f"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=0.5.22+g{sglang_commit[:8]} "
+            "SGLANG_BUILD_RUST_EXTS=none python3 -m pip install --no-deps --no-build-isolation "
+            "-e python -e radix_transfer_plugins && "
+            "python3 -c 'import radix_transfer_plugins.stashes.token_output'",
+            f"cd /root/Megatron-LM && git fetch https://github.com/{lock['megatron_repo']}.git {megatron_commit} && git checkout -f {megatron_commit} && git submodule update --init --recursive && python3 -m pip install --no-deps -e .",
+            f"TMS_CUDA_MAJOR=13 python3 -m pip install --no-deps --force-reinstall git+https://github.com/fzyzcjy/torch_memory_saver.git@{memory_saver_commit}",
+        )
+        .pip_install("harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.19.0", "modal==1.6.2")
         .add_local_dir(ROOT, config.source, ignore=IGNORE, copy=True)
         .run_commands(f"python3 -m pip install --no-deps -e {config.source}")
         .env(
@@ -220,9 +237,7 @@ def _prepare(modal, config):
             wandb_entity=os.environ.get("WANDB_ENTITY"),
         )
         try:
-            snapshot_download(
-                ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/Qwen3.5-27B"
-            )
+            snapshot_download(ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/Qwen3.5-27B")
         finally:
             volume.commit()
 
@@ -300,11 +315,7 @@ def main(argv=None):
                 "launch": args.launch,
                 "nodes": 0 if args.action == "cpu-smoke" else (1 if args.action == "prepare" else config.nodes),
                 "gpus_per_node": 0 if args.action == "cpu-smoke" else config.gpus,
-                "gpu_count": (
-                    0
-                    if args.action == "cpu-smoke"
-                    else config.gpus * (1 if args.action == "prepare" else config.nodes)
-                ),
+                "gpu_count": (0 if args.action == "cpu-smoke" else config.gpus * (1 if args.action == "prepare" else config.nodes)),
                 "settings": config.manifest(),
                 "max_timeout_restarts": config.max_restarts,
                 "command": config.command(args.action if args.action == "prepare" else "train"),

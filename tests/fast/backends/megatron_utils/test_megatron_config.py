@@ -14,11 +14,11 @@ from miles.backends.megatron_utils import megatron_config as megatron_config_mod
 from miles.backends.megatron_utils.megatron_config import (
     MODEL_DEFINITION_ARGS,
     PER_POLICY_ARGS,
-    _has_megatron_checkpoint,
     _resolve_overrides,
     compute_trainer_args,
     compute_trainer_checkpoint_dir,
     get_megatron_arg_parser,
+    has_megatron_checkpoint,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
@@ -356,6 +356,13 @@ class TestResolveOverrides:
 
 
 class TestGetMegatronArgParser:
+    @pytest.fixture(autouse=True)
+    def _fresh_parser_cache(self):
+        """A stub-built parser must not leak to other tests through the cache."""
+        megatron_config_module._build_megatron_arg_parser.cache_clear()
+        yield
+        megatron_config_module._build_megatron_arg_parser.cache_clear()
+
     def test_a_parser_that_never_reaches_the_provider_fails_loudly(self, monkeypatch):
         """Silently answering an empty parser would type every override as a string."""
         monkeypatch.setitem(
@@ -366,6 +373,27 @@ class TestGetMegatronArgParser:
 
         with pytest.raises(AssertionError, match="returned without calling the extra args provider"):
             get_megatron_arg_parser()
+
+    def test_the_parser_is_built_once_per_command_line(self, monkeypatch):
+        """A rebuild per call stalls rollout, which resolves the megatron config once per sample."""
+        builds = []
+
+        def parse_args(extra_args_provider):
+            builds.append(sys.argv)
+            extra_args_provider(argparse.ArgumentParser())
+
+        monkeypatch.setitem(
+            sys.modules, "miles.backends.megatron_utils.arguments", SimpleNamespace(parse_args=parse_args)
+        )
+        monkeypatch.setattr(sys, "argv", ["train.py"])
+
+        parser = get_megatron_arg_parser()
+        assert get_megatron_arg_parser() is parser
+        assert len(builds) == 1
+
+        monkeypatch.setattr(sys, "argv", ["train.py", "--num-rollout", "3"])
+        assert get_megatron_arg_parser() is not parser
+        assert len(builds) == 2
 
 
 def _make_checkpoint_args(tmp_path, **overrides) -> Namespace:
@@ -394,6 +422,19 @@ def _write_megatron_checkpoint(tmp_path) -> str:
 
 
 class TestResolveArgsCheckpointLoad:
+    @pytest.mark.parametrize("mode", ["core", "bridge"])
+    def test_an_explicit_hf_initialization_keeps_its_weights(self, tmp_path, mode):
+        load = tmp_path / "critic-hf"
+        load.mkdir()
+        (load / "config.json").write_text("{}")
+        args = _make_checkpoint_args(tmp_path, load=str(load), megatron_to_hf_mode=mode, finetune=True)
+
+        resolve_args_checkpoint_load(args)
+
+        assert args.load == args.requested_load == str(load)
+        assert args.ckpt_step is None
+        assert args.finetune
+
     def test_a_fresh_bridge_run_falls_back_to_the_reference_weights(self, tmp_path):
         """--load points at a directory the first run has not written yet, which load_checkpoint asserts on."""
         args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge")
@@ -450,25 +491,55 @@ class TestResolveArgsCheckpointLoad:
         assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
         assert (args.ckpt_step, args.start_rollout_id) == (None, None)
 
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 0}, {"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-zero", "checkpoint-step", "exit-on-missing"],
+    )
+    @pytest.mark.parametrize("mode", ["core", "bridge"])
+    def test_an_explicit_checkpoint_selection_does_not_fall_back(self, tmp_path, selector, mode):
+        load = str(tmp_path / "missing")
+        args = _make_checkpoint_args(tmp_path, load=load, megatron_to_hf_mode=mode, **selector)
+
+        resolve_args_checkpoint_load(args)
+
+        assert args.load == load
+        assert args.requested_load == load
+        for name, value in selector.items():
+            assert getattr(args, name) == value
+        assert args.start_rollout_id is None
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_checkpoint_selection_requires_a_load_path(self, tmp_path, selector):
+        args = _make_checkpoint_args(tmp_path, load=None, **selector)
+
+        with pytest.raises(ValueError, match="requires --load"):
+            resolve_args_checkpoint_load(args)
+
 
 class TestHasMegatronCheckpoint:
     def test_a_directory_holding_the_tracker_file_is_a_checkpoint(self, tmp_path):
         """This is the one shape both branches treat as a resume."""
-        assert _has_megatron_checkpoint(_write_megatron_checkpoint(tmp_path)) is True
+        assert has_megatron_checkpoint(_write_megatron_checkpoint(tmp_path)) is True
 
     def test_a_directory_without_the_tracker_file_is_not_a_checkpoint(self, tmp_path):
         """A --save directory exists from the moment the run starts, long before it holds a checkpoint."""
         (tmp_path / "save").mkdir()
 
-        assert _has_megatron_checkpoint(str(tmp_path / "save")) is False
+        assert has_megatron_checkpoint(str(tmp_path / "save")) is False
 
     def test_a_missing_directory_is_not_a_checkpoint(self, tmp_path):
         """The first run of a job passes a --load path nothing has created yet."""
-        assert _has_megatron_checkpoint(str(tmp_path / "nope")) is False
+        assert has_megatron_checkpoint(str(tmp_path / "nope")) is False
 
     def test_no_load_directory_at_all_is_not_a_checkpoint(self):
         """--load is optional, and None must not reach os.path.exists."""
-        assert _has_megatron_checkpoint(None) is False
+        assert has_megatron_checkpoint(None) is False
 
 
 class TestComputeTrainerArgs:
@@ -535,6 +606,17 @@ class TestComputeTrainerArgs:
 
 
 class TestTrainerCheckpointDirs:
+    @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+    def test_other_backends_keep_their_scoped_load_path(self, backend):
+        args = _make_args(encode_megatron_config("a"), train_backend=backend, load="/checkpoints")
+        del args.ckpt_step, args.exit_on_missing_checkpoint
+
+        model = _model_args(args, model_id="a")
+
+        assert model.load == "/checkpoints/trainers/a-actor"
+        assert model.start_rollout_id is None
+        assert not model.no_load_optim and not model.no_load_rng
+
     def test_a_multi_policy_run_gives_every_trainer_its_own_checkpoint_dir(self, tmp_path):
         """A shared --save makes two policies write the same iter_* directory and overwrite each other."""
         old = tmp_path / "old"
@@ -685,6 +767,23 @@ class TestPerPolicyDerivedDefaults:
         args = _make_args(path, tokenizer_model="/models/shared")
 
         assert _model_args(args, model_id="a").tokenizer_model == "/models/shared"
+
+    @pytest.mark.parametrize(("enable_mtp_training", "expected_layers"), [(False, None), (True, 1)])
+    def test_a_policy_builds_its_own_mtp_layers_only_when_the_run_trains_mtp(
+        self, tmp_path, enable_mtp_training, expected_layers
+    ):
+        """The override lands after validation, yet Megatron would still train every MTP layer it builds."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"mtp_num_layers": 1}}]}, tmp_path)
+        args = _make_args(path, enable_mtp_training=enable_mtp_training, mtp_num_layers=expected_layers)
+
+        assert _model_args(args, model_id="a").mtp_num_layers == expected_layers
+
+    def test_a_policy_cannot_drop_the_mtp_layers_the_run_trains(self, tmp_path):
+        """--enable-mtp-training is run-wide, so every policy has to build the MTP layers it trains."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"mtp_num_layers": 0}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="needs --mtp-num-layers > 0"):
+            _model_args(_make_args(path, enable_mtp_training=True, mtp_num_layers=1), model_id="a")
 
 
 class TestMultiPolicyIds:
@@ -862,6 +961,27 @@ class TestSynthesizedCriticTrainer:
             1e-6,
             0.1,
         )
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_critic_initialization_uses_the_step_only_for_native_checkpoints(self, tmp_path, native):
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "config.json").write_text("{}")
+        if native:
+            (critic_load / "iter_0000007").mkdir()
+        args = _make_args(
+            use_critic=True,
+            load="/ckpt/actor",
+            critic_load=str(critic_load),
+            ckpt_step=7,
+            finetune=True,
+        )
+
+        actor, critic = [compute_trainer_args(args, trainer) for trainer in resolve_megatron_config(args).trainers]
+
+        assert actor.ckpt_step == args.ckpt_step == 7
+        assert critic.load == str(critic_load)
+        assert critic.ckpt_step == (7 if native else None)
 
     def test_an_internally_synthesized_override_bypasses_the_user_whitelist(self):
         """kl_coef and load are not per-policy yaml arguments, yet the critic must still be able to set them."""

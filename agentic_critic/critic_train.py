@@ -20,11 +20,12 @@ from contextlib import contextmanager, nullcontext
 from functools import partial
 
 import torch
+from torch.utils._pytree import tree_map
 from torch.utils.checkpoint import checkpoint
 
 from agentic_critic import kv_compact
 from agentic_critic.critic_input import Segment
-from agentic_critic.critic_modes import MODES, _detach_cache, assigning_cache_updates
+from agentic_critic.critic_modes import MODES, _clone_tensor, _detach_cache, assigning_cache_updates
 
 
 @contextmanager
@@ -39,11 +40,17 @@ def frozen_cache_updates():
             return key_states, value_states
         return torch.cat([self.keys, key_states], dim=-2), torch.cat([self.values, value_states], dim=-2)
 
-    def update_conv_state(self, conv_states, **kwargs):
-        return conv_states
+    def isolated(layer, state_name):
+        own = copy.copy(layer)
+        own.__dict__ = {name: value.copy() if isinstance(value, dict) else value for name, value in vars(layer).items()}
+        setattr(own, state_name, tree_map(_clone_tensor, getattr(layer, state_name)))
+        return own
 
-    def update_recurrent_state(self, recurrent_states, **kwargs):
-        return recurrent_states
+    def update_conv_state(self, conv_states, *args, **kwargs):
+        return originals[1](isolated(self, "conv_states"), conv_states, *args, **kwargs)
+
+    def update_recurrent_state(self, recurrent_states, *args, **kwargs):
+        return originals[2](isolated(self, "recurrent_states"), recurrent_states, *args, **kwargs)
 
     DynamicLayer.update, LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state = update, update_conv_state, update_recurrent_state
     try:

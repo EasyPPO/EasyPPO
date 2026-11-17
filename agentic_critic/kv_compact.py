@@ -28,7 +28,11 @@ UPSTREAM = os.environ.get("KV_COMPACTION_REPO", str(Path(__file__).resolve().par
 def _attention_layers(model):
     """(layer index, attention module) for every full-attention layer."""
     layers = model.model.layers if hasattr(model, "model") else model.layers
-    return [(i, layer.self_attn) for i, layer in enumerate(layers) if getattr(layer, "layer_type", None) == "full_attention"]
+    return [
+        (i, layer.self_attn)
+        for i, layer in enumerate(layers)
+        if getattr(layer, "block_type", getattr(layer, "layer_type", None)) == "full_attention"
+    ]
 
 
 def _queries(attn, hidden_states, position_embeddings) -> torch.Tensor:

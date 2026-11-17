@@ -9,7 +9,24 @@ from agentic_critic.critic_input import Segment
 from agentic_critic.miles_samples import critic_episode
 from miles.backends.training_utils.data.rollout import DataIterator
 from miles.ray.rollout import train_data_conversion as conversion
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.types import Sample
+
+
+def _parallel(**overrides):
+    return TrainParallelConfig(
+        **(
+            dict(
+                dp_size=1,
+                cp_size=1,
+                vpp_size=None,
+                microbatch_group_size_per_vp_stage=None,
+                independent_dp=False,
+                supports_precomputed_schedule=True,
+            )
+            | overrides
+        )
+    )
 
 
 def _args(**overrides):
@@ -72,7 +89,7 @@ def test_every_segment_and_value_is_local_and_visited_once(dp_size, balance, num
     actor, critic, spans = _data(num_episodes)
     original = deepcopy((actor, critic, spans))
     actors, critics = conversion.split_full_history_shards(
-        _args(balance_data=balance), actor, critic, spans, {"dp_size": dp_size}
+        _args(balance_data=balance), actor, critic, spans, _parallel(dp_size=dp_size)
     )
     assert (actor, critic, spans) == original
     seen_actor, seen_critic = [], []
@@ -108,7 +125,7 @@ def test_regression_independent_splits_fail_but_joint_split_succeeds():
     critics = conversion.split_train_data_by_dp_raw(args, deepcopy(critic), dp_size=2)
     with pytest.raises(AssertionError, match="different data-parallel ranks"):
         conversion.attach_value_slices(actors, critics, spans)
-    conversion.split_full_history_shards(args, actor, critic, spans, {"dp_size": 2})
+    conversion.split_full_history_shards(args, actor, critic, spans, _parallel(dp_size=2))
 
 
 @pytest.mark.parametrize("balance", [False, True])
@@ -117,9 +134,9 @@ def test_shared_critic_steps_do_not_enable_episode_aligned_sharding(monkeypatch,
     actor, _, _ = _data()
     # The legacy balanced path requires an even number of sample rows.
     actor = {key: values[:-1] for key, values in actor.items()}
-    monkeypatch.setattr(conversion, "can_schedule_on_rollout_side", lambda *a: False)
+    monkeypatch.setattr(conversion, "can_precompute_dp_schedule", lambda *a: False)
     expected = conversion.split_train_data_by_dp_raw(args, deepcopy(actor), dp_size=2)
-    actual = conversion.split_train_data_by_dp_shards(args, deepcopy(actor), {"dp_size": 2})
+    actual = conversion.split_train_data_by_dp(args, deepcopy(actor), _parallel(dp_size=2))
     assert actual == expected
     assert all("micro_batch_indices" not in shard for shard in actual)
 
@@ -128,16 +145,16 @@ def test_shared_rollout_schedule_remains_selected(monkeypatch):
     args = _args(critic_context_mode="shared", critic_num_steps_per_rollout=4)
     actor, _, _ = _data()
     sentinel = [object()]
-    monkeypatch.setattr(conversion, "can_schedule_on_rollout_side", lambda *a: True)
+    monkeypatch.setattr(conversion, "can_precompute_dp_schedule", lambda *a: True)
     monkeypatch.setattr(conversion, "split_train_data_by_dp_scheduled_raw", lambda *a, **kw: sentinel)
-    assert conversion.split_train_data_by_dp_shards(args, actor, {"dp_size": 2}) is sentinel
+    assert conversion.split_train_data_by_dp(args, actor, _parallel(dp_size=2)) is sentinel
 
 
 @pytest.mark.parametrize(
     "overrides,parallel,match",
     [
         ({"critic_context_mode": "shared"}, {}, "requires.*full_history"),
-        ({"global_batch_size": 3}, {"dp_size": 2}, "divisible"),
+        ({"global_batch_size": 3}, {}, "divisible"),
         ({"global_batch_size": 6}, {}, "complete logical"),
         ({"critic_num_steps_per_rollout": 3}, {}, "critic mini-batch"),
         ({"use_dynamic_batch_size": False}, {}, "dynamic-batch-size"),
@@ -149,14 +166,16 @@ def test_shared_rollout_schedule_remains_selected(monkeypatch):
 def test_unsupported_layouts_fail_explicitly(overrides, parallel, match):
     actor, critic, spans = _data()
     with pytest.raises(ValueError, match=match):
-        conversion.split_full_history_shards(_args(**overrides), actor, critic, spans, {"dp_size": 2, **parallel})
+        conversion.split_full_history_shards(
+            _args(**overrides), actor, critic, spans, _parallel(dp_size=2, **parallel)
+        )
 
 
 def test_invalid_span_fails_before_publishing_shards():
     actor, critic, spans = _data()
     spans[0] = (500, 0, 2)
     with pytest.raises(ValueError, match="Invalid full_history critic span"):
-        conversion.split_full_history_shards(_args(), actor, critic, spans, {"dp_size": 2})
+        conversion.split_full_history_shards(_args(), actor, critic, spans, _parallel(dp_size=2))
 
 
 def test_flops_balance_uses_episode_costs(monkeypatch):
@@ -168,5 +187,5 @@ def test_flops_balance_uses_episode_costs(monkeypatch):
         return sum(x * x for x in lengths)
 
     monkeypatch.setattr(conversion, "calculate_fwd_flops", estimate)
-    conversion.split_full_history_shards(_args(balance_by_flops=True), actor, critic, spans, {"dp_size": 2})
+    conversion.split_full_history_shards(_args(balance_by_flops=True), actor, critic, spans, _parallel(dp_size=2))
     assert lengths_seen == list(map(len, critic["tokens"]))

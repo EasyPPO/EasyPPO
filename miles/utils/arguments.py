@@ -4,6 +4,8 @@ import logging
 import math
 import os
 import re
+import tempfile
+from pathlib import Path
 from string import Formatter
 from typing import Any
 
@@ -13,8 +15,10 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
+    has_megatron_checkpoint,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
+    resolve_mtp_num_layers,
 )
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
@@ -31,7 +35,7 @@ from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
+from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args, validate_lora_args_after_megatron
 from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
@@ -51,6 +55,9 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 
 logger = logging.getLogger(__name__)
 
+LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
+
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
 
@@ -66,6 +73,14 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
+
+
+def driver_owns_generation_pause(args) -> bool:
+    return args.fully_async and args.colocate
+
+
+def supports_partial_target_weight_update(args) -> bool:
+    return not args.colocate and args.update_weight_transfer_mode == "p2p"
 
 
 def _resolve_rollout_functions(args) -> None:
@@ -89,7 +104,27 @@ def _resolve_rollout_functions(args) -> None:
         assert (
             args.rollout_function_path is None
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
-        assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
+        if args.colocate:
+            assert args.train_backend != "fsdp", (
+                "--fully-async --colocate needs the megatron IPC weight updater; the FSDP updater still "
+                "pauses and resumes generation on its own"
+            )
+            assert args.pause_generation_mode != "in_place", (
+                "--fully-async --colocate releases the KV cache to make room for training, so the "
+                "in_place promise to keep it cannot hold: use --pause-generation-mode retract"
+            )
+            assert not (
+                args.offload_rollout and "weight" in args.offload_rollout_level and args.update_weights_interval > 1
+            ), (
+                "--fully-async --colocate with rollout weight offload requires --update-weights-interval 1: "
+                "offloaded weights must be republished before generation resumes. "
+                "Use --offload-rollout-level kv_cache to retain weights between updates."
+            )
+            assert "rollout" not in args.ft_components, (
+                "--fully-async --colocate does not support rollout fault tolerance: a cell replaced while "
+                "generation is paused for training would neither inherit the pause nor get its KV cache back "
+                "before serving"
+            )
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
         assert args.pause_generation_mode != "abort", (
             "--fully-async cannot use --pause-generation-mode abort: generation is always in flight, "
@@ -101,6 +136,13 @@ def _resolve_rollout_functions(args) -> None:
         assert (
             args.rollout_all_samples_process_path is None
         ), "--fully-async does not support --rollout-all-samples-process-path"
+        if args.over_sampling_batch_size is not None:
+            # Runs before the default fills it in, so non-None means the user passed it.
+            logger.warning(
+                "--over-sampling-batch-size has no effect under --fully-async: groups are submitted "
+                "continuously and each step drains --rollout-batch-size of them. "
+                "Use --async-max-concurrent-samples to control how many samples are in flight."
+            )
 
     user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
@@ -133,7 +175,7 @@ def reset_arg(parser, name, **kwargs):
         parser.add_argument(name, **kwargs)
 
 
-_FT_CHOICES = ["rollout", "train"]
+_FT_CHOICES = ["rollout", "train", "weight_update"]
 _DEFAULT_FT_API_SERVER_PORT = 18080
 
 
@@ -441,12 +483,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--linear-attention-backend",
                 type=str,
-                choices=["fla", "flashqla"],
+                choices=LINEAR_ATTENTION_BACKENDS,
                 default="fla",
                 help=(
                     "Backend for Qwen GDN linear-attention layers. "
                     "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
                     "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                ),
+            )
+            parser.add_argument(
+                "--linear-attention-input-norm",
+                type=str,
+                choices=LINEAR_ATTENTION_INPUT_NORMS,
+                default="te",
+                help=(
+                    "Input RMSNorm of the Qwen3.5 / Qwen3-Next GDN layers, zero-centred ((1 + w) scale, fp32 math) "
+                    "either way. 'te' is Transformer Engine's fused kernel; 'hf' is the eager HF Qwen3NextRMSNorm "
+                    "these layers used before, kept to reproduce its numerics (same math, slower)."
                 ),
             )
             parser.add_argument(
@@ -524,7 +577,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="tilelang",
                 help=(
                     "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "'tilelang' (default) uses the fused TileLang DSA kernels in miles/kernels/attention/dsa (sparse_attention + lighting_indexer) for "
                     "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
                     "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
                     "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
@@ -569,6 +622,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
+                "--log-probs-backend",
+                type=str,
+                choices=["torch", "fused"],
+                default="torch",
+                help=(
+                    "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
+                    "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits "
+                    "through Triton kernels and writes the gradient in place; --log-probs-chunk-size does "
+                    "not apply to it. Not only an implementation choice: 'fused' normalizes over the true "
+                    "vocabulary (--vocab-size), as the rollout engine does, while 'torch' normalizes over "
+                    "Megatron's padded vocabulary (except for --loss-type score_centering), so with vocab "
+                    "padding (TP > 1) the two give slightly different log-probs, ratios and KL. "
+                    "'fused' does not support --true-on-policy-mode or sampling-support replay "
+                    "(--rollout-top-p below 1 or a positive --rollout-top-k)."
+                ),
+            )
+            parser.add_argument(
                 "--indep-dp",
                 action="store_true",
                 default=False,
@@ -578,6 +648,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--delay-split-train-data-by-dp",
                 action="store_true",
                 default=False,
+                help="Split the rollout batch across DP ranks on the training side instead of the rollout side, "
+                "using the training side's own DP size.",
             )
             parser.add_argument(
                 "--allgather-cp",
@@ -616,9 +688,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The huggingface checkpoint of the trained model. "
                     "This is used to initialize sglang and also provide the tokenizer. "
-                    "Note that, we will always update the parameters in sglang with that of megatron before training, "
-                    "so you only need to provide a huggingface checkpoint that has the same architecture as the model you want to train. "
-                    "It doesn't necessary need to contain the most up-to-date parameters."
+                    "Weight synchronization replaces startup weights with the loaded trainer weights before the first rollout. "
+                    "Disk-delta uses this checkpoint as the common baseline for the initial delta."
                 ),
             )
             parser.add_argument(
@@ -662,6 +733,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             # Sampling values reach the engine per request only: the built-in generate path sends them
             # itself and the session server fills fields an agent omits from its session's defaults.
             # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
+            parser.add_argument(
+                "--namespaced-radix-cache",
+                action=argparse.BooleanOptionalAction,
+                help=(
+                    "Whether every generation request carries a radix cache key naming the rollout call "
+                    "the sample started under, so prefix KV computed under old weights cannot serve "
+                    "samples of a later call. Defaults to true when --fully-async is combined with "
+                    "--pause-generation-mode in_place, where the engine never flushes the cache and the "
+                    "staleness of a shared prompt is otherwise unbounded; an explicit "
+                    "--no-namespaced-radix-cache is respected."
+                ),
+            )
             parser.add_argument(
                 "--rollout-temperature",
                 type=float,
@@ -857,8 +940,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Maximum allowed gap between a group's oldest weight version and the current "
-                    "engine weight version. Groups exceeding this threshold are recycled back to "
+                    "Maximum allowed gap between a group's oldest generated-token weight version and the current "
+                    "engine weight version. Prompt KV weight staleness is not considered. "
+                    "Groups exceeding this threshold are recycled back to "
                     "the data buffer instead of being sent to training. Only effective in fully "
                     "async mode. None (default) disables staleness filtering."
                 ),
@@ -957,7 +1041,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=512 * 1024**2,
                 help=(
                     "buffer size for update weight, in bytes. "
-                    "This is used for updating weights by batch and should be useful for MoE models."
+                    "This is used for updating weights by batch and should be useful for MoE models. "
+                    "P2P mode also sizes each of its two transfer buffers with it (or the largest parameter, if larger)."
                 ),
             )
             parser.add_argument(
@@ -1112,16 +1197,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--p2p-transfer-num-workers",
-                type=int,
-                default=4,
-                help="Number of thread pool workers for P2P weight transfer.",
-            )
-            parser.add_argument(
                 "--p2p-transfer-timeout",
                 type=float,
                 default=30.0,
-                help="Timeout in seconds for each P2P transfer operation.",
+                help=(
+                    "Seconds the end of a P2P weight update waits for writes still in flight; a write not done by "
+                    "then fails the update."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-engine-request-timeout",
+                type=float,
+                default=300.0,
+                help="Seconds allowed for one weight-update request to a rollout engine before its cell is given up.",
+            )
+            parser.add_argument(
+                "--update-weights-timeout",
+                type=float,
+                default=600.0,
+                help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up.",
             )
             return parser
 
@@ -1138,7 +1232,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 choices=_FT_CHOICES,
                 help="FT components to enable (requires --use-fault-tolerance). "
-                "Choices: rollout, train. Default when omitted: rollout.",
+                "Choices: rollout, train, weight_update. Default when omitted: rollout, weight_update.",
             )
             SimpleHealthCheckerConfig.add_arguments(
                 parser,
@@ -1227,7 +1321,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--data-source-path",
                 type=str,
-                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+                default="miles.rollout.data_source.RolloutDataSource",
                 help="The data source class for rollout data.",
             )
             parser.add_argument(
@@ -1370,16 +1464,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The maximum number of tokens per GPU for dynamic batch size. "
                     "Note that when enabling context parallel (CP), the max tokens per gpu should be around "
                     "`max_response_len // cp_size` instead of `max_response_len`."
-                ),
-            )
-            parser.add_argument(
-                "--log-probs-max-tokens-per-gpu",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum number of tokens per GPU for calculating log probs. "
-                    "This is used to calculate the log probs of the responses during rollout, "
-                    "and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. "
                 ),
             )
             return parser
@@ -1837,7 +1921,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Skip the standalone Megatron actor forward-only pass. With --use-rollout-logprobs, "
                     "those log-probs remain the old-policy baseline; otherwise detached training log-probs "
                     "are reused and the actor importance log-ratio is exactly 0. This requires a single "
-                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted."
+                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted. "
+                    "Custom model providers and the before-train-step hook must not make the training "
+                    "forward differ from the skipped forward."
                 ),
             )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
@@ -2242,8 +2328,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--save-debug-event-data",
                 type=str,
                 default=None,
-                help="Where the audit events of this run go, including the env report. Defaults to "
-                "<save>/events, so that a run that checkpoints also records what it ran as.",
+                help="Where the audit events of this run go, including the env report. Defaults to <save>/events "
+                "(or <dump-details>/events); --ci-test falls back to a run-specific directory under --ci-event-root.",
+            )
+            parser.add_argument(
+                "--ci-event-root",
+                type=str,
+                default=None,
+                help="Root for automatic CI event directories. Defaults to the system temporary directory; "
+                "the Kubernetes launcher supplies its shared run root. Explicit event, save, and dump directories "
+                "take precedence.",
             )
             parser.add_argument(
                 "--dump-details",
@@ -2325,11 +2419,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,
-                default="all",
+                default=None,
                 choices=["all", "target", "draft"],
-                help="Which model the post-update equality check covers: 'all' (target + "
-                "draft/MTP), 'target' (target model only; skips the draft, e.g. when MTP "
-                "training is off), or 'draft' (draft/MTP worker only).",
+                help="Which engine runners the post-update equality check snapshots, resets and compares: "
+                "'all' (target + draft/MTP), 'target' or 'draft'. Defaults to the runners the weight sync "
+                "covers, which leaves out a speculative draft unless --enable-mtp-training trains it.",
             )
             parser.add_argument(
                 "--check-weight-update-skip-list",
@@ -2352,9 +2446,41 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Save per-rank local weight checksum per-step.",
             )
             parser.add_argument(
+                "--check-weight-transfer-checksum",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Hash every P2P weight write on the sending trainer rank and on the receiving engine rank and "
+                "fail the write when they differ. Defaults on under --ci-test.",
+            )
+            parser.add_argument(
                 "--enable-event-analyzer",
                 action="store_true",
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
+            )
+            parser.add_argument(
+                "--log-inference-engine-weight-checksums",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Ask every inference engine for a full weight checksum after each weight update and record it "
+                "in the event log. The engines materialize all weights to answer, which costs a large transient "
+                "allocation, so this defaults on only when --save-debug-event-data was passed; the event "
+                "directories --dump-details and --save imply do not count.",
+            )
+            parser.add_argument(
+                "--enable-sample-ownership-checker",
+                action=argparse.BooleanOptionalAction,
+                help="Verify exactly one outcome for every consumed sample and every mature issued sample; "
+                "CI enables this unless it is explicitly disabled. Every actor step appends one full "
+                "consumption snapshot per replica to the event log, whose size therefore grows with steps "
+                "times consumed samples, so this is meant for CI and debugging.",
+            )
+            parser.add_argument(
+                "--sample-ownership-grace-steps",
+                type=int,
+                default=None,
+                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI). "
+                "The same grace applies at shutdown: recent unconsumed samples may remain unchecked. "
+                "Repeated consumption and repeated drops are still checked within the grace window.",
             )
             parser.add_argument(
                 "--enable-witness",
@@ -2368,25 +2494,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of unique witness IDs before recycling.",
             )
             parser.add_argument(
-                "--ci-ft-test-actions",
+                "--ci-fault-hooks",
                 type=str,
                 default=None,
-                help="JSON array of fault injection actions. Each action: "
-                '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
-                '"cell_id": "trainer-engine-actor-00002", "rank": 0, "attempt": 0}. '
-                "cell_id is the full cell id (spec name plus zero-padded cell index) of the target cell. "
-                'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
-                "once the step it names is trained and saved, so the run never starts the step after it.",
+                help="JSON array of fault hook requests set when each process starts. Each request names the hook "
+                "it waits at, the action to run there, the cell_id / rank it applies to, and the rollout_id / "
+                "attempt / weight_version it fires on.",
             )
-            # TODO ad hoc hack: revert after the args refactor
             parser.add_argument(
-                "--ci-ft-test-actions-path",
+                "--ci-fault-hooks-path",
                 type=str,
                 default=None,
-                help="Path of a file holding the same JSON array as --ci-ft-test-actions, read afresh every time "
-                "the actions are consulted. A run relaunched in place keeps the arguments its pods were rendered "
-                "from, so a plan that has to change from one launch to the next is delivered through this file "
-                "instead of through the argument. Mutually exclusive with --ci-ft-test-actions.",
+                help="Path of a file holding the same JSON array as --ci-fault-hooks, read when a process starts. "
+                "A run relaunched in place keeps the arguments its pods were rendered from, so a plan that has to "
+                "change from one launch to the next is delivered through this file. Mutually exclusive with "
+                "--ci-fault-hooks.",
             )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",
@@ -2616,13 +2738,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_mtp_training_arguments(parser):
             """Add MTP training specific arguments."""
+            # The model's MTP layers; built only under --enable-mtp-training, since Megatron trains any it builds.
             reset_arg(parser, "--mtp-num-layers", type=int, default=None)
             reset_arg(parser, "--mtp-loss-scaling-factor", type=float, default=0.2)
             parser.add_argument(
                 "--enable-mtp-training",
                 action="store_true",
                 default=False,
-                help="Enable MTP layer parameter updates during training",
+                help="Build and train the model's --mtp-num-layers MTP layers alongside the policy (megatron "
+                "only). Without it no MTP layer is built, so exported checkpoints carry no MTP weights.",
+            )
+            # Megatron's own TransformerConfig flag, defaulted on so MTP loss trains only the MTP layers.
+            reset_arg(parser, "--mtp-detach-heads", action="store_true", default=True)
+            parser.add_argument(
+                "--no-mtp-detach-heads",
+                dest="mtp_detach_heads",
+                action="store_false",
+                help="Let MTP loss gradients flow back into the main model's embedding, output layer and "
+                "hidden states.",
             )
 
             return parser
@@ -2637,6 +2770,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_ci_arguments(parser):
+            parser.add_argument(
+                "--ci-inject-missing-prefetched-batch-bug",
+                action="store_true",
+                help="Discard the restored prefetched batch to test sample ownership failure detection.",
+            )
             parser.add_argument(
                 "--ci-test",
                 action="store_true",
@@ -2674,6 +2812,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help="Require exactly this many eval checks, all meeting the CI threshold.",
+            )
+            parser.add_argument(
+                "--ci-assert-prefill-lag-max",
+                type=int,
+                default=None,
+                help="Require every rollout's prompt KV to lag its decode weight version by at most this much.",
             )
             parser.add_argument(
                 "--ci-save-grad-norm",
@@ -2896,9 +3040,11 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
                 text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
                 args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(text_config, "linear_attn_config", None)
-                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
-                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
+                # one indexer top-k stream per DSA layer; GLM-5.3-Flash's KDA layers have none
+                layer_types = getattr(text_config, "layer_types", None) or []
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - layer_types.count(
+                    "linear_attention"
+                )
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -2934,6 +3080,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
     if backend == "megatron":
         megatron_validate_args(args)
+        validate_lora_args_after_megatron(args)
 
         # always use varlen
         args.variable_seq_lengths = True
@@ -3179,7 +3326,7 @@ def _validate_single_engine_source(args: argparse.Namespace, *, component: Deplo
 
 def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, component: DeployComponent) -> None:
     if not component.deploys_orchestration_script():
-        unservable = sorted(set(args.ft_components) - {"train"})
+        unservable = sorted(set(args.ft_components) - {"train", "weight_update"})
         assert not unservable, (
             f"--deploy-component {component.value} installs no inference engines, and {unservable} cells are "
             f"suspended and resumed through the controller of the deployment that owns them, so this launch cannot "
@@ -3213,7 +3360,7 @@ def _validate_shared_object_store(args: argparse.Namespace, *, component: Deploy
     )
 
 
-_FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
+_FT_DEFAULT_COMPONENTS: list[str] = ["rollout", "weight_update"]
 
 
 def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
@@ -3294,7 +3441,97 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def validate_log_probs_backend_args(args) -> None:
+    """Reject settings the fused log-prob op does not cover, at startup rather than mid-run."""
+    if args.log_probs_backend != "fused":
+        return
+    if args.true_on_policy_mode:
+        raise ValueError(
+            "--log-probs-backend fused does not support --true-on-policy-mode, which needs bitwise "
+            "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
+        )
+    if args.use_sampling_support_replay:
+        raise ValueError(
+            "--log-probs-backend fused does not support sampling-support replay "
+            f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
+            "use --log-probs-backend torch."
+        )
+    # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
+    if args.train_backend == "megatron" and args.vocab_size is None:
+        raise ValueError(
+            "--log-probs-backend fused needs --vocab-size (the HF config's vocab_size) on the megatron "
+            "backend, to exclude Megatron's vocabulary padding from the softmax."
+        )
+
+
+def _resolve_event_logging(args: argparse.Namespace) -> None:
+    event_directory_was_requested = args.save_debug_event_data is not None
+
+    if args.dump_details is not None:
+        args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
+    if args.save_debug_event_data is None and args.save is not None:
+        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
+    if args.save_debug_event_data is None and args.ci_test:
+        root = Path(args.ci_event_root) if args.ci_event_root is not None else Path(tempfile.gettempdir())
+        args.save_debug_event_data = str(root / "miles-ci" / args.run_uuid / EVENTS_DIRNAME)
+
+    if args.log_inference_engine_weight_checksums is None:
+        args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
+    if args.enable_event_analyzer and not args.log_inference_engine_weight_checksums:
+        raise ValueError(
+            "--enable-event-analyzer (also implied by train fault tolerance) requires every published weight "
+            "version to carry engine weight checksums, so it cannot run with "
+            "--no-log-inference-engine-weight-checksums"
+        )
+
+
+def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.sample_ownership_grace_steps is None:
+        args.sample_ownership_grace_steps = 2 if args.ci_test else 10
+    if args.enable_sample_ownership_checker is None:
+        args.enable_sample_ownership_checker = args.ci_test
+    if not args.enable_sample_ownership_checker:
+        return
+
+    assert (
+        args.custom_convert_samples_to_train_data_path is None
+    ), "--enable-sample-ownership-checker is incompatible with --custom-convert-samples-to-train-data-path"
+
+    multi_policy = (
+        args.train_backend == "megatron"
+        and args.megatron_config is not None
+        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+    )
+    unsupported = [
+        reason
+        for condition, reason in (
+            (args.train_backend != "megatron", "the FSDP backend has no model companion info"),
+            (is_lora_enabled(args), "LoRA training has no model companion info"),
+            (args.multi_lora, "multi-LoRA training can replay samples"),
+            (multi_policy, "multi-policy training has separate model companion lineages"),
+            (args.debug_train_only, "train-only mode has no issuing data source"),
+            (args.debug_rollout_only, "rollout-only mode has no trainer model companion"),
+            (args.debug_disable_optimizer, "a disabled optimizer trains nothing"),
+            (args.num_critic_only_steps > 0, "critic-only warmup steps drop actor samples"),
+        )
+        if condition
+    ]
+    if unsupported:
+        raise ValueError(f"--enable-sample-ownership-checker is not supported here: {'; '.join(unsupported)}")
+
+    if args.sample_ownership_grace_steps < 0:
+        raise ValueError("--sample-ownership-grace-steps must be non-negative")
+
+    if args.save_debug_event_data is None:
+        raise ValueError(
+            "--enable-sample-ownership-checker needs an event directory: "
+            "pass --save-debug-event-data, --save, or --dump-details"
+        )
+
+
 def miles_validate_args(args):
+    from miles.backends.training_utils.weight_update.session import weight_update_selector
+
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
@@ -3310,6 +3547,13 @@ def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
+    assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
+        "rollout fault tolerance needs a partial-target weight update (--update-weight-transfer-mode p2p, no "
+        "--colocate): a rollout cell may be stopped during a weight update"
+    )
+    assert "weight_update" not in args.ft_components or (
+        args.train_backend == "megatron" and supports_partial_target_weight_update(args)
+    ), "weight_update FT requires Megatron, --update-weight-transfer-mode p2p, and no --colocate"
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (
         "rollout fault tolerance does not support a dedicated eval fleet (--eval-num-gpus > 0): "
         "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "
@@ -3338,6 +3582,14 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), f"indep_dp requires train_backend='megatron', got '{args.train_backend}'"
+        assert args.use_dynamic_batch_size, (
+            "--indep-dp requires --use-dynamic-batch-size (with --max-tokens-per-gpu): "
+            "the live cell count after a fault need not divide global_batch_size"
+        )
+        assert not args.use_dynamic_global_batch_size, (
+            "--indep-dp does not support --use-dynamic-global-batch-size: "
+            "independent cells do not expose a DP size to the rollout side"
+        )
         per_replica_size = compute_megatron_world_size_except_dp(args)
         logger.info(f"indep_dp: adjusting args.world_size from {args.world_size} to {per_replica_size} (per-cell)")
         args.world_size = per_replica_size
@@ -3404,6 +3656,8 @@ def miles_validate_args(args):
                 "those objectives require a separate full-policy actor score"
             )
     validate_rollout_topk_logprobs_args(args)
+
+    validate_log_probs_backend_args(args)
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
@@ -3528,7 +3782,7 @@ def miles_validate_args(args):
 
         recover_checkpoint(args)
     args.requested_load = args.load
-    if args.megatron_config is None:
+    if args.train_backend == "megatron" and args.megatron_config is None:
         resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
@@ -3556,6 +3810,7 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     validate_lora_args(args)
+    _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -3580,8 +3835,6 @@ def miles_validate_args(args):
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
-        if args.log_probs_max_tokens_per_gpu is None:
-            args.log_probs_max_tokens_per_gpu = args.max_tokens_per_gpu
 
     # --use-dynamic-global-batch-size has two motivations:
     # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment
@@ -3610,10 +3863,6 @@ def miles_validate_args(args):
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
         args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
-        args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
-
-    if args.save_debug_event_data is None and args.save is not None:
-        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
@@ -3684,8 +3933,20 @@ def miles_validate_args(args):
         and not args.ci_disable_weight_update_checker
     ):
         args.check_weight_update_equal = True
+    if args.check_weight_transfer_checksum is None:
+        args.check_weight_transfer_checksum = args.ci_test
+
+    if args.check_weight_update_selector is None:
+        # reset_tensors scrambles every tensor it covers, so it must cover only what the sync rewrites
+        args.check_weight_update_selector = weight_update_selector(args)
 
     # always true on offload for colocate at the moment.
+    assert (
+        args.update_weight_engine_request_timeout > 0
+    ), f"--update-weight-engine-request-timeout must be positive, got {args.update_weight_engine_request_timeout!r}"
+    assert (
+        args.update_weights_timeout > 0
+    ), f"--update-weights-timeout must be positive, got {args.update_weights_timeout!r}"
     if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
             "P2P weight transfer mode is not compatible with --colocate. "
@@ -3695,9 +3956,6 @@ def miles_validate_args(args):
             getattr(args, "prefill_num_servers", None) is None
         ), "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
-        assert (
-            args.megatron_to_hf_mode != "bridge"
-        ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
@@ -3721,6 +3979,14 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
+        if has_megatron_checkpoint(
+            args.requested_load,
+            ckpt_step=getattr(args, "ckpt_step", None) if args.load == args.requested_load else None,
+        ):
+            raise ValueError(
+                "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
+                f"Requested --load={args.requested_load}."
+            )
 
     if args.colocate:
         if args.offload_train is None:
@@ -3818,6 +4084,19 @@ def miles_validate_args(args):
             assert (
                 args.optimizer == "adam"
             ), f"--stream-optimizer-state-to-disk requires --optimizer adam, got {args.optimizer}"
+            # The streamed params have fp32 gradients only inside the optimizer step.
+            assert not (args.fp16 or args.loss_scale), (
+                "--stream-optimizer-state-to-disk does not support loss scaling (--fp16 or --loss-scale): "
+                "unscaling reads the fp32 gradients before the step, where the streamed params have none"
+            )
+            assert not args.log_num_zeros_in_grad, (
+                "--stream-optimizer-state-to-disk does not support --log-num-zeros-in-grad: the zero count reads "
+                "the fp32 gradients outside the step, where the streamed params have none"
+            )
+            assert not (args.enable_mtp_training and args.mtp_detach_heads), (
+                "--stream-optimizer-state-to-disk does not support --enable-mtp-training: the detached MTP heads "
+                "are clipped by their own grad norm, which reads the fp32 gradients outside the step"
+            )
         assert not (args.multi_lora or is_lora_enabled(args)), (
             "--stream-optimizer-state-to-disk does not support LoRA: the LoRA checkpoint path "
             "persists optimizer.state_dict(), which the store leaves empty, and restores the "
@@ -3854,6 +4133,26 @@ def miles_validate_args(args):
         )
 
     _resolve_rollout_functions(args)
+
+    if args.namespaced_radix_cache is None:
+        args.namespaced_radix_cache = args.fully_async and args.pause_generation_mode == "in_place"
+        if args.namespaced_radix_cache:
+            logger.info(
+                "--fully-async with --pause-generation-mode in_place never flushes the engine cache: "
+                "defaulting to --namespaced-radix-cache so prefix KV computed under old "
+                "weights cannot serve a later rollout call. Pass "
+                "--no-namespaced-radix-cache to keep one shared cache."
+            )
+
+    if args.namespaced_radix_cache:
+        assert args.use_session_server in (
+            False,
+            "v2",
+        ), "--namespaced-radix-cache requires --use-session-server v2 when using a session server"
+        assert not use_legacy_rollout_v1(), (
+            "--namespaced-radix-cache requires the class-based rollout API; "
+            "unset MILES_USE_LEGACY_ROLLOUT_V1 or pass --no-namespaced-radix-cache"
+        )
 
     # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
     # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)
@@ -3928,7 +4227,15 @@ def miles_validate_args(args):
             )
 
     if args.enable_mtp_training:
-        assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"
+        assert (
+            args.train_backend == "megatron"
+        ), f"--enable-mtp-training is megatron-only: the {args.train_backend} backend builds no MTP layers"
+        if not args.mtp_detach_heads:
+            logger.warning(
+                "--no-mtp-detach-heads: MTP loss gradients flow back into the main model's embedding, "
+                "output layer and hidden states, so the MTP loss also trains the policy"
+            )
+    resolve_mtp_num_layers(args)
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
@@ -3965,6 +4272,9 @@ def miles_validate_args(args):
             )
 
     args.run_uuid = _resolve_run_uuid(args)
+
+    _resolve_event_logging(args)
+    _resolve_sample_ownership_check(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
@@ -4049,16 +4359,10 @@ def validate_skip_actor_forward_only(args) -> None:
             ("--use-rollout-entropy", args.use_rollout_entropy),
             ("--true-on-policy-mode", args.true_on_policy_mode),
             ("--log-correct-samples", args.log_correct_samples),
-            ("--rollout-data-postprocess-path", args.rollout_data_postprocess_path is not None),
             (
                 "--custom-megatron-before-log-prob-hook-path",
                 args.custom_megatron_before_log_prob_hook_path is not None,
             ),
-            (
-                "--custom-megatron-before-train-step-hook-path",
-                args.custom_megatron_before_train_step_hook_path is not None,
-            ),
-            ("--custom-model-provider-path", args.custom_model_provider_path is not None),
             (
                 "--dumper-source-patcher-config-train",
                 args.dumper_source_patcher_config_train is not None,
@@ -4268,7 +4572,10 @@ def hf_validate_args(args, hf_config):
         # FIXME: Qwen3.5 transfomers has bug.
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
             continue
-        if getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size":
+        if (
+            getattr(hf_config, "model_type", "") in ("deepseek_v4", "deepseek_v41")
+            and hf_config_name == "intermediate_size"
+        ):
             continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
@@ -4279,3 +4586,9 @@ def hf_validate_args(args, hf_config):
 
     if len(errors) > 0:
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
+
+
+def _resolve_data_source_path(args: argparse.Namespace) -> None:
+    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+        logger.info("Partial rollout uses the legacy buffered data source by default")

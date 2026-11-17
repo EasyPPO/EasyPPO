@@ -52,6 +52,8 @@ CLEARED_ENV = (
     "RAY_ADDRESS",
     "ROTARY_SCALING_FACTOR",
     "SLURM_JOB_NUM_NODES",
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TRITON_CACHE_DIR",
 )
 
 
@@ -160,10 +162,31 @@ def host_filesystem_frozen(sandbox: Path) -> Iterator[None]:
     Without this the recording depends on which checkpoints the machine happens to carry, and on
     python 3.11 a `/root` path the user cannot stat raises PermissionError instead of reporting
     absence. The checkout stays visible because a launcher legitimately resolves its own model args
-    script out of it.
+    script out of it. Conversion cache locks and version stamps outside those roots are
+    redirected into the sandbox without changing the recorded command paths.
     """
     visible_roots = (sandbox, REPO_ROOT)
     real_exists = Path.exists
+    real_mkdir = Path.mkdir
+    real_write_text = Path.write_text
+    real_exclusive_path_lock = base_backend.exclusive_path_lock
+
+    def writable_path(path: Path) -> Path:
+        if any(path == root or path.is_relative_to(root) for root in visible_roots):
+            return path
+        return sandbox / "host-filesystem" / path.absolute().relative_to(path.absolute().anchor)
+
+    def mkdir(self: Path, *args, **kwargs):
+        return real_mkdir(writable_path(self), *args, **kwargs)
+
+    def write_text(self: Path, *args, **kwargs):
+        return real_write_text(writable_path(self), *args, **kwargs)
+
+    @contextmanager
+    def exclusive_path_lock(path_dst: str):
+        # Conversion cache locking remains real, but it must not create files on the host.
+        with real_exclusive_path_lock(str(writable_path(Path(path_dst)))):
+            yield
 
     def exists(self: Path, **kwargs: object) -> bool:
         if any(self == root or self.is_relative_to(root) for root in visible_roots):
@@ -171,10 +194,16 @@ def host_filesystem_frozen(sandbox: Path) -> Iterator[None]:
         return False
 
     Path.exists = exists
+    Path.mkdir = mkdir
+    Path.write_text = write_text
+    base_backend.exclusive_path_lock = exclusive_path_lock
     try:
         yield
     finally:
         Path.exists = real_exists
+        Path.mkdir = real_mkdir
+        Path.write_text = real_write_text
+        base_backend.exclusive_path_lock = real_exclusive_path_lock
 
 
 def call_entrypoint(module: ModuleType, name: str, overrides: dict[str, object], sandbox: Path) -> None:

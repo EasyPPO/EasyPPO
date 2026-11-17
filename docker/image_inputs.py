@@ -29,11 +29,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # purpose: it feeds the rocm/sgl-dev images, not the cu13 multi-arch image built here.
 INPUT_GLOBS = (
     "docker/Dockerfile",
+    "docker/Dockerfile.rubin",
     "docker/build.py",
     "docker/install-kube-tools.sh",
     "docker/verify_transformer_engine.py",
     "docker/patch/*",
     "requirements.txt",
+    "release-lock.json",
 )
 
 LABEL_KEY = "miles.image-inputs"

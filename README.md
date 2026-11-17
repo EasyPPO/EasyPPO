@@ -35,8 +35,8 @@ describes the objectives, memory, batching, budgets, and checkpoint contracts.
 
 ## 1. Environment
 
-Use the cluster's Miles-compatible GPU image and job environment; see
-[installation.md](docs/getting-started/installation.md) for image construction.
+Use the pinned runtime described in
+[Installation](examples/easyppo/USAGE.md#installation) in the cluster's job environment.
 Do not reinstall components already provided by that image. If this checkout
 and its terminal dependencies are missing, install them in the job image:
 

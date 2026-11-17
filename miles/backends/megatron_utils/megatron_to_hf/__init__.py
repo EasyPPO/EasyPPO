@@ -1,5 +1,6 @@
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
+from .deepseekv4_1 import convert_deepseekv4_1_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .glm5_next import convert_glm5_next_to_hf
@@ -33,6 +34,16 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None, packe
 
 
 # TODO optimize code details
+def converter_model_name(args, hf_config) -> str:
+    """The model name the converters dispatch on."""
+    return type(hf_config).__name__.lower() if args.model_name is None else args.model_name
+
+
+def convert_to_hf_names(args, model_name, name, param) -> list[str]:
+    """HF weight names the converter gives a Megatron param; ``param`` may be a meta tensor of its global shape."""
+    return [hf_name for hf_name, _ in _convert_to_hf_core(args, model_name, name, param)]
+
+
 def _convert_to_hf_core(args, model_name, name, param):
     model_name = model_name.lower()
     if "glm5_next" in model_name or "glm5next" in model_name:
@@ -58,6 +69,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen3_5_to_hf(args, name, param)
     elif "qwen2" in model_name or "qwen3" in model_name:
         converted_named_tensors = convert_qwen2_to_hf(args, name, param)
+    elif "deepseekv41" in model_name:
+        converted_named_tensors = convert_deepseekv4_1_to_hf(args, name, param)
     elif "deepseekv4" in model_name:
         converted_named_tensors = convert_deepseekv4_to_hf(args, name, param)
     elif "inkling" in model_name:
@@ -70,7 +83,7 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_kimi_k3_to_hf(args, name, param)
     elif "kimivl" in model_name:
         converted_named_tensors = convert_kimivl_to_hf(args, name, param)
-    elif "kimi_k25" in model_name:
+    elif "kimi_k25" in model_name or "kimik25" in model_name:
         converted_named_tensors = convert_kimi_k25_to_hf(args, name, param)
     else:
         raise ValueError(f"Unsupported model: {model_name}")

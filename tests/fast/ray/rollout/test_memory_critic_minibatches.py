@@ -8,11 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 import torch
+
 from agentic_critic.critic_input import Segment
 from agentic_critic.miles_samples import critic_episode
-from tests.fast.fixtures.driver_fakes import FakeObjectStore
-from tests.fast.fixtures.score_centering_fixtures import _args as _conversion_args
-
 from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.loss.hub import losses as native_losses
 from miles.backends.training_utils.loss.objective import drop_truncated_samples_from_actor_loss
@@ -21,7 +19,26 @@ from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.ray.rollout.train_data_conversion import build_critic_samples, split_full_history_shards
 from miles.utils import object_store
 from miles.utils.data import process_rollout_data
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.types import Sample
+from tests.fast.fixtures.driver_fakes import FakeObjectStore
+from tests.fast.fixtures.score_centering_fixtures import _args as _conversion_args
+
+
+def _parallel(**overrides):
+    return TrainParallelConfig(
+        **(
+            dict(
+                dp_size=1,
+                cp_size=1,
+                vpp_size=None,
+                microbatch_group_size_per_vp_stage=None,
+                independent_dp=False,
+                supports_precomputed_schedule=True,
+            )
+            | overrides
+        )
+    )
 
 
 def _samples():
@@ -94,8 +111,10 @@ def _executor(monkeypatch, *, mode, dp_size, balance, samples, num_groups=32, fa
     executor = object.__new__(RolloutExecutor)
     executor.args = args
     executor.data_source = SimpleNamespace()
+    executor.last_get_rollout_id_of_model_id = {}
+    executor._output_snapshotter = executor_module._RolloutExecutorOutputSnapshotter(args=args)
     executor._rollouts_since_publish_of_model_id = defaultdict(int)
-    executor._train_parallel_configs_of_model_id = {None: {"dp_size": dp_size}}
+    executor._train_parallel_configs_of_model_id = {None: _parallel(dp_size=dp_size)}
     executor.custom_convert_samples_to_train_data_func = None
     executor.custom_reward_post_process_func = None
     executor._get_rollout_data = AsyncMock(return_value=(samples, {}, {}))
@@ -139,9 +158,11 @@ async def test_group_variance_four_steps_and_actor_filter_survive_executor_pack_
     groups_per_step = [Counter() for _ in range(4)]
     seen_episodes = []
     for rank in range(dp_size):
-        actor, actor_result = process_rollout_data(executor.args, pack.data_ref, rank, dp_size, witness_info=None)
+        actor, actor_result = process_rollout_data(
+            executor.args, pack.data_ref, rank, _parallel(dp_size=dp_size), witness_info=None
+        )
         critic, critic_result = process_rollout_data(
-            executor.args, pack.for_critic().data_ref, rank, dp_size, witness_info=None
+            executor.args, pack.for_critic().data_ref, rank, _parallel(dp_size=dp_size), witness_info=None
         )
         with actor_result, critic_result:
             assert actor["num_rollouts"] == [512]
@@ -183,7 +204,7 @@ async def test_group_variance_four_steps_and_actor_filter_survive_executor_pack_
             # TP siblings request the same DP shard through this real processing
             # boundary; they must see the same episode order and step schedule.
             sibling, sibling_result = process_rollout_data(
-                executor.args, pack.for_critic().data_ref, rank, dp_size, witness_info=None
+                executor.args, pack.for_critic().data_ref, rank, _parallel(dp_size=dp_size), witness_info=None
             )
             with sibling_result:
                 assert sibling["rollout_ids"] == critic["rollout_ids"]
@@ -208,9 +229,11 @@ async def test_prompt_groups_can_span_dp_ranks_with_equal_episode_batches(monkey
     groups_per_step = [Counter() for _ in range(4)]
     seen = []
     for rank in range(8):
-        actor, actor_result = process_rollout_data(executor.args, pack.data_ref, rank, 8, witness_info=None)
+        actor, actor_result = process_rollout_data(
+            executor.args, pack.data_ref, rank, _parallel(dp_size=8), witness_info=None
+        )
         critic, critic_result = process_rollout_data(
-            executor.args, pack.for_critic().data_ref, rank, 8, witness_info=None
+            executor.args, pack.for_critic().data_ref, rank, _parallel(dp_size=8), witness_info=None
         )
         with actor_result, critic_result:
             assert actor["num_rollouts"] == [192]
@@ -237,7 +260,9 @@ async def test_native_value_loss_consumes_global_weights_with_each_steps_token_m
         monkeypatch, mode=mode, dp_size=1, balance=True, samples=samples, num_groups=4, fanout=2, critic_steps=2
     )
     pack = await executor.get(0)
-    critic, result = process_rollout_data(executor.args, pack.for_critic().data_ref, 0, 1, witness_info=None)
+    critic, result = process_rollout_data(
+        executor.args, pack.for_critic().data_ref, 0, _parallel(dp_size=1), witness_info=None
+    )
     with result:
         assert max(critic["critic_loss_weights"]) > 2 * min(critic["critic_loss_weights"])
         steps = _critic_steps(monkeypatch, executor.args, critic)
@@ -292,7 +317,9 @@ async def test_all_truncated_warmup_preserves_all_critic_episodes_for_training(m
     pack = await executor.get(29)
     seen = []
     for rank in range(4):
-        critic, result = process_rollout_data(executor.args, pack.for_critic().data_ref, rank, 4, witness_info=None)
+        critic, result = process_rollout_data(
+            executor.args, pack.for_critic().data_ref, rank, _parallel(dp_size=4), witness_info=None
+        )
         with result:
             assert all(critic["truncated"])
             assert all(any(mask) for mask in critic["loss_masks"])
@@ -341,7 +368,7 @@ def test_invalid_prompt_group_layouts_fail_before_shards_are_published(groups, f
         balance_data=False,
     )
     with pytest.raises(ValueError, match=message):
-        split_full_history_shards(args, data, critic, [(episode, 0, 1) for episode in range(8)], {"dp_size": 2})
+        split_full_history_shards(args, data, critic, [(episode, 0, 1) for episode in range(8)], _parallel(dp_size=2))
 
 
 def test_one_episode_cannot_mix_prompt_group_identities():

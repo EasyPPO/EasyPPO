@@ -310,6 +310,7 @@ def _miles_args(**overrides) -> Namespace:
         use_kl_loss=True,
         kl_loss_coef=KL_LOSS_COEF,
         kl_loss_type="low_var_kl",
+        enable_sample_ownership_checker=False,
         # rollout-side flags read by convert_samples_to_train_data
         reward_key=None,
         rewards_normalization=True,
@@ -346,7 +347,12 @@ def _miles_batch(rollout_data: dict, rows: list[int], keys: list[str]) -> dict:
 def _miles_loss(args: Namespace, batch: dict, logits: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
     """Token-mean loss as Megatron applies it: the summed loss over the returned token normalizer."""
     loss_sum, num_tokens, _ = loss_function(
-        args, batch, num_microbatches=1, logits=torch.cat(logits).unsqueeze(0), num_rollouts=len(logits)
+        args,
+        batch,
+        num_microbatches=1,
+        logits=torch.cat(logits).unsqueeze(0),
+        num_rollouts=len(logits),
+        apply_megatron_loss_scaling=True,
     )
     return loss_sum / num_tokens, num_tokens
 
@@ -732,6 +738,7 @@ def test_flags_off_value_loss_ignores_weights_and_keeps_miles_normalizer():
         num_microbatches=1,
         logits=torch.cat(_value_logits(rollout, all_rows)).unsqueeze(0),
         num_rollouts=rollout.batch_size,
+        apply_megatron_loss_scaling=True,
     )
 
     old_values, new_values, flat_returns = (torch.cat(x) for x in (rollout.old_values, rollout.new_values, returns))

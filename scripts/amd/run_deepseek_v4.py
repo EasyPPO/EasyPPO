@@ -62,6 +62,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     enable_eval: bool = True
     enable_mtp: bool = False
+    dsv4_impl: Literal["miles"] = "miles"
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    cp_size: int | None = None
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -80,7 +84,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     actor_num_gpus_per_node: int = field(init=False)
     rollout_num_gpus: int = field(init=False)
     optimizer_offload: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
 
     # debug configs
     dump_details: bool = False
@@ -200,7 +204,7 @@ def _prepare_spmd(args: ScriptArgs):
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
-    extra_args = "--dsv4-impl miles --expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    extra_args = f"--dsv4-impl {args.dsv4_impl} --expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if actor_num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
@@ -218,7 +222,7 @@ def _prepare_spmd(args: ScriptArgs):
 
     num_gpus_for_convert = actor_num_gpus_per_node
     if is_4layer:
-        num_gpus_for_convert = min(num_gpus_for_convert, 4)
+        num_gpus_for_convert = 1
 
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -264,11 +268,13 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
+        cp_size = args.cp_size or 1
         return (
-            f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
+            f"--tensor-model-parallel-size {actor_num_gpus_per_node // cp_size} "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 1 "
+            f"--context-parallel-size {cp_size} "
+            f"{'--allgather-cp ' if cp_size > 1 else ''}"
             f"--expert-model-parallel-size {actor_num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
@@ -318,8 +324,8 @@ def _train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
         "--balance-data "
@@ -412,6 +418,7 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
         "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",
         # unified_kv lives in compressor_v2 only; on HIP the v1 path leaves
         # compress_kv_pool unset and the memory pool asserts on it.
@@ -435,7 +442,7 @@ def _train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
-        "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
+        f"--dsv4-impl {args.dsv4_impl} "  # ROCm has no cudnn/flash_mla path for the megatron impl
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format thd "
         "--moe-router-freeze-gate "

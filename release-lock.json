@@ -1,0 +1,11 @@
+{
+  "release_branch": "miles",
+  "sglang_repo": "sgl-project/sglang",
+  "sglang_branch": "sglang-miles-v0.5.22-final",
+  "sglang_commit": "d04037425236bac6b5c03b9eebd2a45a42df9cc0",
+  "megatron_repo": "radixark/Megatron-LM",
+  "megatron_branch": "miles-main",
+  "megatron_commit": "2fbe25a442a539b2796cdf40e77dfb2c90782529",
+  "torch_memory_saver_commit": "118b09b3bc7b0cf386745db1eac2601d4aa7e681",
+  "base_image": "radixark/miles@sha256:bb235de60c2dd481c5255e1eb9f104b37ce47d125eb288267b4b00f44b51a845"
+}

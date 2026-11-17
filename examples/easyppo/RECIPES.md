@@ -364,6 +364,11 @@ trainer topology, and critic mode; both roles resolve their own checkpoint
 directory automatically. When no saved iteration exists, native loading falls
 back to the converted reference checkpoint for initialization.
 
+With `--max-keep 2`, retain the latest two complete checkpoint sets:
+actor, critic, and the matching rollout state under `checkpoints/rollout/<step>`.
+The rollout state includes data-source progress and prefetched batches. A partial
+save does not replace a complete set; resume selects the latest complete step.
+
 For a new run, `--critic-load <source-run>/checkpoints_critic --critic-weights-only`
 loads the critic weights through native finetune semantics with fresh
 optimizer/step state. See the [resume commands](../../README.md#6-evaluate-and-resume).

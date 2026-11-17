@@ -40,7 +40,7 @@ class bdist_wheel(_bdist_wheel):
 setup(
     author="miles Team",
     name="miles",
-    version="0.1.1",
+    version="0.1.3",
     packages=find_packages(include=["miles*", "miles_plugins*", "agentic_critic*"]),
     include_package_data=True,
     package_data={"miles.dashboard": ["static/*"], "agentic_critic": ["*.jinja"]},
@@ -49,7 +49,7 @@ setup(
         "terminal": ["harbor==0.24.0", "mini-swe-agent==1.17.1", "jinja2"],
         "agentic": [
             "torch>=2.0",
-            "transformers==5.12.1",
+            "transformers==5.19.0",
             "numpy",
             "PyYAML",
             "safetensors",

@@ -23,6 +23,7 @@ from contextlib import contextmanager
 
 import torch
 from torch import nn
+from torch.utils._pytree import tree_map
 
 from agentic_critic.critic_input import Segment
 
@@ -45,33 +46,24 @@ class ValueHead(nn.Module):
 
 @contextmanager
 def assigning_cache_updates():
-    """Make the linear-attention cache store new states by assignment instead of in-place copy.
+    """Give native linear-attention cache updates fresh storage before they write.
 
     transformers writes the recurrent and conv states into the cache with `copy_` (to keep a static
     address for compiled inference). During training that overwrites a tensor the graph still needs,
-    and backward fails. Assignment keeps the old tensor intact; the values are identical.
+    and backward fails. Cloning keeps the old tensor intact while the native update retains
+    its state-indexing, convolution-history and padding semantics.
     """
     from transformers.cache_utils import LinearAttentionLayer
 
     orig_conv, orig_rec = LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state
 
-    def update_conv_state(self, conv_states, **kwargs):
-        if not self.is_conv_states_initialized:
-            self.dtype, self.device = conv_states.dtype, conv_states.device
-            self.max_batch_size, self.conv_kernel_size = conv_states.shape[0], conv_states.shape[-1]
-            self.is_conv_states_initialized = True
-        k, new = self.conv_kernel_size, conv_states.shape[-1]
-        if not self.has_previous_state or new >= k:
-            self.conv_states = conv_states[..., -k:]
-        else:
-            self.conv_states = torch.cat([self.conv_states[..., new:], conv_states], dim=-1)
-        self.has_previous_state = True
-        return self.conv_states
+    def update_conv_state(self, conv_states, *args, **kwargs):
+        self.conv_states = tree_map(_clone_tensor, self.conv_states)
+        return orig_conv(self, conv_states, *args, **kwargs)
 
-    def update_recurrent_state(self, recurrent_states, **kwargs):
-        self.is_recurrent_states_initialized = True
-        self.recurrent_states = recurrent_states
-        return self.recurrent_states
+    def update_recurrent_state(self, recurrent_states, *args, **kwargs):
+        self.recurrent_states = tree_map(_clone_tensor, self.recurrent_states)
+        return orig_rec(self, recurrent_states, *args, **kwargs)
 
     LinearAttentionLayer.update_conv_state = update_conv_state
     LinearAttentionLayer.update_recurrent_state = update_recurrent_state
@@ -79,6 +71,10 @@ def assigning_cache_updates():
         yield
     finally:
         LinearAttentionLayer.update_conv_state, LinearAttentionLayer.update_recurrent_state = orig_conv, orig_rec
+
+
+def _clone_tensor(value):
+    return value.clone() if isinstance(value, torch.Tensor) else value
 
 
 def _detach_cache(cache, keep_kv: bool):
@@ -89,10 +85,7 @@ def _detach_cache(cache, keep_kv: bool):
             t = getattr(layer, name, None)
             if t is None:
                 continue
-            if isinstance(t, (list, tuple)):
-                setattr(layer, name, type(t)(x.detach() for x in t))
-            else:
-                setattr(layer, name, t.detach())
+            setattr(layer, name, tree_map(lambda x: x.detach() if isinstance(x, torch.Tensor) else x, t))
     return cache
 
 

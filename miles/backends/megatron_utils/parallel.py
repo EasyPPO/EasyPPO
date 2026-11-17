@@ -123,6 +123,7 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
                 if "critic_segment_lengths" in batch
                 else None
             ),
+            total_tokens=batch["cu_seqlens_host"][-1],
         )
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params

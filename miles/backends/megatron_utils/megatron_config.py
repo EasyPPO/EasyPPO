@@ -1,8 +1,10 @@
 import argparse
 import copy
+import functools
 import logging
 import os
 import re
+import sys
 from argparse import Namespace
 from pathlib import Path
 from typing import Any, Literal
@@ -331,9 +333,18 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
+    if (
+        trainer.role == CRITIC_ROLE
+        and ans.ckpt_step is not None
+        and has_hf_checkpoint(ans.load)
+        and not has_megatron_checkpoint(ans.load, ckpt_step=ans.ckpt_step)
+    ):
+        # The actor's step selector does not apply to HF initialization of the critic.
+        ans.ckpt_step = None
+
     # Each critic resolves its own checkpoint and fresh-initialization fallback.
     # The actor's load path has already been resolved by argument validation.
-    if args.megatron_config is not None or trainer.role == CRITIC_ROLE:
+    if args.train_backend == "megatron" and (args.megatron_config is not None or trainer.role == CRITIC_ROLE):
         resolve_args_checkpoint_load(ans)
     if trainer.role == CRITIC_ROLE:
         # Reference checkpoints contain the actor's vocabulary head. A fresh
@@ -350,6 +361,22 @@ def _apply_critical_derived_overrides(ans: Namespace, *, base: Namespace, traine
     # TODO: most derived defaults are still computed from the base args; revisit after the arguments refactor
     if "hf_checkpoint" in trainer.overrides and base.tokenizer_model == base.hf_checkpoint:
         ans.tokenizer_model = ans.hf_checkpoint
+    if "mtp_num_layers" in trainer.overrides:
+        resolve_mtp_num_layers(ans)
+
+
+def resolve_mtp_num_layers(args: Namespace) -> None:
+    """Keep the model's MTP layers only under --enable-mtp-training, since Megatron trains every MTP layer it builds."""
+    if args.enable_mtp_training:
+        assert args.mtp_num_layers, "--enable-mtp-training needs --mtp-num-layers > 0 to build the MTP layers"
+        return
+    if args.mtp_num_layers:
+        logger.info(
+            f"--mtp-num-layers {args.mtp_num_layers} without --enable-mtp-training: building no MTP layers, "
+            "so exported checkpoints carry no MTP weights"
+        )
+    # None, not 0: Megatron treats any non-None value as an MTP model, e.g. in its overlap_moe_expert_parallel_comm check
+    args.mtp_num_layers = None
 
 
 # ---------------------------- checkpoint dirs -----------------------------
@@ -365,31 +392,45 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
     # TODO: refactor
     args.requested_load = args.load
 
+    explicit_selection = args.ckpt_step is not None or args.exit_on_missing_checkpoint
+    if explicit_selection:
+        if args.load is None:
+            raise ValueError("an explicit checkpoint selection requires --load")
+        return
+
+    if has_megatron_checkpoint(args.load) or has_hf_checkpoint(args.load):
+        return
+
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
         # Mirrors the non-bridge branch below.
-        if not _has_megatron_checkpoint(args.load):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+        args.load = args.ref_load or args.hf_checkpoint
+        args.start_rollout_id = 0
     else:
-        if not _has_megatron_checkpoint(args.load):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
+        args.no_load_optim = True
+        args.no_load_rng = True
+        args.finetune = True
+        args.load = args.ref_load
+        if args.ref_ckpt_step is not None:
+            args.ckpt_step = args.ref_ckpt_step
+        args.start_rollout_id = 0
 
 
-def _has_megatron_checkpoint(load_dir: str | None) -> bool:
+def has_megatron_checkpoint(load_dir: str | None, ckpt_step: int | None = None) -> bool:
     return (
         load_dir is not None
         and os.path.exists(load_dir)
-        and os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
+        and (
+            os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
+            or (ckpt_step is not None and os.path.isdir(os.path.join(load_dir, f"iter_{ckpt_step:07d}")))
+        )
     )
+
+
+def has_hf_checkpoint(load_dir: str | None) -> bool:
+    return load_dir is not None and os.path.isfile(os.path.join(load_dir, "config.json"))
 
 
 # ---------------------------- validation -----------------------------
@@ -440,6 +481,13 @@ def _resolve_overrides(overrides: dict[str, Any], *, model_id: str) -> dict[str,
 
 
 def get_megatron_arg_parser() -> argparse.ArgumentParser:
+    """Shared by every caller with the same command line, so treat it as read-only."""
+    return _build_megatron_arg_parser(tuple(sys.argv))
+
+
+@functools.cache
+def _build_megatron_arg_parser(argv: tuple[str, ...]) -> argparse.ArgumentParser:
+    # argv only keys the cache: plugin add_arguments come from paths in sys.argv
     # TODO: revisit once the args refactor lands; this throwaway construction may then be optimized
     from miles.backends.megatron_utils.arguments import parse_args
     from miles.utils.arguments import get_miles_extra_args_provider

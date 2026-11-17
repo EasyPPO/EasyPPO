@@ -5,11 +5,11 @@ import re
 import shutil
 from pathlib import Path
 
+from miles.backends.training_utils.checkpoint import compute_rollout_checkpoint_dir
 from miles.backends.training_utils.checkpoint.tracker import (
     CHECKPOINT_TRACKER_FILENAME,
     read_checkpoint_tracker_iteration,
 )
-from miles.rollout.data_source import compute_global_dataset_state_path
 from miles.utils.file_utils import atomic_write_text
 from miles.utils.function_registry import load_function
 
@@ -20,8 +20,7 @@ PPO_CHECKPOINT_TRACKER = "latest_complete_ppo_checkpoint.txt"
 
 def _checkpoint_exists(args, rollout_id: int) -> bool:
     return all((Path(root) / f"iter_{rollout_id:07d}").is_dir() for root in (args.save, args.critic_save)) and (
-        not args.rollout_global_dataset
-        or Path(compute_global_dataset_state_path(args.save, rollout_id=rollout_id)).is_file()
+        compute_rollout_checkpoint_dir(args.save, rollout_id=rollout_id).is_dir()
     )
 
 
@@ -70,10 +69,9 @@ def recover_checkpoint(args) -> None:
             match = re.fullmatch(r"iter_(\d{7,})", path.name)
             if match and int(match[1]) > rollout_id and path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
-    for path in (actor_root / "rollout").glob("global_dataset_state_dict_*.pt"):
-        match = re.fullmatch(r"global_dataset_state_dict_(\d+)\.pt", path.name)
-        if match and int(match[1]) > rollout_id:
-            path.unlink()
+    for path in (actor_root / "rollout").iterdir() if (actor_root / "rollout").is_dir() else ():
+        if path.name.isdecimal() and int(path.name) > rollout_id and path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
 
 
 def _commit_storage(args) -> None:
@@ -86,10 +84,7 @@ def finalize_checkpoint(args, rollout_id: int, max_keep: int) -> None:
     # driver inspects completeness on its own filesystem view.
     _commit_storage(args)
     roots = (Path(args.save), Path(args.critic_save))
-    state_path = Path(compute_global_dataset_state_path(args.save, rollout_id=rollout_id))
-    if any(read_checkpoint_tracker_iteration(root) != rollout_id for root in roots) or (
-        args.rollout_global_dataset and not state_path.is_file()
-    ):
+    if any(read_checkpoint_tracker_iteration(root) != rollout_id for root in roots):
         raise RuntimeError(f"Checkpoint {rollout_id} is incomplete. Skipping checkpoint pruning.")
 
     if not _checkpoint_exists(args, rollout_id):
@@ -102,8 +97,7 @@ def finalize_checkpoint(args, rollout_id: int, max_keep: int) -> None:
         int(path.name[5:])
         for path in roots[0].glob("iter_*")
         if re.fullmatch(r"iter_\d{7,}", path.name)
-        and path.is_dir()
-        and (roots[1] / path.name).is_dir()
+        and _checkpoint_exists(args, int(path.name[5:]))
         and int(path.name[5:]) <= rollout_id
     )
     for previous in complete[:-max_keep]:
@@ -111,7 +105,9 @@ def finalize_checkpoint(args, rollout_id: int, max_keep: int) -> None:
             path = root / f"iter_{previous:07d}"
             if not path.is_symlink():
                 shutil.rmtree(path)
-        Path(compute_global_dataset_state_path(args.save, rollout_id=previous)).unlink(missing_ok=True)
+        rollout_dir = compute_rollout_checkpoint_dir(args.save, rollout_id=previous)
+        if rollout_dir.is_dir() and not rollout_dir.is_symlink():
+            shutil.rmtree(rollout_dir)
 
 
 def _validate_retention(args) -> int:

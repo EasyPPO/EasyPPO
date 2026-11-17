@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
+import pybase64
 
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sampling
 from miles.utils.sampling_mask import RolloutSamplingMask
@@ -31,22 +32,34 @@ def configure_rollout_topk_logprobs_request(args: Namespace, request: dict[str, 
     validate_rollout_topk_logprobs_sampling(sampling, temperature=args.rollout_temperature, candidate_count=k)
     if args.rollout_sampling_logprobs_mode == "support":
         # SGLang's support mode returns the actual post-filter behavior distribution.
-        request.pop("top_logprobs", None)
-        request.pop("top_logprobs_num", None)
+        for key in (
+            "top_logprobs",
+            "top_logprobs_num",
+            "return_flat_raw_output_top_logprobs",
+            "return_flat_raw_top_logprobs_b64",
+        ):
+            request.pop(key, None)
         request["sampling_logprobs_mode"] = "support"
     elif openai:
         request.pop("sampling_logprobs_mode", None)
         request["top_logprobs"] = k
+        # base64 [tokens, k] arrays: no per-candidate detokenization, and -inf survives (JSON would send null)
+        request["return_flat_raw_output_top_logprobs"] = True
+        request["return_flat_raw_top_logprobs_b64"] = True
     else:
         request.pop("sampling_logprobs_mode", None)
         request["top_logprobs_num"] = k
 
 
-def _validate_wire_token_logprob(token: Any, logp: Any, *, candidate: bool = False) -> None:
+def _validate_wire_token_logprob(
+    token: Any, logp: Any, *, candidate: bool = False, allow_zero_probability: bool = False
+) -> None:
     if isinstance(token, (bool, np.bool_)) or not isinstance(token, (int, np.integer)) or not 0 <= token < 2**31:
         raise ValueError("Rollout server returned an invalid token ID; expected a nonnegative int32 ID")
     if isinstance(logp, (bool, np.bool_)) or not isinstance(logp, (int, float, np.integer, np.floating)):
         raise ValueError("Rollout server returned an invalid log probability")
+    if allow_zero_probability and logp == -math.inf:
+        return
     try:
         finite = math.isfinite(logp)
     except OverflowError:
@@ -73,13 +86,28 @@ def extract_rollout_topk_logprobs(
     n = len(items)
     support_mode = sampling_logprobs_mode == "support"
     field = "output_token_sampling_logprobs" if support_mode else "output_top_logprobs"
+    ids = np.full((n, k), -1, dtype=np.int32)
+    logps = np.full((n, k), -np.inf, dtype=np.float32)
+    if not support_mode and "output_top_logprobs_shape" in meta:
+        flat_ids, flat_logps = _decode_flat_output_top_logprobs(meta)
+        if len(flat_ids) != n:
+            raise ValueError(f"Rollout top-k logprobs collection requires SGLang {field} for every generated token")
+        if n:
+            if flat_ids.shape[1] < k:
+                raise ValueError(
+                    f"SGLang returned {flat_ids.shape[1]} {field} per token, fewer than --rollout-top-logprobs-num {k}"
+                )
+            ids[:] = flat_ids[:, :k]
+            logps[:] = flat_logps[:, :k]
+            if np.isnan(logps).any() or (logps > 0).any():
+                raise ValueError("Rollout server returned an invalid log probability")
+            ids[np.isneginf(logps)] = -1
+        return ids, logps
     rows = meta.get(field)
     if rows is not None and not isinstance(rows, (list, tuple)):
         raise ValueError(f"Rollout server returned an invalid {field} array")
     if (n and rows is None) or (rows is not None and len(rows) != n):
         raise ValueError(f"Rollout top-k logprobs collection requires SGLang {field} for every generated token")
-    ids = np.full((n, k), -1, dtype=np.int32)
-    logps = np.full((n, k), -np.inf, dtype=np.float32)
     for i, entries in enumerate(rows or []):
         if not isinstance(entries, (list, tuple)):
             raise ValueError(f"Rollout server returned an invalid {field} row")
@@ -95,9 +123,11 @@ def extract_rollout_topk_logprobs(
             token_ids = [entry[1] for entry in entries[:k]]
             probabilities = [entry[0] for entry in entries[:k]]
         for token, logp in zip(token_ids, probabilities, strict=True):
-            _validate_wire_token_logprob(token, logp, candidate=True)
+            _validate_wire_token_logprob(token, logp, candidate=True, allow_zero_probability=not support_mode)
         ids[i, : len(token_ids)] = token_ids
         logps[i, : len(token_ids)] = probabilities
+    # SGLang can return masked zero-probability candidates; use the existing padding representation.
+    ids[np.isneginf(logps)] = -1
     return ids, logps
 
 
@@ -117,6 +147,27 @@ def append_rollout_topk_logprobs(
     for name, values in (("rollout_topk_token_ids", ids), ("rollout_topk_log_probs", logps)):
         previous = getattr(sample, name)
         setattr(sample, name, values if previous is None else np.concatenate((previous, values)))
+
+
+def _decode_flat_output_top_logprobs(meta: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    """Candidate ids and logprobs `[tokens, width]` from SGLang's base64 `return_flat_raw_output_top_logprobs`."""
+    if meta["output_top_logprobs_null_prefix"]:
+        raise ValueError(
+            "Rollout top-k logprobs collection requires SGLang output_top_logprobs for every generated token"
+        )
+    if "output_top_logprobs_val_flat_b64" not in meta:
+        raise ValueError(
+            "Rollout top-k logprobs collection requires base64 flat arrays (return_flat_raw_top_logprobs_b64)"
+        )
+    shape = meta["output_top_logprobs_shape"]
+
+    def decode(field: str, dtype: type) -> np.ndarray:
+        # SGLang writes contiguous little-endian bytes; the dtype marker names only the width
+        wire_dtype = np.dtype(meta[f"{field}_flat_b64_dtype"]).newbyteorder("<")
+        raw = pybase64.b64decode(meta[f"{field}_flat_b64"])
+        return np.frombuffer(raw, dtype=wire_dtype).astype(dtype, copy=False).reshape(shape)
+
+    return decode("output_top_logprobs_idx", np.int32), decode("output_top_logprobs_val", np.float32)
 
 
 def _support_membership(ids: np.ndarray, support: RolloutSamplingMask) -> tuple[np.ndarray, np.ndarray]:

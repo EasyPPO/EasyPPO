@@ -6,6 +6,13 @@ profile to training workers so Harbor can create CPU task sandboxes. Set
 `WANDB_API_KEY` and optionally `WANDB_ENTITY` to enable W&B; its project is
 `miles-run_qwen3_5_27b_sync_frontiersmith` and its run ID is `--run-id`.
 
+The image starts from the immutable Miles v0.1.3 digest in
+[`release-lock.json`](../release-lock.json), with Python 3.12, CUDA 13 and
+PyTorch 2.14.1. Its build installs the locked SGLang 0.5.22 source and
+`radix_transfer_plugins`, Megatron-LM, torch-memory-saver, and Transformers
+5.19.0. A custom `--image` must provide the same compiled runtime and the
+`/sgl-workspace/sglang` and `/root/Megatron-LM` source trees.
+
 ## Preview and launch
 
 Every command defaults to a local plan. Add `--launch` to allocate resources.

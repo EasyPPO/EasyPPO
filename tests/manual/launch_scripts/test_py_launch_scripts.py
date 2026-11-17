@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from miles.utils.external_utils.command_utils import base_backend
 from tests.fast.launch_scripts.py_harness import (
     CLEARED_ENV,
     FROZEN_HARDWARE,
@@ -66,12 +67,16 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
         "prompt_data": str(sandbox / "problems.jsonl"),
         "agentic_generate_function_path": "agentic_critic.miles_fcs.generate",
     },
+    "scripts/amd/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2_5layer", 5),
     "scripts/run_deepseek_v4.py": lambda sandbox: {"model_name": "DeepSeek-V4-Flash-FP8-4layer"},
+    "scripts/run_deepseek_v4_1.py": lambda sandbox: {"hf_checkpoint": str(sandbox / "models/DeepSeek-V4.1")},
     "scripts/run_glm5_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5", 78),
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
     "scripts/run_inkling.py": lambda sandbox: {"model_name": "Inkling-4layer"},
     # convert_checkpoint locks a file under model_dir, which must be writable while recording
     "scripts/run_kimi_k3.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
+    # test_prepare_waits_for_shared_checkpoint_conversion covers the real cache lock.
+    "scripts/run_mimo_v2_6_flash.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
     "scripts/run_nemotron_3_nano_4b_fsdp.py": _nemotron_checkpoint,
     "scripts/run_nemotron_3_ultra_550b_a55b.py": lambda sandbox: {
         "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer"
@@ -146,6 +151,17 @@ class TestHostFilesystemIsFrozen:
             assert inside.exists()
             assert not Path("/root/models/some-checkpoint/model.safetensors.index.json").exists()
 
+    def test_conversion_cache_writes_stay_inside_the_sandbox(self, tmp_path):
+        cache = Path("/root/models/recorded-model_torch_dist")
+        with host_filesystem_frozen(tmp_path):
+            with base_backend.exclusive_path_lock(str(cache)):
+                cache.mkdir(parents=True)
+                (cache / "layout.txt").write_text("1")
+                assert not cache.exists()
+        mapped = tmp_path / "host-filesystem/root/models/recorded-model_torch_dist"
+        assert (mapped / "layout.txt").read_text() == "1"
+        assert mapped.with_suffix(".lock").is_file()
+
     def test_the_checkout_stays_visible(self, tmp_path):
         """A launcher resolves its own model args script out of the checkout, so hiding it breaks every entrypoint."""
         with host_filesystem_frozen(tmp_path):
@@ -165,6 +181,17 @@ class TestHostFilesystemIsFrozen:
 
 
 class TestDiscovery:
+    @pytest.mark.parametrize("entrypoint", ["prepare_spmd", "train"])
+    def test_deepseek_v4_1_requires_an_explicit_checkpoint(self, entrypoint, monkeypatch, tmp_path):
+        freeze_environment(monkeypatch)
+        recording = install_command_recorder(monkeypatch)
+        module = import_launch_script(REPO_ROOT / "scripts/run_deepseek_v4_1.py")
+
+        with pytest.raises(AssertionError):
+            call_entrypoint(module, entrypoint, {}, sandbox=tmp_path)
+
+        assert not recording.commands
+
     def test_all_py_launch_scripts_are_discovered(self):
         """Guards against the discovery glob silently going empty."""
         assert len(_SCRIPTS) > 15

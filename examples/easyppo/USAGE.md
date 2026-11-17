@@ -24,10 +24,15 @@ machine-specific launchers, and GPU reservation/queue tools are not included.
 
 ## Installation
 
-Use a Miles-compatible GPU environment with Megatron and SGLang, following
-[Miles installation](../../docs/getting-started/installation.md). The imported
-code targets Transformers 5.12.1. If the job image lacks this project, install
-it from this checkout:
+Use Python 3.12, PyTorch 2.14.1, Transformers 5.19.0 and the source revisions in
+[`release-lock.json`](../../release-lock.json): SGLang 0.5.22 at `d0403742`
+(including `radix_transfer_plugins`) and Megatron-LM at `2fbe25a4`.
+The [Modal launcher](../../modal_launchers/README.md) builds this combination
+from its pinned base image. For a custom CUDA 13 image, `docker/build.py` reads
+the same SGLang, Megatron and torch-memory-saver pins; explicit `--build-arg`
+values override them. Rubin and ROCm variants use their own runtime defaults. Follow
+[Miles installation](../../docs/getting-started/installation.md), then install
+this checkout:
 
 ```bash
 python -m pip install -e '.[agentic]'
@@ -128,7 +133,7 @@ and value head. This export format is separate from the standalone trainer's
 
 ## CPU checks
 
-In an environment with PyTorch, Transformers 5.12.1, pytest, pytest-asyncio,
+In an environment with PyTorch, Transformers 5.19.0, pytest, pytest-asyncio,
 NumPy, PyYAML, and the Miles import dependencies installed:
 
 ```bash

@@ -79,7 +79,7 @@ def test_only_full_attention_layers_are_compacted(model):
         if i in biases:
             assert layer.keys.shape[-2] == 24 and layer.values.shape[-2] == 24
         else:
-            assert torch.equal(layer.recurrent_states, before[i])
+            torch.testing.assert_close(layer.recurrent_states, before[i], rtol=0, atol=0)
 
 
 def test_queries_match_what_the_attention_module_uses(model):

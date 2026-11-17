@@ -6,10 +6,12 @@ image has no Megatron/TE/FLA. GPU tests exercise those actual kernels separately
 
 import ast
 import copy
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, make_dataclass
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 import torch
@@ -166,6 +168,8 @@ def _conv_reference(x, weight, bias=None, initial_state=None, output_final_state
 
 def _delta_reference(q, k, v, g, beta, initial_state=None, output_final_state=False, **kwargs):
     q, k = F.normalize(q, dim=-1), F.normalize(k, dim=-1)
+    if q.shape[2] != v.shape[2]:
+        q, k = (value.repeat_interleave(v.shape[2] // q.shape[2], dim=2) for value in (q, k))
     state = q.new_zeros(1, q.shape[2], q.shape[3], v.shape[3]) if initial_state is None else initial_state
     outputs = []
     for t in range(q.shape[1]):
@@ -194,7 +198,9 @@ class _Conv(nn.Conv1d):
     backend = "triton"
 
     def forward(self, x, cu_seqlens=None, **kwargs):
-        return _varlen_kernel(_conv_reference, x, cu_seqlens=cu_seqlens, weight=self.weight.squeeze(1), bias=self.bias)
+        return _varlen_kernel(
+            _conv_reference, x, cu_seqlens=cu_seqlens, weight=self.weight.squeeze(1), bias=self.bias
+        )[0]
 
 
 class _Norm(nn.Module):
@@ -202,41 +208,106 @@ class _Norm(nn.Module):
         return F.rms_norm(x, (x.shape[-1],)) * F.silu(z)
 
 
-def _gdn():
-    cls = _load_class(
-        "miles_plugins/models/qwen3_5.py",
-        "Qwen3_5GatedDeltaNet",
-        dict(
-            torch=torch,
-            nn=nn,
-            F=F,
-            memory_segments=memory_segments,
-            detached_stateful_segments=detached_stateful_segments,
-            causal_conv1d=_conv_reference,
-            build_gdn_cp_context=lambda *args: None,
-        ),
+def _gdn(num_k_heads=1, num_v_heads=2):
+    scope = dict(
+        torch=torch,
+        nn=nn,
+        F=F,
+        NamedTuple=NamedTuple,
+        abstractmethod=abstractmethod,
+        ABC=ABC,
+        MegatronModule=nn.Module,
+        LinearAttnHeads=object,
+        detached_stateful_segments=detached_stateful_segments,
+        causal_conv1d=_conv_reference,
+        gdn_kernel=lambda backend: lambda *a, **kw: _varlen_kernel(_delta_reference, *a, **kw),
+        copy_to_tensor_model_parallel_region=lambda value, **kw: value,
+        rms_norm_gated=lambda x, z, weight, bias, activation, eps: F.rms_norm(x, (x.shape[-1],), weight, eps)
+        * F.silu(z),
     )
+    path = ROOT / "miles_plugins/models/linear_attn.py"
+    names = {"gdn_recurrence", "Projections", "LinearAttention", "GatedDeltaNet"}
+    nodes = [n for n in ast.parse(path.read_text()).body if getattr(n, "name", None) in names]
+    # The source uses postponed annotations for optional Megatron-only types.
+    import __future__
+
+    exec(
+        compile(
+            ast.Module(body=nodes, type_ignores=[]), str(path), "exec", flags=__future__.annotations.compiler_flag
+        ),
+        scope,
+    )
+    cls = _load_class("miles_plugins/models/qwen3_5.py", "Qwen3_5GatedDeltaNet", scope)
     model = cls.__new__(cls)
     nn.Module.__init__(model)
-    model.key_dim, model.value_dim = 2, 4
-    model.head_k_dim = model.head_v_dim = 2
-    model.num_k_heads, model.num_v_heads = 1, 2
-    model.gdn_backend = "fla"
-    model.in_proj_qkv, model.in_proj_z = nn.Linear(4, 8, bias=False), nn.Linear(4, 4, bias=False)
-    model.in_proj_a, model.in_proj_b = nn.Linear(4, 2, bias=False), nn.Linear(4, 2, bias=False)
-    model.conv1d = _Conv(8, 8, 3, groups=8, bias=False)
-    model.A_log, model.dt_bias = nn.Parameter(torch.zeros(2)), nn.Parameter(torch.zeros(2))
-    model.out_proj, model.norm = nn.Linear(4, 4, bias=False), _Norm()
-    model.chunk_gated_delta_rule = lambda *args, **kwargs: _varlen_kernel(_delta_reference, *args, **kwargs)
+    value_dim = num_v_heads * 2
+    qkv_dim = num_k_heads * 4 + value_dim
+    model.local = SimpleNamespace(
+        num_k_heads=num_k_heads,
+        num_v_heads=num_v_heads,
+        head_k_dim=2,
+        head_v_dim=2,
+        group_value_dim=value_dim // num_k_heads,
+    )
+    model.heads = model.local
+    model.backend, model.tp_group = "fla", None
+    model.in_proj_widths = (qkv_dim, value_dim, num_v_heads, num_v_heads)
+    model.in_proj_padding = -sum(model.in_proj_widths) % 8
+    model.in_proj_qkv, model.in_proj_z = nn.Linear(4, qkv_dim, bias=False), nn.Linear(4, value_dim, bias=False)
+    model.in_proj_a, model.in_proj_b = nn.Linear(4, num_v_heads, bias=False), nn.Linear(4, num_v_heads, bias=False)
+    model.conv1d = _Conv(qkv_dim, qkv_dim, 3, groups=qkv_dim, bias=False)
+    model.A_log = nn.Parameter(torch.zeros(num_v_heads))
+    model.dt_bias = nn.Parameter(torch.zeros(num_v_heads))
+    model.out_proj, model.norm = nn.Linear(value_dim, 4, bias=False), nn.RMSNorm(2, eps=1e-6)
+    model.norm.bias = None
+    model.norm_eps, model.norm_activation = 1e-6, "silu"
     return model.double()
 
 
-def test_gdn_preserves_conv_and_recurrent_values_but_detaches_both_states():
-    torch.manual_seed(23)
-    model, packed = _gdn(), _packed(((1, 1, 3), (3,)))
+def _run_gdn(model, x, cu_seqlens, packed=None):
+    core = model(x, cu_seqlens, segments=memory_segments(packed, x.shape[1]))
+    return model.out_proj(core)
+
+
+def test_gdn_split_preserves_multiple_group_major_value_heads():
+    model = _gdn(num_k_heads=2, num_v_heads=6)
+    q, k, v = model.split_qkv(torch.arange(20, dtype=torch.double).reshape(1, 1, 20))
+    torch.testing.assert_close(q[0, 0], torch.tensor([[0, 1], [10, 11]], dtype=torch.double))
+    torch.testing.assert_close(k[0, 0], torch.tensor([[2, 3], [12, 13]], dtype=torch.double))
+    torch.testing.assert_close(
+        v[0, 0], torch.tensor([[4, 5], [6, 7], [8, 9], [14, 15], [16, 17], [18, 19]], dtype=torch.double)
+    )
+
+
+def test_gdn_detached_memory_uses_triton_when_regular_conv_defaults_to_mix(monkeypatch):
+    torch.manual_seed(25)
+    model, packed = _gdn(num_k_heads=2, num_v_heads=6), _packed(((1, 1, 3), (3,)))
+    model.conv1d.backend = "mix"
+    backends = []
+
+    def capture_conv(*args, **kwargs):
+        backends.append(kwargs["backend"])
+        return _conv_reference(*args, **kwargs)
+
+    monkeypatch.setitem(model.memory_core.__func__.__globals__, "causal_conv1d", capture_conv)
     x = torch.randn(1, 9, 4, dtype=torch.double, requires_grad=True)
-    memory = model(x, packed.cu_seqlens_q, packed)
-    native = model(x, packed.cu_seqlens_q)
+    memory = _run_gdn(model, x, packed.cu_seqlens_q, packed)
+    native = _run_gdn(model, x, packed.cu_seqlens_q)
+    torch.testing.assert_close(memory, native)
+    assert backends == ["triton"] * 5
+    assert model.conv1d.backend == "mix"
+    grad = torch.autograd.grad(memory[:, 2:5].square().sum(), x)[0]
+    assert torch.count_nonzero(grad[:, :2]) == 0
+    assert torch.count_nonzero(grad[:, 2:5]) > 0
+
+
+@pytest.mark.parametrize("num_k_heads,num_v_heads", [(1, 2), (2, 6)])
+def test_gdn_preserves_conv_and_recurrent_values_but_detaches_both_states(num_k_heads, num_v_heads):
+    torch.manual_seed(23)
+    model, packed = _gdn(num_k_heads, num_v_heads), _packed(((1, 1, 3), (3,)))
+    x = torch.randn(1, 9, 4, dtype=torch.double, requires_grad=True)
+    memory = _run_gdn(model, x, packed.cu_seqlens_q, packed)
+    native = _run_gdn(model, x, packed.cu_seqlens_q)
     torch.testing.assert_close(memory, native)
     grad = torch.autograd.grad(memory[:, 2:5].square().sum(), x, retain_graph=True)[0]
     assert torch.count_nonzero(grad[:, :2]) == 0
@@ -246,17 +317,18 @@ def test_gdn_preserves_conv_and_recurrent_values_but_detaches_both_states():
     # Changing a previous episode must never affect the next episode or padding.
     changed = x.detach().clone()
     changed[:, :5] += 3
-    torch.testing.assert_close(model(changed, packed.cu_seqlens_q, packed)[:, 5:], memory[:, 5:])
+    torch.testing.assert_close(_run_gdn(model, changed, packed.cu_seqlens_q, packed)[:, 5:], memory[:, 5:])
 
 
 @pytest.mark.parametrize("reentrant", [False, True])
-def test_gdn_checkpoint_preserves_parameter_and_input_gradients(reentrant):
+@pytest.mark.parametrize("num_k_heads,num_v_heads", [(1, 2), (2, 6)])
+def test_gdn_checkpoint_preserves_parameter_and_input_gradients(reentrant, num_k_heads, num_v_heads):
     torch.manual_seed(29)
-    model, packed = _gdn(), _packed(((1, 1, 3), (3,)))
+    model, packed = _gdn(num_k_heads, num_v_heads), _packed(((1, 1, 3), (3,)))
     x = torch.randn(1, 9, 4, dtype=torch.double, requires_grad=True)
 
     def forward(value):
-        return model(value, packed.cu_seqlens_q, packed)
+        return _run_gdn(model, value, packed.cu_seqlens_q, packed)
 
     plain = forward(x)
     plain.square().sum().backward()
@@ -291,7 +363,17 @@ def test_packed_metadata_ingress_freezes_segment_lengths_for_recompute():
     nodes = [node for node in ast.parse(path.read_text()).body if getattr(node, "name", None) in names]
     base = make_dataclass(
         "PackedSeqParams",
-        [(name, object) for name in ("cu_seqlens_q", "cu_seqlens_kv", "max_seqlen_q", "max_seqlen_kv", "qkv_format")],
+        [
+            (name, object)
+            for name in (
+                "cu_seqlens_q",
+                "cu_seqlens_kv",
+                "max_seqlen_q",
+                "max_seqlen_kv",
+                "qkv_format",
+                "total_tokens",
+            )
+        ],
     )
     namespace = dict(dataclass=dataclass, field=field, PackedSeqParams=base, torch=torch, Namespace=SimpleNamespace)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)

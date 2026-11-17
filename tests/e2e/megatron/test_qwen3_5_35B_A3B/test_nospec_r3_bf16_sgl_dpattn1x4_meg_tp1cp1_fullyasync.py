@@ -6,7 +6,7 @@ no DeepEP on either side. Weights reach the engine by broadcast.
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute, prepare
 
@@ -18,6 +18,12 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
+)
+register_rocm_ci(
+    est_time=1400,
+    suite="nightly-stage-c-8-gpu-mi350",
+    labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -43,12 +49,16 @@ CASE = CaseConfig(
     use_spec=False,
     enable_mtp_training=False,
     use_r3=True,
-    check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),
     # in_place pause: retract-mode weight updates with R3 have known SGLang issues (miles/utils/arguments.py).
-    extra_args="--pause-generation-mode in_place ",
+    extra_args="--pause-generation-mode in_place "
+    + (
+        "--sglang-disable-shared-experts-fusion --debug-unified-grad-fused-logprob "
+        if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
+        else ""
+    ),
 )
 
 

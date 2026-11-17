@@ -5,8 +5,7 @@ import torch
 
 from agentic_critic.critic_modes import episode_values, value_loss
 from agentic_critic.critic_train import read_episode
-from tests.agentic_critic.test_critic_modes import KV_UPSTREAM, make_segments
-from tests.agentic_critic.test_critic_modes import head, model  # noqa: F401  (fixtures)
+from tests.agentic_critic.test_critic_modes import KV_UPSTREAM, head, make_segments, model  # noqa: F401  (fixtures)
 
 SETTINGS = [("shared", None), ("state", None), ("full_detach", None), ("full", None)]
 KV_SETTINGS = [("kv", {"ratio": 0.5, "method": "evict", "queries": "hindsight"}), ("kv", {"ratio": 0.5, "method": "am", "queries": "hindsight"}),
@@ -81,6 +80,42 @@ def test_the_layers_are_left_as_they_were(model, head):  # noqa: F811
     segs = make_segments(0, 2)
     collect(model, head, segs, "full_detach", None, True)
     assert all("forward" not in vars(layer) for layer in model.model.layers)
+
+
+def test_frozen_cache_matches_native_updates_without_changing_any_cached_state():
+    import copy
+
+    from torch.utils._pytree import tree_flatten
+    from transformers.cache_utils import LinearAttentionLayer
+
+    from agentic_critic.critic_train import frozen_cache_updates
+
+    layer = LinearAttentionLayer()
+    layer.update_conv_state(torch.randn(1, 2, 4))
+    layer.update_recurrent_state(torch.randn(1, 2, 3, 3))
+    native = copy.deepcopy(layer)
+    original, original_spec = tree_flatten(vars(layer))
+    snapshot = [x.clone() if isinstance(x, torch.Tensor) else x for x in original]
+    conv = torch.randn(1, 2, 2, requires_grad=True)
+    recurrent = torch.randn(1, 2, 3, 3, requires_grad=True)
+    expected_conv = native.update_conv_state(conv)
+    expected_recurrent = native.update_recurrent_state(recurrent)
+    with frozen_cache_updates():
+        actual_conv = layer.update_conv_state(conv)
+        actual_recurrent = layer.update_recurrent_state(recurrent)
+    torch.testing.assert_close(actual_conv, expected_conv)
+    torch.testing.assert_close(actual_recurrent, expected_recurrent)
+    grads = torch.autograd.grad(actual_conv.sum() + actual_recurrent.sum(), (conv, recurrent))
+    for value, grad in zip((conv, recurrent), grads, strict=True):
+        torch.testing.assert_close(grad, torch.ones_like(value))
+    after, after_spec = tree_flatten(vars(layer))
+    assert after_spec == original_spec
+    for actual, before, expected in zip(after, original, snapshot, strict=True):
+        if isinstance(actual, torch.Tensor):
+            assert actual is before
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        else:
+            assert actual == expected
 
 
 def test_problem_weights_follow_the_easyppo_formula():

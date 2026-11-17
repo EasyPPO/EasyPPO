@@ -13,7 +13,7 @@ MODES = ("full_detach", "actor-summary")
 class Config:
     mode: str
     run_id: str
-    image: str = "radixark/miles@sha256:af9b05947486d92ab01d29d3c50fe9dc301becfb932eacaa3dd4c92eea943663"
+    image: str = json.loads((Path(__file__).resolve().parents[1] / "release-lock.json").read_text())["base_image"]
     volume: str = "easyppo-miles"
     mount: str = "/mnt/easyppo"
     source: str = "/workspace/EasyPPO"

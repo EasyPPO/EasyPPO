@@ -64,6 +64,8 @@ def extra_argv_for_variant(
         argv += ["--generate-tool-call-parser", generate_tool_call_parser]
     elif variant == "agentic_tool_call":
         argv += ["--custom-agent-function-path", custom_agent_function_path]
+        # these tests steer the mock agent through module state, which a subproc call cannot see
+        argv += ["--custom-agent-function-mode", "inline"]
         argv += ["--use-session-server", "v2", "--tito-model", "qwen3"]
 
     return argv
@@ -160,6 +162,7 @@ def make_args(
         "--train-backend",
         "fsdp",
         "--ci-test",
+        "--no-enable-sample-ownership-checker",
         "--rollout-batch-size",
         "1",
         "--num-rollout",
@@ -278,6 +281,7 @@ def generation_env(request, variant):
             cached_tokens=x.get("cached_tokens", 0),
             meta_info=ProcessResultMetaInfo(
                 weight_version=x.get("weight_version"),
+                prefill_weight_versions=x.get("prefill_weight_versions"),
                 routed_experts=x.get("routed_experts"),
                 spec_num_correct_drafts=x.get("spec_num_correct_drafts"),
                 spec_num_proposed_drafts=x.get("spec_num_proposed_drafts"),

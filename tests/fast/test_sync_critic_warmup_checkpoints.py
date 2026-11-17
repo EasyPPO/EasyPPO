@@ -1,13 +1,13 @@
 """Synchronous critic warmup checkpoints keep the frozen actor resumable."""
 
 import pytest
-import train as train_driver
-from tests.fast.fixtures.driver_fakes import FakeObjectStore
-from tests.fast.test_train import _install_driver_fakes, _make_args
 
+import train as train_driver
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
+from tests.fast.fixtures.driver_fakes import FakeObjectStore
+from tests.fast.test_train import _install_driver_fakes, _make_args
 
 
 @pytest.mark.parametrize("offload", [False, True])
@@ -38,6 +38,7 @@ async def test_warmup_saves_actor_and_critic_at_the_same_rollout_without_actor_u
     ]
     for rollout_id in (9, 19, 29):
         assert events.index(f"critic_train:{rollout_id}") < events.index(f"actor_save:{rollout_id}")
+        assert events.index(f"executor_save:{rollout_id}") < events.index(f"actor_save:{rollout_id}")
         assert events.index(f"actor_save:{rollout_id}") < events.index(f"critic_save:{rollout_id}")
     if offload:
         assert events.count("actor_onload") == 3
