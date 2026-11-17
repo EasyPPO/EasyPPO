@@ -1,5 +1,6 @@
 """Native TE attention with detached episode memory, using TE's existing kernel."""
 
+import torch
 from megatron.core.extensions.transformer_engine import TEDotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 
@@ -43,6 +44,12 @@ class DetachedMemoryDotProductAttention(TEDotProductAttention):
         native_forward = super().forward
 
         def attend(own_query, own_key, own_value):
+            # Contiguous token slices can retain nonzero storage offsets. TE's
+            # contiguous() fallback leaves those views unchanged and rejects them.
+            own_query, own_key, own_value = (
+                tensor.clone(memory_format=torch.contiguous_format) if tensor.storage_offset() else tensor
+                for tensor in (own_query, own_key, own_value)
+            )
             output = native_forward(
                 own_query.unsqueeze(1),
                 own_key.unsqueeze(1),

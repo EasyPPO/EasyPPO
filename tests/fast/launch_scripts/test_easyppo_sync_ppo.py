@@ -10,11 +10,11 @@ from dataclasses import fields
 
 import pytest
 import typer
-from tests.fast.launch_scripts.py_harness import import_launch_script
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 from typer.testing import CliRunner
 
 from miles.utils.external_utils import command_utils as U
+from tests.fast.launch_scripts.py_harness import import_launch_script
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +49,31 @@ def _backend(monkeypatch, launcher):
     monkeypatch.setattr(launcher.ScriptArgs, "create_backend", lambda self: backend)
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     return backend
+
+
+def test_single_gpu_9b_uses_matching_conversion_and_training_model(launcher, monkeypatch):
+    backend = _backend(monkeypatch, launcher)
+    args = launcher.ScriptArgs(
+        model_name="Qwen3.5-9B",
+        hf_repo="Qwen/Qwen3.5-9B",
+        hf_revision="test-9b-revision",
+        megatron_model_type="qwen3.5-9B",
+        num_nodes=1,
+        num_gpus_per_node=1,
+        tensor_model_parallel_size=1,
+        rollout_gpus_per_engine=1,
+        join_ray_workers=False,
+        terminal_docker_compose=["/deployment/host network.yaml"],
+    )
+    launcher.prepare(args)
+    launcher.execute(args)
+    assert backend.conversions[0]["megatron_model_type"] == "qwen3.5-9B"
+    assert backend.training[0]["megatron_model_type"] == "qwen3.5-9B"
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert "--sequence-parallel" not in argv
+    assert argv[argv.index("--terminal-docker-compose") + 1] == "/deployment/host network.yaml"
+    for flag in ("--actor-num-gpus-per-node", "--critic-num-gpus-per-node", "--rollout-num-gpus-per-engine"):
+        assert argv[argv.index(flag) + 1] == "1"
 
 
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
@@ -110,6 +135,12 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--tensor-model-parallel-size": "4",
     }
     assert {flag: value(flag) for flag in expected} == expected
+    if args.dataset == "frontiersmith":
+        assert value("--terminal-agent-protocol") == "fcs-submit"
+        assert value("--fcs-max-submissions") == "6"
+        assert value("--fcs-max-turns") == "16"
+    else:
+        assert "--terminal-agent-protocol" not in argv
     assert ("--terminal-continue-on-length" in argv) == (args.dataset == "frontiersmith")
     assert args.num_nodes * args.num_gpus_per_node == 32
     assert int(value("--actor-num-nodes")) * int(value("--actor-num-gpus-per-node")) == args.rollout_num_gpus == 32
@@ -346,6 +377,15 @@ def test_sync_eval_controls_share_the_async_defaults_and_overrides(launcher, mon
     config = json.loads(base64.b64decode(argv[argv.index("--eval-config") + 1].removeprefix("base64:")))
     assert config["datasets"][0]["max_samples"] == (maximum or None)
     assert config["datasets"][0]["name"].endswith("_quick") == bool(maximum)
+
+
+def test_terminal_memory_and_eval_controls_reach_training(launcher, monkeypatch):
+    backend = _backend(monkeypatch, launcher)
+    args = launcher.ScriptArgs(terminal_memory_mb=32768, skip_eval_before_train=True)
+    launcher.execute(args)
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert "--skip-eval-before-train" in argv
+    assert argv[argv.index("--terminal-memory-mb") + 1] == "32768"
 
 
 @pytest.mark.parametrize("samples", [0, -1])

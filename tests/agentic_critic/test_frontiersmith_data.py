@@ -20,6 +20,7 @@ def _task(root: Path, problem_id: str) -> Path:
         "    volumes: [./statement.txt:/app/statement.txt:ro]\n  judge:\n    privileged: true\n"
     )
     (task / "instruction.md").write_text(f"Read /app/statement.txt for {problem_id}.")
+    (task / "environment/statement.txt").write_text(f"Solve {problem_id}.")
     return task
 
 
@@ -100,6 +101,8 @@ def test_prepare_writes_separate_manifests_and_strict_verifier(monkeypatch, tmp_
     assert len(benchmark) == 2 and all(row["metadata"]["dataset"] == "frontier-cs" for row in benchmark)
     assert all(row["metadata"]["source_revision"] == data.EVAL_SOURCE_REVISION for row in benchmark)
     for row in train + evaluation:
+        assert row["metadata"]["agent_protocol"] == "fcs-submit"
+        assert row["prompt"] == f"Solve {row['metadata']['problem_id']}."
         tests = tmp_path / "harbor" / row["metadata"]["task_path"] / "tests"
         assert (tests / "evaluate.py").read_text() == Path(data.__file__).with_name(
             "frontiersmith_verifier.py"
@@ -178,14 +181,16 @@ def test_trial_uses_shared_judge_without_sidecar_or_source_mounts(tmp_path):
             "JUDGE_URL": url,
             "MAX_POLL_TIME": "900",
             "FRONTIERCS_JUDGE_TOKEN": "${FRONTIERCS_JUDGE_TOKEN:-}",
+            "FCS_ITERATIVE_SUBMISSIONS": "1",
         }
         assert config["verifier"]["timeout_sec"] == 990
+        assert (task / "instruction.md").read_text() == "Solve frontiersmith_0."
         assert "FRONTIER_CS_ALGORITHMIC_PATH" not in config["environment"]["env"]
         services = yaml.safe_load(compose.read_text())["services"]
         assert set(services) == {"main"}
         assert "depends_on" not in services["main"]
         assert services["main"]["volumes"] == ["./statement.txt:/app/statement.txt:ro"]
-        assert services["main"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
+        assert "extra_hosts" not in services["main"]
 
 
 def test_bundled_judge_serves_both_corpora_from_one_directory():

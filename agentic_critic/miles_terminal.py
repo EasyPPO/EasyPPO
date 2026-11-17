@@ -1,4 +1,4 @@
-"""Miles generate function for TMAX and Terminal-Bench 2.1 Harbor tasks."""
+"""Miles generate function for submit-only FCS and terminal Harbor tasks."""
 
 import argparse
 import asyncio
@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
 from agentic_critic.terminal_env import Completion, TerminalConfig
 
 
@@ -94,6 +95,13 @@ def _config(args, metadata: dict) -> TerminalConfig:
 
 
 def _validate_runtime(args, *, evaluation: bool = False):
+    if (
+        getattr(args, "fcs_max_submissions", DEFAULT_MAX_SUBMISSIONS) < 1
+        or getattr(args, "fcs_max_turns", DEFAULT_MAX_TURNS) < 1
+    ):
+        raise ValueError("FCS submission and turn limits must be positive")
+    if getattr(args, "terminal_memory_mb", None) is not None and args.terminal_memory_mb <= 0:
+        raise ValueError("terminal memory must be positive")
     if args.partial_rollout:
         raise ValueError("Terminal episodes do not support --partial-rollout")
     # These side channels need their own per-segment merge contract. Refuse
@@ -202,6 +210,7 @@ async def generate(input):
     _validate_runtime(args, evaluation=input.evaluation)
     candidate_count = args.rollout_top_logprobs_num if not input.evaluation else 0
     metadata = base.metadata or {}
+    agent_protocol = metadata.get("agent_protocol", getattr(args, "terminal_agent_protocol", "terminal"))
     config = _config(args, metadata)
     task_path = Path(metadata["task_path"])
     if not task_path.is_absolute():
@@ -239,9 +248,14 @@ async def generate(input):
         task_path=task_path,
         trials_dir=Path(args.terminal_trials_dir),
         environment=args.terminal_environment,
+        memory_mb=getattr(args, "terminal_memory_mb", None),
+        docker_compose=tuple(getattr(args, "terminal_docker_compose", [])),
         tokenizer=input.state.tokenizer,
         decode=decode,
         config=config,
+        agent_protocol=agent_protocol,
+        fcs_max_submissions=getattr(args, "fcs_max_submissions", DEFAULT_MAX_SUBMISSIONS),
+        fcs_max_turns=getattr(args, "fcs_max_turns", DEFAULT_MAX_TURNS),
     )
     if result is None or isinstance(result, _DiscardedTrial):
         sample = deepcopy(base)
@@ -258,6 +272,7 @@ async def generate(input):
     reward, reward_metadata = _reward(args, metadata, rewards)
     samples = []
     for i, sample_fields in enumerate(trace.sample_fields()):
+        segment_metadata = trace.segment_metadata(i)
         sample = deepcopy(base)
         sample.rollout_id = base.rollout_id if base.rollout_id is not None else base.index
         if sample.rollout_id is None:
@@ -266,10 +281,17 @@ async def generate(input):
             setattr(sample, name, value)
         sample.response = input.state.tokenizer.decode(sample.tokens[-sample.response_length :])
         sample.reward = reward
-        sample.status = Sample.Status.TRUNCATED if trace.truncated else Sample.Status.COMPLETED
+        # FCS continues length-limited turns, but the reference masks affected
+        # segments out of actor training. Terminal tasks retain their episode policy.
+        truncated = trace.truncated
+        if agent_protocol == "fcs-submit":
+            episode_interrupted = trace.truncated and trace.exit_status != "ContextOrTokenLimit"
+            truncated = episode_interrupted or segment_metadata["generation_truncated"]
+        sample.status = Sample.Status.TRUNCATED if truncated else Sample.Status.COMPLETED
         sample.metadata = {
             **metadata,
             **reward_metadata,
+            **segment_metadata,
             "segment": i,
             "n_compactions": trace.n_compactions,
             "truncated_turns": trace.truncated_turns,
@@ -280,6 +302,7 @@ async def generate(input):
             "trial_dir": trial_dir,
             "generated_tokens": trace.generated_tokens,
             "model_calls": len(trace.calls),
+            "submission_scores": trace.submission_scores,
         }
         samples.append(sample)
     if not samples:
@@ -299,8 +322,13 @@ def _add_arguments(parser):
             kwargs["choices"] = ("summary", "keep_last_turns", "none")
         parser.add_argument("--terminal-" + f.name.replace("_", "-"), **kwargs)
     parser.add_argument("--terminal-tasks-dir", default="")
+    parser.add_argument("--terminal-agent-protocol", choices=("terminal", "fcs-submit"), default="terminal")
+    parser.add_argument("--fcs-max-submissions", type=int, default=DEFAULT_MAX_SUBMISSIONS)
+    parser.add_argument("--fcs-max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--terminal-trials-dir", default="terminal-trials")
     parser.add_argument("--terminal-environment", choices=("docker", "daytona", "modal"), default="docker")
+    parser.add_argument("--terminal-memory-mb", type=int, default=None)
+    parser.add_argument("--terminal-docker-compose", action="append", default=[])
     parser.add_argument("--terminal-reward-key", default="reward")
     parser.add_argument("--terminal-reward-mode", choices=("native", "test-count"), default="native")
     parser.add_argument("--terminal-pass-count-key", default="passing_assertions")

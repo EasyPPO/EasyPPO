@@ -88,9 +88,14 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
         JUDGE_URL=judge_url,
         MAX_POLL_TIME=str(judge_timeout),
         FRONTIERCS_JUDGE_TOKEN="${FRONTIERCS_JUDGE_TOKEN:-}",
+        FCS_ITERATIVE_SUBMISSIONS="1",
     )
     config.get("environment", {}).get("env", {}).pop("FRONTIER_CS_ALGORITHMIC_PATH", None)
     config_path.write_text(toml.dumps(config))
+    # The submit-only agent receives the statement directly, with no shell workspace instructions.
+    (task / "instruction.md").write_text(
+        (task / "environment/statement.txt").read_text(encoding="utf-8"), encoding="utf-8"
+    )
 
     compose_path = task / "environment/docker-compose.yaml"
     compose = yaml.safe_load(compose_path.read_text())
@@ -98,10 +103,27 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
     services.pop("judge", None)
     main = services["main"]
     main.pop("depends_on", None)
-    # Resolve the local Docker host on Linux too. Multi-host runs must prepare
-    # tasks with the judge host's reachable address instead of this local alias.
-    main["extra_hosts"] = ["host.docker.internal:host-gateway"]
+    # Only the local judge alias needs Docker's host gateway. Remote judges
+    # (including Modal) must not require DinD to provide a host-gateway IP.
+    hosts = main.get("extra_hosts", [])
+    if isinstance(hosts, dict):
+        hosts.pop("host.docker.internal", None)
+        if urlsplit(judge_url).hostname == "host.docker.internal":
+            hosts["host.docker.internal"] = "host-gateway"
+    else:
+        hosts = [host for host in hosts if not re.match(r"^host\.docker\.internal[:=]", host)]
+        if urlsplit(judge_url).hostname == "host.docker.internal":
+            hosts.append("host.docker.internal:host-gateway")
+    if hosts:
+        main["extra_hosts"] = hosts
+    else:
+        main.pop("extra_hosts", None)
     compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
+    # Harbor runs the fixed submission client and final verifier in this image.
+    shutil.copy2(
+        Path(__file__).resolve().parents[1] / "agentic_critic/frontiersmith.Dockerfile",
+        task / "environment/Dockerfile",
+    )
     shutil.copy2(Path(__file__).with_name("frontiersmith_verifier.py"), task / "tests/evaluate.py")
     entrypoint = task / "tests/test.sh"
     entrypoint.write_text(
@@ -136,6 +158,7 @@ def _records(
             source_url=SOURCE_URL,
             source_revision=SOURCE_REVISION,
             reward_key="reward",
+            agent_protocol="fcs-submit",
         )
         ordered_rows.append(row)
     ranked = sorted(
@@ -191,6 +214,7 @@ def _evaluation_records(destination: Path, root: Path, ids: list[str]) -> list[d
             source_url=EVAL_SOURCE_URL,
             source_revision=EVAL_SOURCE_REVISION,
             reward_key="reward",
+            agent_protocol="fcs-submit",
         )
         by_id[problem_id] = row
     if set(by_id) != set(ids):
@@ -233,14 +257,14 @@ def prepare(
         raise ValueError("--eval-count must leave at least one training problem")
     destination = tasks_dir / "frontiersmith"
     _adapt(source_dir, destination, ids, overwrite=overwrite)
-    training, evaluation = _records(destination, tasks_dir, ids, eval_count=eval_count, seed=seed)
     evaluation_destination = tasks_dir / "frontier-cs"
     _adapt(source_dir, evaluation_destination, evaluation_ids, overwrite=overwrite)
-    benchmark = _evaluation_records(evaluation_destination, tasks_dir, evaluation_ids)
     # Rerunning preparation updates every generated task to the shared judge.
     for directory in (destination, evaluation_destination):
         for config_path in directory.rglob("task.toml"):
             _install_verifier(config_path.parent, judge_url=judge_url, judge_timeout=judge_timeout)
+    training, evaluation = _records(destination, tasks_dir, ids, eval_count=eval_count, seed=seed)
+    benchmark = _evaluation_records(evaluation_destination, tasks_dir, evaluation_ids)
     out.mkdir(parents=True, exist_ok=True)
     write_jsonl(out / "frontiersmith.train.jsonl", training)
     write_jsonl(out / "frontiersmith.eval.jsonl", evaluation)
@@ -250,7 +274,8 @@ def prepare(
             {
                 "source_url": SOURCE_URL,
                 "source_revision": SOURCE_REVISION,
-                "reward": "upstream bounded score / 100; no per-test count conversion",
+                "reward": "maximum upstream bounded submission score / 100",
+                "agent_protocol": "fcs-submit",
                 "seed": seed,
                 "train": [row["metadata"]["problem_id"] for row in training],
                 "validation": [row["metadata"]["problem_id"] for row in evaluation],

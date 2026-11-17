@@ -88,6 +88,7 @@ class _NativeTE(nn.Module):
             return torch.cat(outputs).flatten(1)
         assert query.ndim == key.ndim == value.ndim == 4
         assert attn_mask_type == _Mask.causal_bottom_right
+        assert all(tensor.storage_offset() == 0 for tensor in (query, key, value))
         return _attention(query[:, 0], key[:, 0], value[:, 0]).flatten(1).unsqueeze(1)
 
 
@@ -96,6 +97,7 @@ def _memory_attention():
         "miles_plugins/models/qwen3_5_memory.py",
         "DetachedMemoryDotProductAttention",
         dict(
+            torch=torch,
             TEDotProductAttention=_NativeTE,
             AttnMaskType=_Mask,
             memory_segments=memory_segments,
@@ -105,11 +107,14 @@ def _memory_attention():
     return cls()
 
 
-def test_attention_forward_preserves_prefix_values_and_stops_history_gradients():
+@pytest.mark.parametrize("offset,strided", [(0, False), (3, False), (3, True)])
+def test_attention_forward_preserves_prefix_values_and_stops_history_gradients(offset, strided):
     torch.manual_seed(17)
-    q = torch.randn(9, 4, 3, dtype=torch.double, requires_grad=True)
-    k = torch.randn(9, 2, 3, dtype=torch.double, requires_grad=True)
-    v = torch.randn(9, 2, 3, dtype=torch.double, requires_grad=True)
+    step = 2 if strided else 1
+    q, k, v = [
+        torch.randn(9 + offset, heads, 3 * step, dtype=torch.double)[offset:, :, ::step].requires_grad_()
+        for heads in (4, 2, 2)
+    ]
     packed = _packed()
     layer = _memory_attention()
     output = layer(q, k, v, None, _Mask.causal, packed_seq_params=packed)

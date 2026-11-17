@@ -22,6 +22,24 @@ from miles.utils.types import Sample, WeightVersionSpan, compute_numeric_version
 logger = logging.getLogger(__name__)
 
 
+def _episode_eval_rewards(rewards, samples):
+    """Harbor returns the same verifier reward on every segment of an eval draw."""
+    if samples is None:
+        return rewards
+    episode_rewards = {}
+    for position, (sample, reward) in enumerate(zip(samples, rewards, strict=True)):
+        metadata = sample.metadata or {}
+        if "harbor_rewards" in metadata and "segment" in metadata:
+            # Evaluation assigns a distinct index to each draw, even for the same prompt.
+            key = ("episode", sample.index) if sample.index is not None else _get_rollout_key(sample, position)
+        else:
+            key = ("row", position)
+        if key in episode_rewards and episode_rewards[key] != reward:
+            raise ValueError(f"Conflicting evaluation rewards for {key}")
+        episode_rewards[key] = reward
+    return list(episode_rewards.values())
+
+
 def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
     if (x := args.custom_eval_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
@@ -30,7 +48,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
 
     log_dict = extra_metrics or {}
     for key in data.keys():
-        rewards = data[key]["rewards"]
+        rewards = _episode_eval_rewards(data[key]["rewards"], data[key].get("samples"))
         num_none = sum(1 for r in rewards if r is None)
         log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
         if num_none:

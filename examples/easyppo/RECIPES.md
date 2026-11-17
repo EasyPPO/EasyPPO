@@ -39,9 +39,11 @@ filters exact evaluation overlap, duplicate executable fixtures, and initial
 instructions that exceed the action budget. The manifests and generated
 JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md).
 
-The terminal harness runs bash in Harbor sandboxes. Frontier tasks use their
-shared Frontier-CS judge service and checker partial scores; TMAX/TB use their
-supplied task verifiers. Model decoding is handled by Miles/SGLang.
+Harbor runs task containers on the rollout executor. Frontier tasks use the
+[submit-only protocol](#rewards-validation-and-checkpoints) and a shared judge;
+TMAX/TB expose bash and use their supplied task verifiers. Model decoding is handled by Miles/SGLang.
+Frontier task containers provide C++, Python and the verifier HTTP client;
+the terminal agent runs in the rollout worker.
 
 ## Batch and update schedule
 
@@ -251,6 +253,9 @@ Both launchers read their generation defaults from [`frontiersmith.py`](frontier
 increments `truncated_turns` and the episode continues. An inserted end-of-turn
 token has loss mask 0 and does not count toward the generation budget. Recorded
 generated tokens retain their original masks and log-probabilities.
+FCS segments containing a length-limited completion are marked `TRUNCATED` for
+the actor-only truncation filter; other segments can still train. Sample metadata
+records `summary_span` as half-open offsets into the segment's original tokens.
 
 ### TMAX / Terminal-Bench
 
@@ -268,13 +273,17 @@ is checked before each action, using the configured limits:
 L >= min(compact_threshold,max_context_tokens-max(max_new_tokens,summary_tokens+O))
 ```
 
+FCS uses `L > compact_threshold` for the soft threshold, while retaining the
+same hard-context reserve. Equality alone does not request a summary.
+
 The actor then resumes from the original task plus the sampled progress
 summary. Each call's limit is further bounded by its remaining context and
 remaining episode generation budget.
 
 The **120000-token cumulative generation cap** includes actions, thinking,
-EOS, and summaries. It excludes prompts and tool outputs. Other limits are
-300 action-loop steps, 120 seconds per shell command, and 16000 characters
+EOS, and summaries. It excludes prompts and tool outputs. FCS uses the
+[submission and turn limits](#rewards-validation-and-checkpoints). Terminal tasks
+allow 300 action-loop steps, 120 seconds per shell command, and 16000 characters
 per tool output. Harbor's task-specific agent/verifier timeouts also apply.
 Exhausting the episode budget, step limit, or a Harbor timeout marks the
 episode truncated.
@@ -307,6 +316,13 @@ Async can use 32 GPUs with `--num-nodes 4 --trainer-num-nodes 1`; sync can
 use 64 GPUs with `--num-nodes 8`. Sync derives trainer nodes and rollout
 GPUs from the full allocation and rejects partial-pool overrides.
 
+For a single-GPU 9B smoke test, set `--model-name Qwen3.5-9B`,
+`--hf-repo Qwen/Qwen3.5-9B`, the matching `--hf-revision`, and
+`--megatron-model-type qwen3.5-9B`. Set `--num-nodes 1
+--num-gpus-per-node 1 --tensor-model-parallel-size 1 --rollout-gpus-per-engine 1`;
+sequence parallelism is disabled at TP1. Reduce the batch and token budgets
+for the smoke test. Docker and the judge must be operational before training.
+
 The global actor batch remains 512 episodes and each critic mini-batch remains
 128 episodes in both defaults. Async DP4 assigns 128 actor episodes per
 logical DP shard per round and 32 per critic step. Sync DP8 assigns 64 actor
@@ -330,17 +346,37 @@ The shared judge's CPU/RAM and queue capacity are independent of GPU allocation.
 
 ## Rewards, validation, and checkpoints
 
-Native rewards are the default. FrontierSmith/FCS use checker partial score
-scaled from `[0,100]` to `[0,1]`; TMAX/TB use their task reward. Missing solutions
-and contestant compilation failures score zero. Infrastructure and verifier
+FrontierSmith/FCS expose only C++ submission: the actor emits a fenced `cpp`
+block, receives judge feedback, and can revise its solution. `--fcs-max-submissions`
+defaults to 6 and `--fcs-max-turns` to 16 (including replies without code).
+Context compaction asks the actor for a summary and continues from the problem
+statement and that summary. TMAX/TB retain the bash interface.
+
+Native rewards are the default. FrontierSmith/FCS use the highest submission
+score scaled from `[0,100]` to `[0,1]`; the final verifier reads the submission
+ledger without submitting again. TMAX/TB use their task reward. Episodes without
+submissions and contestant compilation failures score zero. Infrastructure and verifier
 service failures propagate as trial errors. Optional `test-count` mode reads
 `passing_assertions/20`; a missing/unparseable count can fall back only to a
 valid binary result, with the reason saved in metadata.
+
+`--terminal-memory-mb` overrides task sandbox RAM; omit it to use the task's
+allocation. Trial errors propagate to the caller. Repeat
+`--terminal-docker-compose PATH` to pass deployment-specific Compose overlays
+to Harbor's Docker backend.
+
+Re-run data preparation for existing FrontierSmith/FCS tasks to update their
+instructions and verifier for `fcs-submit`. Old final-file verifier tasks are
+rejected by this agent.
 
 Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
 episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
 runs **180 × 5 = 900 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
 result names `fcs` / `tb21`.
+
+Use `--skip-eval-before-train` to enter training immediately, or
+`--eval-max-tasks 2 --eval-samples-per-prompt 1` for a small evaluation at every
+point.
 
 A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
 points, **18,900 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.

@@ -78,6 +78,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-top-p 1.0
   --eval-top-k -1
   --eval-max-response-len 24576
+  --terminal-agent-protocol fcs-submit
+  --fcs-max-submissions 6
+  --fcs-max-turns 16
   --chat-template-path <REPO_ROOT>/agentic_critic/qwen3_5_interleaved.jinja
   --terminal-enable-thinking
   --terminal-continue-on-length

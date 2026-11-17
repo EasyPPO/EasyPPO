@@ -1,10 +1,13 @@
 # Synchronous FrontierSmith PPO on Modal
 
 Run from the repository root. Install `modal_launchers/requirements.txt` and
-configure the Modal CLI (`modal setup`). The launcher passes the active Modal
-profile to training workers so Harbor can create CPU task sandboxes. Set
+configure the Modal CLI (`modal setup`). Set
 `WANDB_API_KEY` and optionally `WANDB_ENTITY` to enable W&B; its project is
 `miles-run_qwen3_5_27b_sync_frontiersmith` and its run ID is `--run-id`.
+
+FrontierSmith/FCS use the [submit-only interaction and reward rules](../examples/easyppo/RECIPES.md#rewards-validation-and-checkpoints).
+Each Harbor trial runs the submission client in its local Docker container;
+the shared judge compiles and executes submitted C++.
 
 The image starts from the immutable Miles v0.1.3 digest in
 [`release-lock.json`](../release-lock.json), with Python 3.12, CUDA 13 and
@@ -64,12 +67,33 @@ Append `--launch` to the selected command to start it. Both use 100 rounds,
 saved every five rounds; two complete sets are retained. Generation limits
 match `Claude.md`. Use identical resource options for both experiments.
 
-`--concurrency` sets SGLang/Harbor concurrency per engine (default 128).
+`--concurrency` sets SGLang/Harbor concurrency per engine (default 8).
 Training starts a CPU judge with 32 CPUs and 64 GiB memory; adjust
 `--judge-cpus`, `--judge-memory-gib`, and `--judge-workers` together with trial
-concurrency. Task sandboxes use Harbor's Modal backend and CPU resources.
-The judge endpoint uses a per-attempt connection token, passed only to verifier
+concurrency. Each GPU node starts one local Docker daemon; Harbor creates
+episode containers on that node using its Docker backend. These containers
+share the training node's CPU and RAM. `--terminal-memory-mb 16384` sets the
+per-container memory request; size node RAM and concurrency together.
+The gVisor Docker daemon uses host networking and the supplied Compose overlay.
+The shared judge runs in a CPU VM because go-judge fails to initialize its
+execution environments under gVisor. Infrastructure and verifier failures stop
+the run with an error.
+The judge endpoint uses a per-attempt connection token, passed to submission-client and verifier
 execution. Prepared task files store an environment placeholder for that token.
+
+Preview one actor/critic training round with a small final evaluation:
+
+```bash
+python -m modal_launchers.frontiersmith --mode full_detach --run-id sync-fs-smoke-001 \
+  --num-rollout 1 --num-critic-only-steps 0 \
+  --rollout-batch-size 4 --samples-per-prompt 2 --critic-steps-per-rollout 1 \
+  --skip-eval-before-train --eval-max-tasks 2 --eval-samples-per-prompt 1 \
+  --concurrency 1
+```
+
+This remains a local preview until `--launch` is added. For an initial small
+evaluation too, omit `--skip-eval-before-train`. The task/sample limits apply to
+every evaluation point; use a fresh run ID when changing the experiment settings.
 
 The default Miles image is pinned by digest. `--image` accepts a compatible
 replacement with `/root/Megatron-LM`. The launcher installs the branch's source

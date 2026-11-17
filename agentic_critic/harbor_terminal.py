@@ -1,4 +1,4 @@
-"""Harbor lifecycle adapter for the mini-swe-agent EasyPPO harness.
+"""Harbor lifecycle and trajectory persistence for EasyPPO agents.
 
 Requires the optional terminal dependencies. A fresh adapter is bound to one
 in-process episode; no global registry or external agent server is needed.
@@ -9,10 +9,12 @@ import json
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 from harbor.agents.base import BaseAgent
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
 from harbor.trial.trial import Trial
+
+from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
+from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 
 
 def _write_trajectory(trace: TerminalTrace, messages: list[dict], logs_dir: Path) -> None:
@@ -56,7 +58,7 @@ class MiniSweTerminalAgent(BaseAgent):
         self.episode_config = config
         self.trace = TerminalTrace()
 
-    async def run(self, instruction, environment, context) -> None:
+    def _make_agent(self, environment):
         async def execute(command: str, timeout: int) -> dict:
             try:
                 result = await environment.exec(command=command, timeout_sec=timeout)
@@ -70,9 +72,10 @@ class MiniSweTerminalAgent(BaseAgent):
                 raise
             return {"output": (result.stdout or "") + (result.stderr or ""), "returncode": result.return_code}
 
-        agent = TerminalAgent(
-            tokenizer=self.tokenizer, decode=self.decode, execute=execute, config=self.episode_config
-        )
+        return TerminalAgent(tokenizer=self.tokenizer, decode=self.decode, execute=execute, config=self.episode_config)
+
+    async def run(self, instruction, environment, context) -> None:
+        agent = self._make_agent(environment)
         self.trace = agent.trace
         try:
             await agent.run_async(instruction)
@@ -91,21 +94,48 @@ class MiniSweTerminalAgent(BaseAgent):
             _write_trajectory(self.trace, agent.messages, self.logs_dir)
 
 
-async def run_trial(*, task_path: Path, trials_dir: Path, environment: str, tokenizer, decode, config):
-    """Run native Harbor setup -> agent -> verifier -> teardown, without retries.
+async def run_trial(
+    *,
+    task_path: Path,
+    trials_dir: Path,
+    environment: str,
+    tokenizer,
+    decode,
+    config,
+    memory_mb: int | None = None,
+    docker_compose: tuple[str, ...] = (),
+    agent_protocol: str = "terminal",
+    fcs_max_submissions: int = DEFAULT_MAX_SUBMISSIONS,
+    fcs_max_turns: int = DEFAULT_MAX_TURNS,
+):
+    """Run native Harbor setup -> agent -> verifier -> teardown once.
 
     Infrastructure/verifier failures are errors, not zero-reward training data.
     Harbor handles cancellation cleanup in Trial.run().
     """
+    agents = {
+        "terminal": "agentic_critic.harbor_terminal:MiniSweTerminalAgent",
+        "fcs-submit": "agentic_critic.harbor_fcs:HarborFcsAgent",
+    }
     trial = await Trial.create(
         TrialConfig(
             task=TaskConfig(path=task_path),
             trials_dir=trials_dir,
-            agent=AgentConfig(import_path="agentic_critic.harbor_terminal:MiniSweTerminalAgent"),
-            environment=EnvironmentConfig(type=environment),
+            agent=AgentConfig(import_path=agents[agent_protocol]),
+            environment=EnvironmentConfig(
+                type=environment,
+                override_memory_mb=memory_mb,
+                extra_docker_compose=[Path(path) for path in docker_compose],
+            ),
         )
     )
     trial.agent.bind(tokenizer=tokenizer, decode=decode, config=config)
+    if agent_protocol == "fcs-submit":
+        trial.agent.bind_judge(
+            verifier_env=trial.task.config.verifier.env,
+            max_submissions=fcs_max_submissions,
+            max_turns=fcs_max_turns,
+        )
     result = await trial.run()
     trace = trial.agent.trace
     if result.exception_info is not None:

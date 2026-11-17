@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from modal_launchers import frontiersmith as launcher
-from modal_launchers.config import Config, check_manifest
+from modal_launchers.config import Config, check_manifest, parse_args
 
 
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
@@ -23,7 +23,9 @@ def test_recipe_matches_claude(mode):
         "--eval-max-tasks": "0",
         "--eval-samples-per-prompt": "5",
         "--max-context-tokens": "131072",
-        "--terminal-environment": "modal",
+        "--terminal-environment": "docker",
+        "--terminal-docker-compose": f"{config.source}/modal_launchers/docker-compose-host.yaml",
+        "--sglang-server-concurrency": "8",
         "--critic-context-mode": mode,
     }.items():
         assert args[args.index(flag) + 1] == value
@@ -36,6 +38,48 @@ def test_preview_does_not_build_or_launch(monkeypatch, capsys):
     monkeypatch.setattr(launcher, "_train", forbidden)
     launcher.main([])
     assert json.loads(capsys.readouterr().out)["launch"] is False
+
+
+def test_one_round_smoke_plan_reaches_actor_update_without_startup_eval():
+    args, config = parse_args(
+        [
+            "--run-id",
+            "smoke",
+            "--num-rollout",
+            "1",
+            "--num-critic-only-steps",
+            "0",
+            "--rollout-batch-size",
+            "4",
+            "--samples-per-prompt",
+            "2",
+            "--critic-steps-per-rollout",
+            "1",
+            "--eval-max-tasks",
+            "2",
+            "--eval-samples-per-prompt",
+            "1",
+            "--skip-eval-before-train",
+            "--terminal-memory-mb",
+            "32768",
+            "--concurrency",
+            "1",
+        ]
+    )
+    assert not args.launch
+    command = config.command()
+    for flag, value in {
+        "--num-rollout": "1",
+        "--num-critic-only-steps": "0",
+        "--rollout-batch-size": "4",
+        "--samples-per-prompt": "2",
+        "--critic-steps-per-rollout": "1",
+        "--eval-max-tasks": "2",
+        "--eval-samples-per-prompt": "1",
+        "--terminal-memory-mb": "32768",
+    }.items():
+        assert command[command.index(flag) + 1] == value
+    assert "--skip-eval-before-train" in command
 
 
 def test_manifest_rejects_changed_mode_or_topology(tmp_path):
@@ -55,6 +99,38 @@ def test_manifest_rejects_unowned_output(tmp_path):
     Path(config.output, "checkpoints").mkdir()
     with pytest.raises(ValueError, match="no Modal manifest"):
         check_manifest(config, wandb_project="test", wandb_entity=None)
+
+
+def test_legacy_run_accepts_default_controls_and_pins_them(tmp_path):
+    from pathlib import Path
+
+    config = Config(mode="full_detach", run_id="test", mount=str(tmp_path))
+    check_manifest(config, wandb_project="test", wandb_entity=None)
+    path = Path(config.output) / "modal_run.json"
+    current = json.loads(path.read_text())
+    unversioned = dict(current)
+    unversioned.pop("agent_protocol")
+    path.write_text(json.dumps(unversioned))
+    with pytest.raises(ValueError, match="configuration differs"):
+        check_manifest(config, wandb_project="test", wandb_entity=None)
+    legacy = dict(current)
+    for name in (
+        "terminal_memory_mb",
+        "eval_max_tasks",
+        "eval_samples_per_prompt",
+        "skip_eval_before_train",
+        "num_rollout",
+        "num_critic_only_steps",
+        "rollout_batch_size",
+        "samples_per_prompt",
+        "critic_steps_per_rollout",
+    ):
+        legacy.pop(name)
+    path.write_text(json.dumps(legacy))
+    check_manifest(config, wandb_project="test", wandb_entity=None)
+    assert json.loads(path.read_text()) == current
+    with pytest.raises(ValueError, match="configuration differs"):
+        check_manifest(replace(config, eval_max_tasks=2), wandb_project="test", wandb_entity=None)
 
 
 @pytest.mark.parametrize("change", [{"run_id": "../escape"}, {"gpus": 32}, {"max_restarts": -1}])
@@ -101,8 +177,8 @@ def test_cancel_gpu_before_terminating_judge(monkeypatch):
 
 @pytest.mark.parametrize("error, expected_attempts", [(launcher.JudgeLifetimeTimeout, 3), (RuntimeError, 1)])
 def test_retries_are_bounded_and_only_for_timeouts(monkeypatch, error, expected_attempts):
-    from contextlib import nullcontext
     import sys
+    from contextlib import nullcontext
     from types import ModuleType
 
     exceptions = ModuleType("modal.exception")

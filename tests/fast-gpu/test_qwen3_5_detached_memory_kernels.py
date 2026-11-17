@@ -30,7 +30,11 @@ def _packed():
     )
 
 
-def test_native_te_bottom_right_memory_attention_values_gradients_and_recompute():
+def test_native_te_bottom_right_memory_attention_values_gradients_and_recompute(monkeypatch):
+    # Match the training recipe: cuDNN backward rejects the one-token segment.
+    monkeypatch.setenv("NVTE_FLASH_ATTN", "1")
+    monkeypatch.setenv("NVTE_FUSED_ATTN", "0")
+    monkeypatch.setenv("NVTE_UNFUSED_ATTN", "0")
     _require_cuda()
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.transformer_config import TransformerConfig
