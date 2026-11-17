@@ -114,6 +114,12 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
     else:
         main.pop("extra_hosts", None)
     compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
+    # The in-process terminal agent executes bash; the task image supplies
+    # contestant tools and the verifier client.
+    shutil.copy2(
+        Path(__file__).resolve().parents[1] / "agentic_critic/frontiersmith.Dockerfile",
+        task / "environment/Dockerfile",
+    )
     shutil.copy2(Path(__file__).with_name("frontiersmith_verifier.py"), task / "tests/evaluate.py")
     entrypoint = task / "tests/test.sh"
     entrypoint.write_text(

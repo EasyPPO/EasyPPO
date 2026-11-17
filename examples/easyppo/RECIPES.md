@@ -42,6 +42,8 @@ JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md
 The terminal harness runs bash in Harbor sandboxes. Frontier tasks use their
 shared Frontier-CS judge service and checker partial scores; TMAX/TB use their
 supplied task verifiers. Model decoding is handled by Miles/SGLang.
+Frontier task containers provide C++, Python and the verifier HTTP client;
+the terminal agent runs in the rollout worker.
 
 ## Batch and update schedule
 
