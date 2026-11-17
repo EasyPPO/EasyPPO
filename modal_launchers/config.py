@@ -151,7 +151,10 @@ class Config:
 
     def manifest(self):
         # Retry limits and judge endpoint change across attempts; training identity does not.
-        return {key: value for key, value in asdict(self).items() if key != "max_restarts"}
+        return {
+            **{key: value for key, value in asdict(self).items() if key != "max_restarts"},
+            "agent_protocol": "fcs-submit-v1",
+        }
 
 
 def parse_args(argv=None):

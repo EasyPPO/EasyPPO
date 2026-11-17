@@ -283,7 +283,10 @@ async def generate(input):
         sample.reward = reward
         # FCS continues length-limited turns, but the reference masks affected
         # segments out of actor training. Terminal tasks retain their episode policy.
-        truncated = trace.truncated or (agent_protocol == "fcs-submit" and segment_metadata["generation_truncated"])
+        truncated = trace.truncated
+        if agent_protocol == "fcs-submit":
+            episode_interrupted = trace.truncated and trace.exit_status != "ContextOrTokenLimit"
+            truncated = episode_interrupted or segment_metadata["generation_truncated"]
         sample.status = Sample.Status.TRUNCATED if truncated else Sample.Status.COMPLETED
         sample.metadata = {
             **metadata,

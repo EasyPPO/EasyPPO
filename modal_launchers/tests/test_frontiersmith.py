@@ -108,6 +108,11 @@ def test_legacy_run_accepts_default_controls_and_pins_them(tmp_path):
     check_manifest(config, wandb_project="test", wandb_entity=None)
     path = Path(config.output) / "modal_run.json"
     current = json.loads(path.read_text())
+    unversioned = dict(current)
+    unversioned.pop("agent_protocol")
+    path.write_text(json.dumps(unversioned))
+    with pytest.raises(ValueError, match="configuration differs"):
+        check_manifest(config, wandb_project="test", wandb_entity=None)
     legacy = dict(current)
     for name in (
         "terminal_memory_mb",

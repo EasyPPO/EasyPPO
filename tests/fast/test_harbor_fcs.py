@@ -241,12 +241,16 @@ async def test_native_trial_selects_submit_agent_and_resolves_judge_configuratio
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("truncated_call", [None, 0, 1, 2])
-async def test_fcs_samples_match_reference_with_real_template(monkeypatch, tmp_path, request, truncated_call):
+@pytest.mark.parametrize(
+    "truncated_call,budget_stop", [(None, False), (0, False), (1, False), (2, False), (2, True), (None, True)]
+)
+async def test_fcs_samples_match_reference_with_real_template(
+    monkeypatch, tmp_path, request, truncated_call, budget_stop
+):
     tokenizer_impl = request.getfixturevalue("tokenizer")
 
     from agentic_critic import harbor_terminal, miles_terminal
-    from agentic_critic.fcs_env import TurnFormat, run_episode
+    from agentic_critic.fcs_env import ContextFull, TurnFormat, run_episode
     from agentic_critic.miles_fcs import episode_samples
     from miles.utils import http_utils
     from miles.utils.types import Sample
@@ -268,6 +272,8 @@ async def test_fcs_samples_match_reference_with_real_template(monkeypatch, tmp_p
     reference_scores = iter([80, 20])
 
     def generate(prompt):
+        if budget_stop and len(reference_prompts) == len(token_lists):
+            raise ContextFull
         reference_prompts.append(prompt)
         i, tokens = next(reference_calls)
         return tokens, i != truncated_call
@@ -277,7 +283,7 @@ async def test_fcs_samples_match_reference_with_real_template(monkeypatch, tmp_p
         fmt=TurnFormat(tokenizer_impl),
         generate=generate,
         judge=lambda code: JudgeResult(next(reference_scores), "done"),
-        max_submissions=2,
+        max_submissions=3 if budget_stop else 2,
         compact_threshold_tokens=1200,
     )
     expected = episode_samples(reference, [[-0.5] * len(tokens) for tokens in token_lists])
@@ -319,7 +325,9 @@ async def test_fcs_samples_match_reference_with_real_template(monkeypatch, tmp_p
     args.terminal_summary_tokens = 1024
     args.terminal_max_context_tokens = args.rollout_max_context_len = 16000
     args.terminal_continue_on_length = True
-    args.fcs_max_submissions = 2
+    args.fcs_max_submissions = 3 if budget_stop else 2
+    if budget_stop:
+        args.terminal_max_total_tokens = sum(map(len, token_lists))
     result = await miles_terminal.generate(
         SimpleNamespace(
             args=args,
@@ -332,10 +340,21 @@ async def test_fcs_samples_match_reference_with_real_template(monkeypatch, tmp_p
     assert requests == reference_prompts
     assert len(result.samples) == len(expected) == 2
     for actual, wanted in zip(result.samples, expected, strict=True):
+        if budget_stop and wanted is expected[-1]:
+            # Harbor records feedback when the next decode consumes it. The reference
+            # eagerly appends the final feedback even though the budget prevents that decode.
+            trailing = len(wanted["tokens"]) - len(actual.tokens)
+            assert trailing > 0
+            assert not any(wanted["loss_mask"][-trailing:])
+            wanted = dict(wanted, response_length=wanted["response_length"] - trailing)
+            for field in ("tokens", "loss_mask", "rollout_log_probs"):
+                wanted[field] = wanted[field][:-trailing]
         for field in ("tokens", "response_length", "loss_mask", "rollout_log_probs"):
             assert getattr(actual, field) == wanted[field]
         assert (actual.status == Sample.Status.TRUNCATED) == wanted["truncated"]
         assert actual.reward == reference.reward
+        if budget_stop:
+            assert actual.metadata["exit_status"] == "ContextOrTokenLimit"
     summary_start = len(reference_prompts[1])
     summary_end = summary_start + len(token_lists[1])
     assert result.samples[0].metadata["summary_span"] == (summary_start, summary_end)
