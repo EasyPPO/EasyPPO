@@ -6,6 +6,8 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from miles.utils.file_utils import atomic_write_text
+
 MODES = ("full_detach", "actor-summary")
 
 
@@ -26,6 +28,17 @@ class Config:
     judge_cpus: int = 32
     judge_memory_gib: int = 64
     judge_workers: int = 32
+    terminal_memory_mb: int = 16384
+    terminal_max_retries: int = 2
+    eval_max_tasks: int = 0
+    eval_samples_per_prompt: int = 5
+    skip_eval_before_train: bool = False
+    resume_initial_eval: bool = True
+    num_rollout: int = 100
+    num_critic_only_steps: int = 30
+    rollout_batch_size: int = 32
+    samples_per_prompt: int = 16
+    critic_steps_per_rollout: int = 4
 
     def __post_init__(self):
         if self.mode not in MODES or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.run_id):
@@ -40,6 +53,22 @@ class Config:
             raise ValueError("Resources and concurrency must be positive")
         if self.max_restarts < 0:
             raise ValueError("max-restarts must be non-negative")
+        if self.terminal_memory_mb < 1 or self.eval_samples_per_prompt < 1:
+            raise ValueError("Sandbox memory and evaluation sample count must be positive")
+        if self.terminal_max_retries < 0 or self.eval_max_tasks < 0:
+            raise ValueError("Trial retries and evaluation task limit must be nonnegative")
+        if self.num_rollout < 1 or not 0 <= self.num_critic_only_steps <= self.num_rollout:
+            raise ValueError("Critic-only steps must be between zero and num-rollout")
+        if self.rollout_batch_size < 1 or self.samples_per_prompt < 2 or self.critic_steps_per_rollout < 1:
+            raise ValueError(
+                "Use a positive rollout batch and critic step count, with at least two samples per prompt"
+            )
+        if self.rollout_batch_size % self.critic_steps_per_rollout:
+            raise ValueError("Critic mini-batches must contain complete prompt groups")
+        if (self.rollout_batch_size * self.samples_per_prompt // self.critic_steps_per_rollout) % (
+            self.nodes * self.gpus // 4
+        ):
+            raise ValueError("Critic mini-batches must divide evenly across training data-parallel ranks")
 
     @property
     def output(self):
@@ -76,22 +105,28 @@ class Config:
             f"{self.mount}/outputs",
             "--terminal-environment",
             "modal",
+            "--terminal-memory-mb",
+            str(self.terminal_memory_mb),
+            "--terminal-max-retries",
+            str(self.terminal_max_retries),
+            *(["--skip-eval-before-train"] if self.skip_eval_before_train else []),
+            *(["--resume-initial-eval"] if self.resume_initial_eval else []),
             "--num-rollout",
-            "100",
+            str(self.num_rollout),
             "--num-critic-only-steps",
-            "30",
+            str(self.num_critic_only_steps),
             "--critic-steps-per-rollout",
-            "4",
+            str(self.critic_steps_per_rollout),
             "--rollout-batch-size",
-            "32",
+            str(self.rollout_batch_size),
             "--samples-per-prompt",
-            "16",
+            str(self.samples_per_prompt),
             "--eval-interval",
             "10",
             "--eval-max-tasks",
-            "0",
+            str(self.eval_max_tasks),
             "--eval-samples-per-prompt",
-            "5",
+            str(self.eval_samples_per_prompt),
             "--save-interval",
             "5",
             "--max-keep",
@@ -139,8 +174,21 @@ def parse_args(argv=None):
         "judge_cpus",
         "judge_memory_gib",
         "judge_workers",
+        "terminal_memory_mb",
+        "terminal_max_retries",
+        "eval_max_tasks",
+        "eval_samples_per_prompt",
+        "num_rollout",
+        "num_critic_only_steps",
+        "rollout_batch_size",
+        "samples_per_prompt",
+        "critic_steps_per_rollout",
     ):
         parser.add_argument(f"--{name.replace('_', '-')}", type=int, default=getattr(Config, name))
+    for name in ("skip_eval_before_train", "resume_initial_eval"):
+        parser.add_argument(
+            f"--{name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=getattr(Config, name)
+        )
     args = parser.parse_args(argv)
     fields = vars(args).copy()
     fields.pop("action")
@@ -154,14 +202,32 @@ def check_manifest(config, *, wandb_project, wandb_entity):
     path = root / "modal_run.json"
     expected = dict(config.manifest(), wandb_project=wandb_project, wandb_entity=wandb_entity)
     if path.exists():
-        actual = json.loads(path.read_text())
+        original = json.loads(path.read_text())
+        actual = dict(original)
         actual.setdefault("nodes", 1)  # Existing single-node manifests predate this field.
+        # Old manifests predate these controls. Their recipe values match the
+        # defaults; the new recovery and sandbox defaults also apply to them.
+        for name in (
+            "terminal_memory_mb",
+            "terminal_max_retries",
+            "eval_max_tasks",
+            "eval_samples_per_prompt",
+            "skip_eval_before_train",
+            "resume_initial_eval",
+            "num_rollout",
+            "num_critic_only_steps",
+            "rollout_batch_size",
+            "samples_per_prompt",
+            "critic_steps_per_rollout",
+        ):
+            actual.setdefault(name, getattr(Config, name))
         if actual != expected:
             raise ValueError(f"Run configuration differs from {path}; use the original settings or a new run ID")
+        # Persist the normalized identity so later default changes cannot
+        # silently reinterpret an old experiment.
+        if original == actual:
+            return
     elif root.exists() and any(root.iterdir()):
         raise ValueError(f"Existing output has no Modal manifest: {root}")
-    else:
-        root.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(expected, indent=2) + "\n")
-        temp.replace(path)
+    root.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(expected, indent=2) + "\n")

@@ -68,8 +68,26 @@ match `Claude.md`. Use identical resource options for both experiments.
 Training starts a CPU judge with 32 CPUs and 64 GiB memory; adjust
 `--judge-cpus`, `--judge-memory-gib`, and `--judge-workers` together with trial
 concurrency. Task sandboxes use Harbor's Modal backend and CPU resources.
+Each task sandbox requests `--terminal-memory-mb 16384`, separately from
+training-node and judge RAM. Increase it for larger task builds. Transient
+infrastructure and missing-reward failures receive up to
+`--terminal-max-retries 2` fresh trial attempts; exhausted failures remain errors.
 The judge endpoint uses a per-attempt connection token, passed only to verifier
 execution. Prepared task files store an environment placeholder for that token.
+
+Preview one actor/critic training round with a small final evaluation:
+
+```bash
+python -m modal_launchers.frontiersmith --mode full_detach --run-id sync-fs-smoke-001 \
+  --num-rollout 1 --num-critic-only-steps 0 \
+  --rollout-batch-size 4 --samples-per-prompt 2 --critic-steps-per-rollout 1 \
+  --skip-eval-before-train --eval-max-tasks 2 --eval-samples-per-prompt 1 \
+  --concurrency 1
+```
+
+This remains a local preview until `--launch` is added. For an initial small
+evaluation too, omit `--skip-eval-before-train`. The task/sample limits apply to
+every evaluation point; use a fresh run ID when changing the experiment settings.
 
 The default Miles image is pinned by digest. `--image` accepts a compatible
 replacement with `/root/Megatron-LM`. The launcher installs the branch's source
@@ -90,6 +108,14 @@ The old cluster call is cancelled before the judge is replaced. All nodes restar
 errors stop the launcher. Ctrl-C stops the current attempt; rerun to resume.
 The local client must stay alive for automatic restarts. Each attempt has a
 24-hour platform limit and is stopped ten minutes before its judge expires.
+
+`--resume-initial-eval` is enabled by default. Completed, scored initial-eval
+samples are saved under the run's trial directory and reused on restart with
+the same model, tasks and sampling settings. Other trials finish even if one
+fails; an incomplete evaluation reports an error, never a partial or zero-filled
+score. Trained-model evaluations run afresh. Use `--no-resume-initial-eval` to
+disable initial-eval recovery. Recovery needs the files committed to the Volume;
+the training wrapper commits local writes when it exits, including on failure.
 
 A checkpoint becomes resumable only after actor, critic, and rollout state are
 saved and committed to the Volume. On multiple nodes, every node commits its

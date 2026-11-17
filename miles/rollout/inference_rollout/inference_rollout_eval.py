@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import stamp_kv_cache_namespace
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
+from miles.rollout.inference_rollout.eval_progress import InitialEvalProgress
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     compute_sampling_params,
@@ -15,7 +16,6 @@ from miles.rollout.inference_rollout.inference_rollout_common import (
 )
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
-from miles.utils.misc import as_completed_async
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
 
@@ -27,6 +27,7 @@ async def run_eval_datasets(
     prompt_dataset_cache: dict[Any, Dataset],
     *,
     kv_cache_namespace: str | None = None,
+    progress_dir: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
@@ -35,10 +36,22 @@ async def run_eval_datasets(
     for dataset_cfg in args.eval_datasets:
         coros.append(
             eval_rollout_single_dataset(
-                state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace
+                state,
+                dataset_cfg,
+                prompt_dataset_cache,
+                kv_cache_namespace=kv_cache_namespace,
+                progress_dir=progress_dir,
             )
         )
-    results_list = await asyncio.gather(*coros)
+    results_list = await asyncio.gather(*coros, return_exceptions=True)
+    errors = [result for result in results_list if isinstance(result, Exception)]
+    if errors:
+        raise ExceptionGroup(
+            "Evaluation datasets failed; completed samples have been retained when configured", errors
+        )
+    for result in results_list:
+        if isinstance(result, BaseException):
+            raise result
     return {k: v for r in results_list for k, v in r.items()}
 
 
@@ -48,6 +61,7 @@ async def eval_rollout_single_dataset(
     prompt_dataset_cache: dict[Any, Dataset],
     *,
     kv_cache_namespace: str | None = None,
+    progress_dir: str | None = None,
 ) -> dict[str, dict[str, list[Any]]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
@@ -80,6 +94,18 @@ async def eval_rollout_single_dataset(
         top_k=dataset_cfg.top_k,
         max_new_tokens=dataset_cfg.max_response_len,
     )
+    progress = InitialEvalProgress(progress_dir, args, dataset_cfg, base_sampling_params) if progress_dir else None
+
+    async def generate_sample(sample, sampling_params):
+        path = progress.path(sample, sampling_params) if progress else None
+        if progress:
+            cached = progress.load(path, namespace=kv_cache_namespace)
+            if cached is not None:
+                return cached
+        output = await generate_and_rm(state, sample, sampling_params=sampling_params, evaluation=True)
+        if progress:
+            progress.save(path, output)
+        return output
 
     tasks = []
     # do multiple samples for eval prompts
@@ -99,37 +125,40 @@ async def eval_rollout_single_dataset(
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()
                 sampling_params["sampling_seed"] = args.rollout_seed + j
-            tasks.append(
-                asyncio.create_task(
-                    generate_and_rm(
-                        state,
-                        sample,
-                        sampling_params=sampling_params,
-                        evaluation=True,
-                    )
-                )
-            )
+            tasks.append(asyncio.create_task(generate_sample(sample, sampling_params)))
 
     data = []
     do_print = True
     pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
-    async for sample in as_completed_async(tasks):
-        if do_print:
-            # TODO improve this after enhancing samples' type
-            s = (sample[0] if len(sample) > 0 else None) if isinstance(sample, list) else sample
-            if s is not None:
-                logger.info(
-                    "eval_rollout_single_dataset example data: "
-                    f"{[str(s.prompt) + s.response]} "
-                    f"reward={s.reward}"
-                )
-            do_print = False
-        if isinstance(sample, list):
-            data.extend(sample)
-        else:
-            data.append(sample)
-        pbar.update(1)
-    pbar.close()
+    errors = []
+    try:
+        for completed in asyncio.as_completed(tasks):
+            try:
+                sample = await completed
+            except Exception as exc:
+                logger.exception("Evaluation trial failed in %s", dataset_cfg.name)
+                errors.append(exc)
+                pbar.update(1)
+                continue
+            if do_print:
+                s = (sample[0] if sample else None) if isinstance(sample, list) else sample
+                if s is not None:
+                    logger.info(
+                        "eval_rollout_single_dataset example: %s reward=%s", str(s.prompt) + s.response, s.reward
+                    )
+                do_print = False
+            data.extend(sample if isinstance(sample, list) else [sample])
+            pbar.update(1)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        pbar.close()
+    if errors:
+        raise ExceptionGroup(
+            f"{len(errors)} evaluation trial(s) failed in {dataset_cfg.name}; no partial score reported", errors
+        )
 
     data.sort(key=lambda sample: sample.index)
 

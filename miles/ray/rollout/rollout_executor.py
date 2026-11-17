@@ -301,7 +301,18 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
 
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
-                result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
+                result = await maybe_await(
+                    self.eval_generate_rollout(
+                        RolloutFnEvalInput(
+                            rollout_id=rollout_id,
+                            # The driver supplies the base HF path only before the
+                            # first training step, after resolving checkpoint recovery.
+                            initial_weights=rollout_id == 0
+                            and hf_dir is not None
+                            and hf_dir == self.args.hf_checkpoint,
+                        )
+                    )
+                )
             else:
                 result = await asyncio.to_thread(
                     call_rollout_fn,

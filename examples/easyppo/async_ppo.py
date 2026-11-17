@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Literal
 
 import agentic_critic
-
 from miles.utils.external_utils import command_utils as U
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.workers.types import ClusterBackend
@@ -53,6 +52,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     frontier_judge_url: str = "http://host.docker.internal:8081"
     frontier_judge_timeout: int = 3600
     terminal_environment: Literal["docker", "daytona", "modal"] = "docker"
+    terminal_memory_mb: int | None = None
+    terminal_max_retries: int = 2
+    skip_eval_before_train: bool = False
+    resume_initial_eval: bool = False
     trials_dir: str = ""
     critic_context_mode: Literal["full_detach", "actor-summary"] = "full_detach"
     critic_load: str = ""
@@ -206,6 +209,10 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("Evaluation task limit and subset seed must be nonnegative")
     if args.eval_samples_per_prompt <= 0:
         raise ValueError("Evaluation samples per prompt must be positive")
+    if args.terminal_memory_mb is not None and args.terminal_memory_mb <= 0:
+        raise ValueError("Terminal sandbox memory must be positive")
+    if args.terminal_max_retries < 0:
+        raise ValueError("Terminal trial retries must be nonnegative")
     if args.dataset not in ("frontiersmith", "tmax"):
         raise ValueError("Choose frontiersmith or tmax")
     if args.over_sampling_batch_size < args.rollout_batch_size:
@@ -393,6 +400,8 @@ def _rollout_args(args: ScriptArgs) -> list[str]:
         "--eval-interval",
         str(args.eval_interval),
         "--no-eval-on-epoch",
+        *(["--skip-eval-before-train"] if args.skip_eval_before_train else []),
+        *(["--eval-progress-dir", str(Path(args.trial_root) / "initial-eval")] if args.resume_initial_eval else []),
         "--no-save-on-epoch",
         "--n-samples-per-eval-prompt",
         str(args.eval_samples_per_prompt),
@@ -419,6 +428,8 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         args.trial_root,
         "--terminal-environment",
         args.terminal_environment,
+        *(["--terminal-memory-mb", str(args.terminal_memory_mb)] if args.terminal_memory_mb is not None else []),
+        *(["--terminal-max-retries", str(args.terminal_max_retries)] if args.terminal_max_retries != 2 else []),
         "--terminal-compaction",
         "summary",
         "--terminal-compact-threshold",

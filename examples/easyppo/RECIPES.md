@@ -337,10 +337,22 @@ service failures propagate as trial errors. Optional `test-count` mode reads
 `passing_assertions/20`; a missing/unparseable count can fall back only to a
 valid binary result, with the reason saved in metadata.
 
+`--terminal-memory-mb` overrides task sandbox RAM; omit it to use the task's
+allocation. `--terminal-max-retries` defaults to two bounded infrastructure
+retries. Trial errors never become zero-reward samples. Modal execution uploads
+long commands as scripts and replaces invalid UTF-8 in command output.
+
 Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
 episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
 runs **180 × 5 = 900 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
 result names `fcs` / `tb21`.
+
+Use `--skip-eval-before-train` to enter training immediately, or
+`--eval-max-tasks 2 --eval-samples-per-prompt 1` for a small evaluation at every
+point. `--resume-initial-eval` saves scored initial-evaluation samples in
+`<trials-dir>/initial-eval`; a restart with unchanged model, tasks and sampling
+reuses them. Failed trials are retried on restart, and trained-model evaluations
+always run afresh. Keep that directory on persistent storage.
 
 A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
 points, **18,900 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.

@@ -27,7 +27,7 @@ class EvalDispatcher:
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
         """A caller-supplied ``hf_dir`` is an existing checkpoint, not one of our exports."""
         if not self.args.eval_uses_snapshots:
-            await self.rollout_manager.eval(rollout_id)
+            await self.rollout_manager.eval(rollout_id, hf_dir=hf_dir)
             return
 
         await self._reap_finished()

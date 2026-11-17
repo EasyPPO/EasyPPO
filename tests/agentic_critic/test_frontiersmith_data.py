@@ -185,7 +185,7 @@ def test_trial_uses_shared_judge_without_sidecar_or_source_mounts(tmp_path):
         assert set(services) == {"main"}
         assert "depends_on" not in services["main"]
         assert services["main"]["volumes"] == ["./statement.txt:/app/statement.txt:ro"]
-        assert services["main"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
+        assert "extra_hosts" not in services["main"]
 
 
 def test_bundled_judge_serves_both_corpora_from_one_directory():

@@ -5,9 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from modal_launchers.config import check_manifest
-
 from miles.utils.file_utils import atomic_write_text
+from modal_launchers.config import check_manifest
 
 
 def commit_volume():
@@ -87,7 +86,9 @@ def train(config, judge_url, judge_token, *, run_command=subprocess.run):
     ]
     try:
         run_command(command, check=True)
-        atomic_write_text(Path(config.output, "training_complete.json"), json.dumps({"rounds": 100}) + "\n")
+        atomic_write_text(
+            Path(config.output, "training_complete.json"), json.dumps({"rounds": config.num_rollout}) + "\n"
+        )
     finally:
         # On failure the cluster may already be terminating; flush this node's
         # pending writes without waiting for unavailable peers.

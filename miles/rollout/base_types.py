@@ -49,6 +49,7 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
     generate_state: GenerateState | None = None
     weight_version: str | None = None
     hf_dir: str | None = None
+    initial_weights: bool = False
 
     @property
     def evaluation(self):

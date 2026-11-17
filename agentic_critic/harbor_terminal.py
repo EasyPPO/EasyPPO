@@ -9,10 +9,12 @@ import json
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 from harbor.agents.base import BaseAgent
+from harbor.models.job.config import RetryConfig
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
-from harbor.trial.trial import Trial
+from harbor.trial.queue import TrialQueue
+
+from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 
 
 def _write_trajectory(trace: TerminalTrace, messages: list[dict], logs_dir: Path) -> None:
@@ -91,22 +93,71 @@ class MiniSweTerminalAgent(BaseAgent):
             _write_trajectory(self.trace, agent.messages, self.logs_dir)
 
 
-async def run_trial(*, task_path: Path, trials_dir: Path, environment: str, tokenizer, decode, config):
-    """Run native Harbor setup -> agent -> verifier -> teardown, without retries.
+class _BoundTrialQueue(TrialQueue):
+    def __init__(self, *, binding, max_retries):
+        super().__init__(
+            n_concurrent=1,
+            retry_config=RetryConfig(
+                max_retries=max_retries,
+                include_exceptions={
+                    "EnvironmentStartTimeoutError",
+                    "EnvironmentBuildTimeoutError",
+                    "ConnectionError",
+                    "ConnectError",
+                    "ReadTimeout",
+                    "RemoteProtocolError",
+                    "InternalError",
+                    "ServiceError",
+                    "UnavailableError",
+                    "RewardFileNotFoundError",
+                    "RewardFileEmptyError",
+                    "VerifierTimeoutError",
+                },
+                exclude_exceptions={"AgentTimeoutError"},
+                min_wait_sec=1,
+                wait_multiplier=2,
+                max_wait_sec=10,
+            ),
+        )
+        self.binding = binding
+        self.trial = None
+
+    def _setup_hooks(self, trial):
+        super()._setup_hooks(trial)
+        trial.agent.bind(**self.binding)
+        self.trial = trial
+
+
+async def run_trial(
+    *,
+    task_path: Path,
+    trials_dir: Path,
+    environment: str,
+    tokenizer,
+    decode,
+    config,
+    memory_mb: int | None = None,
+    max_retries: int = 2,
+):
+    """Run Harbor's lifecycle with bounded infrastructure retries.
 
     Infrastructure/verifier failures are errors, not zero-reward training data.
     Harbor handles cancellation cleanup in Trial.run().
     """
-    trial = await Trial.create(
+    queue = _BoundTrialQueue(binding=dict(tokenizer=tokenizer, decode=decode, config=config), max_retries=max_retries)
+    result = await queue.submit(
         TrialConfig(
             task=TaskConfig(path=task_path),
             trials_dir=trials_dir,
             agent=AgentConfig(import_path="agentic_critic.harbor_terminal:MiniSweTerminalAgent"),
-            environment=EnvironmentConfig(type=environment),
+            environment=EnvironmentConfig(
+                type=environment,
+                import_path="agentic_critic.harbor_modal:TerminalModalEnvironment" if environment == "modal" else None,
+                override_memory_mb=memory_mb,
+            ),
         )
     )
-    trial.agent.bind(tokenizer=tokenizer, decode=decode, config=config)
-    result = await trial.run()
+    trial = queue.trial
     trace = trial.agent.trace
     if result.exception_info is not None:
         error = result.exception_info

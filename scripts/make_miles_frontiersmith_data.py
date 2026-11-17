@@ -98,9 +98,21 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
     services.pop("judge", None)
     main = services["main"]
     main.pop("depends_on", None)
-    # Resolve the local Docker host on Linux too. Multi-host runs must prepare
-    # tasks with the judge host's reachable address instead of this local alias.
-    main["extra_hosts"] = ["host.docker.internal:host-gateway"]
+    # Only the local judge alias needs Docker's host gateway. Remote judges
+    # (including Modal) must not require DinD to provide a host-gateway IP.
+    hosts = main.get("extra_hosts", [])
+    if isinstance(hosts, dict):
+        hosts.pop("host.docker.internal", None)
+        if urlsplit(judge_url).hostname == "host.docker.internal":
+            hosts["host.docker.internal"] = "host-gateway"
+    else:
+        hosts = [host for host in hosts if not re.match(r"^host\.docker\.internal[:=]", host)]
+        if urlsplit(judge_url).hostname == "host.docker.internal":
+            hosts.append("host.docker.internal:host-gateway")
+    if hosts:
+        main["extra_hosts"] = hosts
+    else:
+        main.pop("extra_hosts", None)
     compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
     shutil.copy2(Path(__file__).with_name("frontiersmith_verifier.py"), task / "tests/evaluate.py")
     entrypoint = task / "tests/test.sh"
