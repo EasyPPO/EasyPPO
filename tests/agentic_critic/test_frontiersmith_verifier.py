@@ -16,11 +16,9 @@ def test_invalid_scores_cannot_train(score):
         verifier._reward({"status": "done", "score": score})
 
 
-def test_contestant_compile_failure_scores_zero_but_judge_failure_does_not():
-    assert verifier._reward({"status": "error", "error": "Error: compile failed: main.cpp: invalid C++"}) == 0.0
-    for message in ("Error: checker compile failed: bad checker", "fetch failed", "Unknown problem"):
-        with pytest.raises(RuntimeError, match="judge failure"):
-            verifier._reward({"status": "error", "error": message})
+@pytest.mark.parametrize("message", ["Error: compile failed: invalid C++", "Error: checker compile failed", "unknown"])
+def test_judge_error_verdict_scores_zero(message):
+    assert verifier._reward({"status": "error", "error": message}) == 0.0
 
 
 def test_verifier_writes_numeric_reward_and_separate_diagnostics(monkeypatch, tmp_path):

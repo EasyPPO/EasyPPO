@@ -76,8 +76,8 @@ share the training node's CPU and RAM. `--terminal-memory-mb 16384` sets the
 per-container memory request; size node RAM and concurrency together.
 The gVisor Docker daemon uses host networking and the supplied Compose overlay.
 The shared judge runs in a CPU VM because go-judge fails to initialize its
-execution environments under gVisor. Infrastructure and verifier failures stop
-the run with an error.
+execution environments under gVisor. A judge error verdict scores the submission
+zero. Transport and verifier execution failures stop the run.
 The judge endpoint uses a per-attempt connection token, passed to submission-client and verifier
 execution. Prepared task files store an environment placeholder for that token.
 
