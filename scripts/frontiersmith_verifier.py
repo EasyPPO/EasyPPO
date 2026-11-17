@@ -1,8 +1,8 @@
 """Harbor verifier copied into prepared FrontierSmith tasks.
 
 Iterative tasks return the highest shared-judge submission score / 100.
-Legacy final-file tasks submit once. Infrastructure failures leave no reward
-file, so Harbor rejects the trial instead of training on a false zero.
+Legacy final-file tasks submit once. A judge error verdict scores zero.
+Request failures propagate to Harbor.
 """
 
 import argparse
@@ -52,11 +52,7 @@ def _judge(judge_url: str, problem_id: str, code: str, *, timeout: float) -> dic
 
 def _reward(result: dict) -> float:
     if result.get("status") == "error":
-        # At the pinned upstream revision contestant C++ errors have this exact
-        # prefix; checker compilation and service failures have other prefixes.
-        if str(result.get("error", "")).startswith("Error: compile failed: "):
-            return 0.0
-        raise RuntimeError(f"FrontierSmith judge failure: {result}")
+        return 0.0
     if result.get("status") != "done":
         raise ValueError("FrontierSmith judge returned no final verdict")
     score = result.get("score")
@@ -89,7 +85,7 @@ def _submit(*, solution: Path, ledger: Path, judge_url: str, problem_id: str, ti
         if code.strip()
         else {"status": "error", "error": "Error: compile failed: empty program"}
     )
-    _reward(result)  # Infrastructure errors must not be recorded as scored submissions.
+    _reward(result)  # Validate the verdict before appending it.
     submissions = json.loads(ledger.read_text(encoding="utf-8"))
     submissions.append(result)
     pending = ledger.with_suffix(".tmp")

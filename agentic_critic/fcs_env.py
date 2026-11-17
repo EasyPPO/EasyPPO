@@ -158,6 +158,8 @@ def format_feedback(result, index: int, max_submissions: int, best: float) -> st
     """Score plus aggregate case statuses; no test inputs or expected outputs are revealed."""
     if result.status == "Compile Error":
         detail = "Compile error:\n" + result.compile_msg[-500:]
+    elif result.status == "Judge Error":
+        detail = "The judge returned an error for this submission."
     else:
         counts = Counter(c.status for c in result.cases)
         detail = "Cases: " + ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))

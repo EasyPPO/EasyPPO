@@ -101,7 +101,7 @@ async def test_harbor_uploads_long_source_and_verifier_uses_best_submission(monk
     container = tmp_path / "container"
     container.mkdir()
     commands, sources = [], []
-    responses = iter([{"status": "done", "score": 80}, {"status": "done", "score": 20}])
+    responses = iter([{"status": "error"}, {"status": "done", "score": 80, "scoreUnbounded": 150}])
 
     def judge(url, pid, code, *, timeout):
         sources.append(code)
@@ -157,13 +157,13 @@ async def test_harbor_uploads_long_source_and_verifier_uses_best_submission(monk
     assert json.loads((tmp_path / "verifier/reward.json").read_text()) == {"reward": 0.8}
     assert len(sources) == 2 and len(sources[0]) == 70000
     assert all(c["command"] == "python3 /app/easyppo-fcs-submit.py --submit" for c in commands)
-    assert agent.trace.submission_scores == [80, 20]
+    assert agent.trace.submission_scores == [0, 80]
 
 
 @pytest.mark.parametrize(
     "result",
     [
-        {"status": "error", "error": "judge unavailable"},
+        {"status": "queued"},
         {"status": "done", "score": float("nan")},
     ],
 )

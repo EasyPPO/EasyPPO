@@ -355,8 +355,8 @@ statement and that summary. TMAX/TB retain the bash interface.
 Native rewards are the default. FrontierSmith/FCS use the highest submission
 score scaled from `[0,100]` to `[0,1]`; the final verifier reads the submission
 ledger without submitting again. TMAX/TB use their task reward. Episodes without
-submissions and contestant compilation failures score zero. Infrastructure and verifier
-service failures propagate as trial errors. Optional `test-count` mode reads
+submissions score zero. Each judge verdict with `status: "error"` counts as a
+zero-score submission. Transport and verifier execution failures propagate as trial errors. Optional `test-count` mode reads
 `passing_assertions/20`; a missing/unparseable count can fall back only to a
 valid binary result, with the reason saved in metadata.
 

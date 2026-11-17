@@ -48,7 +48,10 @@ class HarborFcsAgent(MiniSweTerminalAgent):
             response = json.loads(result.stdout)
             score = 100 * _reward(response)
             if response["status"] == "error":
-                return JudgeResult(score, "Compile Error", compile_msg=response["error"])
+                message = str(response.get("error", ""))
+                if message.startswith("Error: compile failed: "):
+                    return JudgeResult(score, "Compile Error", compile_msg=message)
+                return JudgeResult(score, "Judge Error")
             cases = [
                 CaseResult(
                     name=str(i),

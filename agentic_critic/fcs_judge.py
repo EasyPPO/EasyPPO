@@ -44,7 +44,7 @@ class CaseResult:
 @dataclass
 class JudgeResult:
     score: float  # 0..100
-    status: str  # done | Compile Error
+    status: str  # done | Compile Error | Judge Error
     compile_msg: str = ""
     cases: list[CaseResult] = field(default_factory=list)
 
