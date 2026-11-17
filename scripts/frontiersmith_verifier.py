@@ -1,10 +1,11 @@
 """Harbor verifier copied into prepared FrontierSmith tasks.
 
-Uses the shared judge's score / 100, configured by task verifier JUDGE_URL.
-Infrastructure failures leave no
-reward file, so Harbor rejects the trial instead of training on a false zero.
+Iterative tasks return the highest shared-judge submission score / 100.
+Legacy final-file tasks submit once. Infrastructure failures leave no reward
+file, so Harbor rejects the trial instead of training on a false zero.
 """
 
+import argparse
 import json
 import math
 import os
@@ -81,7 +82,53 @@ def _verify(*, solution: Path, logs: Path, judge_url: str, problem_id: str, time
     (logs / "reward.txt").write_text(str(reward))
 
 
+def _submit(*, solution: Path, ledger: Path, judge_url: str, problem_id: str, timeout: float) -> dict:
+    code = solution.read_text(encoding="utf-8")
+    result = (
+        _judge(judge_url.rstrip("/"), problem_id, code, timeout=timeout)
+        if code.strip()
+        else {"status": "error", "error": "Error: compile failed: empty program"}
+    )
+    _reward(result)  # Infrastructure errors must not be recorded as scored submissions.
+    submissions = json.loads(ledger.read_text(encoding="utf-8"))
+    submissions.append(result)
+    pending = ledger.with_suffix(".tmp")
+    pending.write_text(json.dumps(submissions), encoding="utf-8")
+    pending.replace(ledger)
+    return result
+
+
+def _verify_submissions(*, ledger: Path, logs: Path) -> None:
+    logs.mkdir(parents=True, exist_ok=True)
+    for name in ("reward.txt", "reward.json"):
+        (logs / name).unlink(missing_ok=True)
+    submissions = json.loads(ledger.read_text(encoding="utf-8"))
+    if not isinstance(submissions, list):
+        raise ValueError("FCS submissions must be a list")
+    reward = max((_reward(result) for result in submissions), default=0.0)
+    (logs / "judge-result.json").write_text(json.dumps(submissions))
+    (logs / "reward.json").write_text(json.dumps({"reward": reward}))
+    (logs / "reward.txt").write_text(str(reward))
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--submit", action="store_true")
+    args = parser.parse_args()
+    ledger = Path("/app/fcs-submissions.json")
+    if args.submit:
+        result = _submit(
+            solution=Path("/app/solution.cpp"),
+            ledger=ledger,
+            judge_url=os.environ["JUDGE_URL"],
+            problem_id=os.environ["PROBLEM_ID"],
+            timeout=float(os.environ.get("MAX_POLL_TIME", "600")),
+        )
+        print(json.dumps(result))
+        return
+    if os.environ.get("FCS_ITERATIVE_SUBMISSIONS") == "1":
+        _verify_submissions(ledger=ledger, logs=Path("/logs/verifier"))
+        return
     _verify(
         solution=Path("/app/solution.cpp"),
         logs=Path("/logs/verifier"),

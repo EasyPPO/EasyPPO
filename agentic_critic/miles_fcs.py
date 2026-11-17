@@ -18,7 +18,14 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from agentic_critic import fcs_judge_http
-from agentic_critic.fcs_env import ContextFull, Episode, TurnFormat, run_episode
+from agentic_critic.fcs_env import (
+    DEFAULT_MAX_SUBMISSIONS,
+    DEFAULT_MAX_TURNS,
+    ContextFull,
+    Episode,
+    TurnFormat,
+    run_episode,
+)
 from agentic_critic.miles_samples import critic_episode
 
 
@@ -130,8 +137,8 @@ async def generate(input):
 
 def _add_arguments(parser) -> None:
     parser.add_argument("--fcs-judge-url", type=str, default="http://127.0.0.1:8081")
-    parser.add_argument("--fcs-max-submissions", type=int, default=6)
-    parser.add_argument("--fcs-max-turns", type=int, default=16)
+    parser.add_argument("--fcs-max-submissions", type=int, default=DEFAULT_MAX_SUBMISSIONS)
+    parser.add_argument("--fcs-max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--fcs-compact-threshold", type=int, default=None, help="tokens; omit to disable compaction")
 
 

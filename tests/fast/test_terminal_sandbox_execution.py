@@ -21,6 +21,7 @@ def test_remote_judge_removes_only_local_gateway_and_reprepare_is_reversible(tmp
     (tmp_path / "environment").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "task.toml").write_text("")
+    (tmp_path / "environment/statement.txt").write_text("Solve the problem.")
     compose = tmp_path / "environment/docker-compose.yaml"
     compose.write_text(yaml.safe_dump({"services": {"main": {"extra_hosts": hosts}}}))
     for url, local in [("http://host.docker.internal:8081", True), ("https://judge.modal.host", False)] * 2:

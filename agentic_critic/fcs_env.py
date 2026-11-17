@@ -28,10 +28,13 @@ The model, the judge and the tokenizer are injected so the loop can be tested wi
 
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from agentic_critic.critic_input import Segment
+
+DEFAULT_MAX_SUBMISSIONS = 6
+DEFAULT_MAX_TURNS = 16
 
 # Verbatim from FrontierSmith scripts/prepare_synthetic_parquet.py::build_prompt.
 TASK_PROMPT = (
@@ -179,8 +182,8 @@ def run_episode(
     fmt: TurnFormat,
     generate: Callable[[list[int]], tuple[list[int], bool]],
     judge: Callable[[str], object],
-    max_submissions: int = 6,
-    max_turns: int = 16,
+    max_submissions: int = DEFAULT_MAX_SUBMISSIONS,
+    max_turns: int = DEFAULT_MAX_TURNS,
     compact_threshold_tokens: int | None = None,
     compaction: str = "summary",
     keep_turns: int = 1,

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import agentic_critic
+from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
 from miles.utils.external_utils import command_utils as U
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.workers.types import ClusterBackend
@@ -55,6 +56,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     terminal_environment: Literal["docker", "daytona", "modal"] = "docker"
     terminal_memory_mb: int | None = None
     terminal_docker_compose: list[str] = field(default_factory=list)
+    fcs_max_submissions: int = DEFAULT_MAX_SUBMISSIONS
+    fcs_max_turns: int = DEFAULT_MAX_TURNS
     skip_eval_before_train: bool = False
     trials_dir: str = ""
     critic_context_mode: Literal["full_detach", "actor-summary"] = "full_detach"
@@ -211,6 +214,8 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("Evaluation samples per prompt must be positive")
     if args.terminal_memory_mb is not None and args.terminal_memory_mb <= 0:
         raise ValueError("Terminal sandbox memory must be positive")
+    if args.fcs_max_submissions < 1 or args.fcs_max_turns < 1:
+        raise ValueError("FCS submission and turn limits must be positive")
     if args.dataset not in ("frontiersmith", "tmax"):
         raise ValueError("Choose frontiersmith or tmax")
     if args.over_sampling_batch_size < args.rollout_batch_size:
@@ -415,6 +420,18 @@ def _rollout_args(args: ScriptArgs) -> list[str]:
 
 def _terminal_args(args: ScriptArgs) -> list[str]:
     return [
+        *(
+            [
+                "--terminal-agent-protocol",
+                "fcs-submit",
+                "--fcs-max-submissions",
+                str(args.fcs_max_submissions),
+                "--fcs-max-turns",
+                str(args.fcs_max_turns),
+            ]
+            if args.dataset == "frontiersmith"
+            else []
+        ),
         "--chat-template-path",
         args.chat_template_path,
         "--terminal-enable-thinking",

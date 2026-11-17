@@ -1,4 +1,4 @@
-"""Miles generate function for TMAX and Terminal-Bench 2.1 Harbor tasks."""
+"""Miles generate function for submit-only FCS and terminal Harbor tasks."""
 
 import argparse
 import asyncio
@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
 from agentic_critic.terminal_env import Completion, TerminalConfig
 
 
@@ -94,6 +95,11 @@ def _config(args, metadata: dict) -> TerminalConfig:
 
 
 def _validate_runtime(args, *, evaluation: bool = False):
+    if (
+        getattr(args, "fcs_max_submissions", DEFAULT_MAX_SUBMISSIONS) < 1
+        or getattr(args, "fcs_max_turns", DEFAULT_MAX_TURNS) < 1
+    ):
+        raise ValueError("FCS submission and turn limits must be positive")
     if getattr(args, "terminal_memory_mb", None) is not None and args.terminal_memory_mb <= 0:
         raise ValueError("terminal memory must be positive")
     if args.partial_rollout:
@@ -246,6 +252,9 @@ async def generate(input):
         tokenizer=input.state.tokenizer,
         decode=decode,
         config=config,
+        agent_protocol=metadata.get("agent_protocol", getattr(args, "terminal_agent_protocol", "terminal")),
+        fcs_max_submissions=getattr(args, "fcs_max_submissions", DEFAULT_MAX_SUBMISSIONS),
+        fcs_max_turns=getattr(args, "fcs_max_turns", DEFAULT_MAX_TURNS),
     )
     if result is None or isinstance(result, _DiscardedTrial):
         sample = deepcopy(base)
@@ -284,6 +293,7 @@ async def generate(input):
             "trial_dir": trial_dir,
             "generated_tokens": trace.generated_tokens,
             "model_calls": len(trace.calls),
+            "submission_scores": trace.submission_scores,
         }
         samples.append(sample)
     if not samples:
@@ -303,6 +313,9 @@ def _add_arguments(parser):
             kwargs["choices"] = ("summary", "keep_last_turns", "none")
         parser.add_argument("--terminal-" + f.name.replace("_", "-"), **kwargs)
     parser.add_argument("--terminal-tasks-dir", default="")
+    parser.add_argument("--terminal-agent-protocol", choices=("terminal", "fcs-submit"), default="terminal")
+    parser.add_argument("--fcs-max-submissions", type=int, default=DEFAULT_MAX_SUBMISSIONS)
+    parser.add_argument("--fcs-max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--terminal-trials-dir", default="terminal-trials")
     parser.add_argument("--terminal-environment", choices=("docker", "daytona", "modal"), default="docker")
     parser.add_argument("--terminal-memory-mb", type=int, default=None)

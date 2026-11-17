@@ -135,6 +135,12 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--tensor-model-parallel-size": "4",
     }
     assert {flag: value(flag) for flag in expected} == expected
+    if args.dataset == "frontiersmith":
+        assert value("--terminal-agent-protocol") == "fcs-submit"
+        assert value("--fcs-max-submissions") == "6"
+        assert value("--fcs-max-turns") == "16"
+    else:
+        assert "--terminal-agent-protocol" not in argv
     assert ("--terminal-continue-on-length" in argv) == (args.dataset == "frontiersmith")
     assert args.num_nodes * args.num_gpus_per_node == 32
     assert int(value("--actor-num-nodes")) * int(value("--actor-num-gpus-per-node")) == args.rollout_num_gpus == 32

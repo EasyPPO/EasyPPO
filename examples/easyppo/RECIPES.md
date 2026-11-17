@@ -39,9 +39,9 @@ filters exact evaluation overlap, duplicate executable fixtures, and initial
 instructions that exceed the action budget. The manifests and generated
 JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md).
 
-The terminal harness runs bash in Harbor sandboxes. Frontier tasks use their
-shared Frontier-CS judge service and checker partial scores; TMAX/TB use their
-supplied task verifiers. Model decoding is handled by Miles/SGLang.
+Harbor runs task containers on the rollout executor. Frontier tasks use the
+[submit-only protocol](#rewards-validation-and-checkpoints) and a shared judge;
+TMAX/TB expose bash and use their supplied task verifiers. Model decoding is handled by Miles/SGLang.
 Frontier task containers provide C++, Python and the verifier HTTP client;
 the terminal agent runs in the rollout worker.
 
@@ -339,9 +339,16 @@ The shared judge's CPU/RAM and queue capacity are independent of GPU allocation.
 
 ## Rewards, validation, and checkpoints
 
-Native rewards are the default. FrontierSmith/FCS use checker partial score
-scaled from `[0,100]` to `[0,1]`; TMAX/TB use their task reward. Missing solutions
-and contestant compilation failures score zero. Infrastructure and verifier
+FrontierSmith/FCS expose only C++ submission: the actor emits a fenced `cpp`
+block, receives judge feedback, and can revise its solution. `--fcs-max-submissions`
+defaults to 6 and `--fcs-max-turns` to 16 (including replies without code).
+Context compaction asks the actor for a summary and continues from the problem
+statement and that summary. TMAX/TB retain the bash interface.
+
+Native rewards are the default. FrontierSmith/FCS use the highest submission
+score scaled from `[0,100]` to `[0,1]`; the final verifier reads the submission
+ledger without submitting again. TMAX/TB use their task reward. Episodes without
+submissions and contestant compilation failures score zero. Infrastructure and verifier
 service failures propagate as trial errors. Optional `test-count` mode reads
 `passing_assertions/20`; a missing/unparseable count can fall back only to a
 valid binary result, with the reason saved in metadata.
@@ -350,6 +357,10 @@ valid binary result, with the reason saved in metadata.
 allocation. Trial errors propagate to the caller. Repeat
 `--terminal-docker-compose PATH` to pass deployment-specific Compose overlays
 to Harbor's Docker backend.
+
+Re-run data preparation for existing FrontierSmith/FCS tasks to update their
+instructions and verifier for `fcs-submit`. Old final-file verifier tasks are
+rejected by this agent.
 
 Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
 episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point

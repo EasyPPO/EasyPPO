@@ -5,6 +5,10 @@ configure the Modal CLI (`modal setup`). Set
 `WANDB_API_KEY` and optionally `WANDB_ENTITY` to enable W&B; its project is
 `miles-run_qwen3_5_27b_sync_frontiersmith` and its run ID is `--run-id`.
 
+FrontierSmith/FCS use the [submit-only interaction and reward rules](../examples/easyppo/RECIPES.md#rewards-validation-and-checkpoints).
+Each Harbor trial runs the submission client in its local Docker container;
+the shared judge compiles and executes submitted C++.
+
 The image starts from the immutable Miles v0.1.3 digest in
 [`release-lock.json`](../release-lock.json), with Python 3.12, CUDA 13 and
 PyTorch 2.14.1. Its build installs the locked SGLang 0.5.22 source and
@@ -74,7 +78,7 @@ The gVisor Docker daemon uses host networking and the supplied Compose overlay.
 The shared judge runs in a CPU VM because go-judge fails to initialize its
 execution environments under gVisor. Infrastructure and verifier failures stop
 the run with an error.
-The judge endpoint uses a per-attempt connection token, passed only to verifier
+The judge endpoint uses a per-attempt connection token, passed to submission-client and verifier
 execution. Prepared task files store an environment placeholder for that token.
 
 Preview one actor/critic training round with a small final evaluation:
