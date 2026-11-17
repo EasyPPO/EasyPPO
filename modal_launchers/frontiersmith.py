@@ -55,6 +55,7 @@ def _training_image(modal, config):
             f"TMS_CUDA_MAJOR=13 python3 -m pip install --no-deps --force-reinstall git+https://github.com/fzyzcjy/torch_memory_saver.git@{memory_saver_commit}",
         )
         .pip_install("harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.19.0", "modal==1.6.2")
+        .apt_install("docker.io", "docker-compose-v2")
         .add_local_dir(ROOT, config.source, ignore=IGNORE, copy=True)
         .run_commands(f"python3 -m pip install --no-deps -e {config.source}")
         .env(
@@ -70,18 +71,8 @@ def _training_image(modal, config):
 
 
 def _secrets(modal):
-    from modal.config import config as modal_config
-
-    # Harbor's Modal backend authenticates from these variables, including in
-    # Ray subprocesses. Read the active SDK profile; never log credential values.
-    credentials = {
-        "MODAL_TOKEN_ID": modal_config.get("token_id"),
-        "MODAL_TOKEN_SECRET": modal_config.get("token_secret"),
-    }
-    if not all(credentials.values()):
-        raise ValueError("Configure the Modal CLI or export MODAL_TOKEN_ID and MODAL_TOKEN_SECRET")
     keys = [key for key in ("WANDB_API_KEY", "WANDB_ENTITY", "HF_TOKEN") if os.getenv(key)]
-    return [modal.Secret.from_dict(credentials)] + ([modal.Secret.from_local_environ(keys)] if keys else [])
+    return [modal.Secret.from_local_environ(keys)] if keys else []
 
 
 def _build_training(modal, config):
@@ -117,15 +108,17 @@ def _build_training(modal, config):
         return False
 
     def training(judge_url, judge_token):
+        from modal_launchers.docker_runtime import docker_daemon
         from modal_launchers.runtime import train
 
-        if config.nodes > 1:
-            from modal_launchers.multinode import run_node
+        with docker_daemon(Path("/tmp/easyppo-dockerd.log")):
+            if config.nodes > 1:
+                from modal_launchers.multinode import run_node
 
-            run_node(modal.Cluster.from_context(), config, volume, judge_url, judge_token)
-        else:
-            volume.reload()
-            train(config, judge_url, judge_token)
+                run_node(modal.Cluster.from_context(), config, volume, judge_url, judge_token)
+            else:
+                volume.reload()
+                train(config, judge_url, judge_token)
 
     if config.nodes > 1:
         training = modal.clustered(size=config.nodes, rdma=True)(training)
@@ -134,6 +127,7 @@ def _build_training(modal, config):
         cpu=32,
         memory=config.memory_gib * 1024,
         timeout=86400,
+        experimental_options={"enable_docker": True},
         **(common | {"max_containers": config.nodes}),
     )(training)
 
@@ -237,7 +231,9 @@ def _prepare(modal, config):
             wandb_entity=os.environ.get("WANDB_ENTITY"),
         )
         try:
-            snapshot_download(ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/Qwen3.5-27B")
+            snapshot_download(
+                ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/Qwen3.5-27B"
+            )
         finally:
             volume.commit()
 
@@ -315,7 +311,11 @@ def main(argv=None):
                 "launch": args.launch,
                 "nodes": 0 if args.action == "cpu-smoke" else (1 if args.action == "prepare" else config.nodes),
                 "gpus_per_node": 0 if args.action == "cpu-smoke" else config.gpus,
-                "gpu_count": (0 if args.action == "cpu-smoke" else config.gpus * (1 if args.action == "prepare" else config.nodes)),
+                "gpu_count": (
+                    0
+                    if args.action == "cpu-smoke"
+                    else config.gpus * (1 if args.action == "prepare" else config.nodes)
+                ),
                 "settings": config.manifest(),
                 "max_timeout_restarts": config.max_restarts,
                 "command": config.command(args.action if args.action == "prepare" else "train"),

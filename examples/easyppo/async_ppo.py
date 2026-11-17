@@ -42,6 +42,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     data_dir: str = "/root/datasets"
     model_name: str = "Qwen3.5-27B"
+    megatron_model_type: str = "qwen3.5-27B"
     hf_repo: str = "Qwen/Qwen3.5-27B"
     hf_revision: str = "fc05daec18b0a78c049392ed2e771dde82bdf654"
     megatron_path: str = "/root/Megatron-LM"
@@ -54,6 +55,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     terminal_environment: Literal["docker", "daytona", "modal"] = "docker"
     terminal_memory_mb: int | None = None
     terminal_max_retries: int = 2
+    terminal_docker_compose: list[str] = field(default_factory=list)
     skip_eval_before_train: bool = False
     resume_initial_eval: bool = False
     trials_dir: str = ""
@@ -320,7 +322,7 @@ def _prepare(args: ScriptArgs, *, dataset: str) -> None:
     backend.exec_command_cpu(shlex.join(["python", str(U.repo_base_dir / "scripts" / script), *options]))
     backend.convert_checkpoint(
         model_name=args.model_name,
-        megatron_model_type="qwen3.5-27B",
+        megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         dir_dst=args.model_dir,
         hf_checkpoint=hf_path,
@@ -430,6 +432,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         args.terminal_environment,
         *(["--terminal-memory-mb", str(args.terminal_memory_mb)] if args.terminal_memory_mb is not None else []),
         *(["--terminal-max-retries", str(args.terminal_max_retries)] if args.terminal_max_retries != 2 else []),
+        *[value for path in args.terminal_docker_compose for value in ("--terminal-docker-compose", path)],
         "--terminal-compaction",
         "summary",
         "--terminal-compact-threshold",
@@ -571,7 +574,7 @@ def _resource_args(args: ScriptArgs) -> list[str]:
         str(args.sglang_server_concurrency),
         "--tensor-model-parallel-size",
         str(args.tensor_model_parallel_size),
-        "--sequence-parallel",
+        *(["--sequence-parallel"] if args.tensor_model_parallel_size > 1 else []),
         "--pipeline-model-parallel-size",
         "1",
         "--context-parallel-size",
@@ -636,7 +639,7 @@ def _execute(args: ScriptArgs, *, dataset: str, script_path: str) -> None:
         train_args=shlex.join(argv),
         train_script="train_async.py",
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type="qwen3.5-27B",
+        megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
         extra_env_vars={"PYTHONPATH": args.megatron_path},
         before_ray_job_submit=_ray_worker_startup(args, backend),

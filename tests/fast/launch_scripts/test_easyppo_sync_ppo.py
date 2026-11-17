@@ -51,6 +51,31 @@ def _backend(monkeypatch, launcher):
     return backend
 
 
+def test_single_gpu_9b_uses_matching_conversion_and_training_model(launcher, monkeypatch):
+    backend = _backend(monkeypatch, launcher)
+    args = launcher.ScriptArgs(
+        model_name="Qwen3.5-9B",
+        hf_repo="Qwen/Qwen3.5-9B",
+        hf_revision="test-9b-revision",
+        megatron_model_type="qwen3.5-9B",
+        num_nodes=1,
+        num_gpus_per_node=1,
+        tensor_model_parallel_size=1,
+        rollout_gpus_per_engine=1,
+        join_ray_workers=False,
+        terminal_docker_compose=["/deployment/host network.yaml"],
+    )
+    launcher.prepare(args)
+    launcher.execute(args)
+    assert backend.conversions[0]["megatron_model_type"] == "qwen3.5-9B"
+    assert backend.training[0]["megatron_model_type"] == "qwen3.5-9B"
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert "--sequence-parallel" not in argv
+    assert argv[argv.index("--terminal-docker-compose") + 1] == "/deployment/host network.yaml"
+    for flag in ("--actor-num-gpus-per-node", "--critic-num-gpus-per-node", "--rollout-num-gpus-per-engine"):
+        assert argv[argv.index(flag) + 1] == "1"
+
+
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
 def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatch, tmp_path, mode):
     backend = _backend(monkeypatch, launcher)

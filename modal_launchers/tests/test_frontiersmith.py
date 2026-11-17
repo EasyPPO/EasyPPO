@@ -23,7 +23,9 @@ def test_recipe_matches_claude(mode):
         "--eval-max-tasks": "0",
         "--eval-samples-per-prompt": "5",
         "--max-context-tokens": "131072",
-        "--terminal-environment": "modal",
+        "--terminal-environment": "docker",
+        "--terminal-docker-compose": f"{config.source}/modal_launchers/docker-compose-host.yaml",
+        "--sglang-server-concurrency": "8",
         "--critic-context-mode": mode,
     }.items():
         assert args[args.index(flag) + 1] == value

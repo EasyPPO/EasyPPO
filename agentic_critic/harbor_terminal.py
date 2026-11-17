@@ -138,6 +138,7 @@ async def run_trial(
     config,
     memory_mb: int | None = None,
     max_retries: int = 2,
+    docker_compose: tuple[str, ...] = (),
 ):
     """Run Harbor's lifecycle with bounded infrastructure retries.
 
@@ -152,8 +153,8 @@ async def run_trial(
             agent=AgentConfig(import_path="agentic_critic.harbor_terminal:MiniSweTerminalAgent"),
             environment=EnvironmentConfig(
                 type=environment,
-                import_path="agentic_critic.harbor_modal:TerminalModalEnvironment" if environment == "modal" else None,
                 override_memory_mb=memory_mb,
+                extra_docker_compose=[Path(path) for path in docker_compose],
             ),
         )
     )

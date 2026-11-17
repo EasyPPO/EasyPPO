@@ -1,8 +1,7 @@
 # Synchronous FrontierSmith PPO on Modal
 
 Run from the repository root. Install `modal_launchers/requirements.txt` and
-configure the Modal CLI (`modal setup`). The launcher passes the active Modal
-profile to training workers so Harbor can create CPU task sandboxes. Set
+configure the Modal CLI (`modal setup`). Set
 `WANDB_API_KEY` and optionally `WANDB_ENTITY` to enable W&B; its project is
 `miles-run_qwen3_5_27b_sync_frontiersmith` and its run ID is `--run-id`.
 
@@ -64,12 +63,16 @@ Append `--launch` to the selected command to start it. Both use 100 rounds,
 saved every five rounds; two complete sets are retained. Generation limits
 match `Claude.md`. Use identical resource options for both experiments.
 
-`--concurrency` sets SGLang/Harbor concurrency per engine (default 128).
+`--concurrency` sets SGLang/Harbor concurrency per engine (default 8).
 Training starts a CPU judge with 32 CPUs and 64 GiB memory; adjust
 `--judge-cpus`, `--judge-memory-gib`, and `--judge-workers` together with trial
-concurrency. Task sandboxes use Harbor's Modal backend and CPU resources.
-Each task sandbox requests `--terminal-memory-mb 16384`, separately from
-training-node and judge RAM. Increase it for larger task builds. Transient
+concurrency. Each GPU node starts one local Docker daemon; Harbor creates
+episode containers on that node using its Docker backend. These containers
+share the training node's CPU and RAM. `--terminal-memory-mb 16384` sets the
+per-container memory request; size node RAM and concurrency together.
+The gVisor Docker daemon uses host networking and the supplied Compose overlay.
+The shared judge runs in a CPU VM because go-judge fails to initialize its
+execution environments under gVisor. Transient
 infrastructure and missing-reward failures receive up to
 `--terminal-max-retries 2` fresh trial attempts; exhausted failures remain errors.
 The judge endpoint uses a per-attempt connection token, passed only to verifier

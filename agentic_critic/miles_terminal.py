@@ -245,6 +245,7 @@ async def generate(input):
         environment=args.terminal_environment,
         memory_mb=getattr(args, "terminal_memory_mb", None),
         max_retries=getattr(args, "terminal_max_retries", 2),
+        docker_compose=tuple(getattr(args, "terminal_docker_compose", [])),
         tokenizer=input.state.tokenizer,
         decode=decode,
         config=config,
@@ -309,6 +310,7 @@ def _add_arguments(parser):
     parser.add_argument("--terminal-environment", choices=("docker", "daytona", "modal"), default="docker")
     parser.add_argument("--terminal-memory-mb", type=int, default=None)
     parser.add_argument("--terminal-max-retries", type=int, default=2)
+    parser.add_argument("--terminal-docker-compose", action="append", default=[])
     parser.add_argument("--terminal-reward-key", default="reward")
     parser.add_argument("--terminal-reward-mode", choices=("native", "test-count"), default="native")
     parser.add_argument("--terminal-pass-count-key", default="passing_assertions")

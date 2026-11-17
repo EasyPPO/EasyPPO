@@ -1,8 +1,6 @@
-"""CPU contracts for Harbor's retry queue and Modal transport; no cloud calls."""
+"""CPU contracts for Harbor's retry queue and Docker configuration; no cloud calls."""
 
 import asyncio
-import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,11 +8,9 @@ import pytest
 import yaml
 
 pytest.importorskip("harbor")
-pytest.importorskip("modal")
 
 from harbor.trial.trial import Trial
 
-from agentic_critic.harbor_modal import TerminalModalEnvironment, _stage_command
 from agentic_critic.harbor_terminal import run_trial
 from agentic_critic.terminal_env import TerminalConfig, TerminalTrace
 from scripts.make_miles_frontiersmith_data import _install_verifier
@@ -32,53 +28,6 @@ def test_remote_judge_removes_only_local_gateway_and_reprepare_is_reversible(tmp
         actual = yaml.safe_load(compose.read_text())["services"]["main"]["extra_hosts"]
         assert ("host.docker.internal" in str(actual)) == local
         assert "other" in str(actual)
-
-
-async def test_long_unicode_command_is_uploaded_and_runs_with_exact_content(tmp_path):
-    uploads = []
-
-    async def upload(source, target):
-        # Use the same absolute path as the sandbox, on this CPU-only test host.
-        Path(target).write_bytes(source.read_bytes())
-        uploads.append((target, source.read_bytes()))
-
-    command = "#" + "界" * 30000 + "\n" + r"printf '\377ok'" + "\nprintf 'err' >&2\nexit 7"
-    staged = await _stage_command(command, upload)
-    assert len(staged.encode()) < 65536
-    assert uploads[0][1] == command.encode()
-    result = subprocess.run(["bash", "-c", staged], capture_output=True)
-    assert result.returncode == 7 and result.stdout == b"\xffok" and result.stderr == b"err"
-    assert not Path(uploads[0][0]).exists()
-
-
-async def test_modal_byte_output_preserves_return_code_and_exec_options():
-    process = SimpleNamespace(
-        stdout=SimpleNamespace(read=SimpleNamespace(aio=AsyncMock(return_value=b"out\xff"))),
-        stderr=SimpleNamespace(read=SimpleNamespace(aio=AsyncMock(return_value=b"err\xfe"))),
-        wait=SimpleNamespace(aio=AsyncMock(return_value=23)),
-    )
-    execute = AsyncMock(return_value=process)
-    env = object.__new__(TerminalModalEnvironment)
-    env._sandbox = SimpleNamespace(exec=SimpleNamespace(aio=execute))
-    env._merge_env = lambda env: env
-    result = await env._sdk_exec("command", cwd="/app", timeout_sec=9, shell="sh", login=True)
-    assert (result.stdout, result.stderr, result.return_code) == ("out\ufffd", "err\ufffd", 23)
-    execute.assert_awaited_once_with("sh", "-lc", "command", workdir="/app", secrets=[], timeout=9, text=False)
-
-
-async def test_modal_transport_keeps_oom_detection_and_cancellation():
-    env = object.__new__(TerminalModalEnvironment)
-    env._merge_env = lambda env: env
-    env._raise_if_unexpected_exit_137 = AsyncMock()
-    execute = AsyncMock(side_effect=ConnectionError("lost"))
-    env._sandbox = SimpleNamespace(exec=SimpleNamespace(aio=execute))
-    with pytest.raises(ConnectionError):
-        await env._sdk_exec("true")
-    env._raise_if_unexpected_exit_137.assert_awaited_once()
-    execute.side_effect = asyncio.CancelledError
-    with pytest.raises(asyncio.CancelledError):
-        await env._sdk_exec("true")
-    assert env._raise_if_unexpected_exit_137.await_count == 1
 
 
 @pytest.mark.parametrize(
@@ -123,12 +72,13 @@ async def test_native_harbor_retries_are_bounded_and_bind_each_attempt(
     kwargs = dict(
         task_path=tmp_path,
         trials_dir=tmp_path,
-        environment="modal",
+        environment="docker",
         tokenizer=None,
         decode=None,
         config=TerminalConfig(),
         memory_mb=16384,
         max_retries=2,
+        docker_compose=(str(tmp_path / "host.yaml"),),
     )
     if failures > 2:
         with pytest.raises(RuntimeError, match=error):
@@ -139,7 +89,8 @@ async def test_native_harbor_retries_are_bounded_and_bind_each_attempt(
         assert trace.truncated == (error == "AgentTimeoutError")
     assert len(attempts) == len(bindings) == expected
     assert attempts[0].environment.override_memory_mb == 16384
-    assert attempts[0].environment.import_path == "agentic_critic.harbor_modal:TerminalModalEnvironment"
+    assert attempts[0].environment.import_path is None
+    assert attempts[0].environment.extra_docker_compose == [tmp_path / "host.yaml"]
 
 
 async def test_harbor_trial_cancellation_is_not_retried(monkeypatch, tmp_path):

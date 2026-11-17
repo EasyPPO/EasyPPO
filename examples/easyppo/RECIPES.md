@@ -307,6 +307,13 @@ Async can use 32 GPUs with `--num-nodes 4 --trainer-num-nodes 1`; sync can
 use 64 GPUs with `--num-nodes 8`. Sync derives trainer nodes and rollout
 GPUs from the full allocation and rejects partial-pool overrides.
 
+For a single-GPU 9B smoke test, set `--model-name Qwen3.5-9B`,
+`--hf-repo Qwen/Qwen3.5-9B`, the matching `--hf-revision`, and
+`--megatron-model-type qwen3.5-9B`. Set `--num-nodes 1
+--num-gpus-per-node 1 --tensor-model-parallel-size 1 --rollout-gpus-per-engine 1`;
+sequence parallelism is disabled at TP1. Reduce the batch and token budgets
+for the smoke test. Docker and the judge must be operational before training.
+
 The global actor batch remains 512 episodes and each critic mini-batch remains
 128 episodes in both defaults. Async DP4 assigns 128 actor episodes per
 logical DP shard per round and 32 per critic step. Sync DP8 assigns 64 actor
@@ -339,8 +346,9 @@ valid binary result, with the reason saved in metadata.
 
 `--terminal-memory-mb` overrides task sandbox RAM; omit it to use the task's
 allocation. `--terminal-max-retries` defaults to two bounded infrastructure
-retries. Trial errors never become zero-reward samples. Modal execution uploads
-long commands as scripts and replaces invalid UTF-8 in command output.
+retries. Trial errors never become zero-reward samples. Repeat
+`--terminal-docker-compose PATH` to pass deployment-specific Compose overlays
+to Harbor's Docker backend.
 
 Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
 episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point

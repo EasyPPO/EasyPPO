@@ -23,7 +23,7 @@ class Config:
     gpus: int = 8
     nodes: int = 1
     memory_gib: int = 1024
-    concurrency: int = 128
+    concurrency: int = 8
     max_restarts: int = 3
     judge_cpus: int = 32
     judge_memory_gib: int = 64
@@ -104,7 +104,9 @@ class Config:
             "--output-dir",
             f"{self.mount}/outputs",
             "--terminal-environment",
-            "modal",
+            "docker",
+            "--terminal-docker-compose",
+            f"{self.source}/modal_launchers/docker-compose-host.yaml",
             "--terminal-memory-mb",
             str(self.terminal_memory_mb),
             "--terminal-max-retries",
