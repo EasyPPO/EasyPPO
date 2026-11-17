@@ -59,7 +59,6 @@ LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
-INFERENCE_ROLLOUT_PATH = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
 
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
@@ -67,7 +66,7 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     if use_legacy_rollout_v1():
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
     else:
-        standard_path = INFERENCE_ROLLOUT_PATH
+        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
         rollout_path = FULLY_ASYNC_ROLLOUT_PATH
@@ -158,10 +157,6 @@ def _resolve_rollout_functions(args) -> None:
         args.eval_num_gpus > 0 and _compute_rollout_external(args)
     ), "eval_num_gpus cannot be set with external rollout engines."
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
-    if getattr(args, "eval_progress_dir", None) and (
-        args.eval_function_path != INFERENCE_ROLLOUT_PATH or args.eval_uses_snapshots
-    ):
-        raise ValueError("--eval-progress-dir requires the native shared-engine InferenceRolloutFn evaluation")
 
 
 def reset_arg(parser, name, **kwargs):
@@ -1528,11 +1523,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Whether to skip evaluation before training.",
-            )
-            parser.add_argument(
-                "--eval-progress-dir",
-                default=None,
-                help="Persist completed samples of the initial, untrained evaluation for restart recovery.",
             )
 
             # The following keys are used to override the rollout version during eval.

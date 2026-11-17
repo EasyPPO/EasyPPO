@@ -347,8 +347,7 @@ service failures propagate as trial errors. Optional `test-count` mode reads
 valid binary result, with the reason saved in metadata.
 
 `--terminal-memory-mb` overrides task sandbox RAM; omit it to use the task's
-allocation. `--terminal-max-retries` defaults to two bounded infrastructure
-retries. Trial errors never become zero-reward samples. Repeat
+allocation. Trial errors propagate to the caller. Repeat
 `--terminal-docker-compose PATH` to pass deployment-specific Compose overlays
 to Harbor's Docker backend.
 
@@ -359,10 +358,7 @@ result names `fcs` / `tb21`.
 
 Use `--skip-eval-before-train` to enter training immediately, or
 `--eval-max-tasks 2 --eval-samples-per-prompt 1` for a small evaluation at every
-point. `--resume-initial-eval` saves scored initial-evaluation samples in
-`<trials-dir>/initial-eval`; a restart with unchanged model, tasks and sampling
-reuses them. Failed trials are retried on restart, and trained-model evaluations
-always run afresh. Keep that directory on persistent storage.
+point.
 
 A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
 points, **18,900 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.

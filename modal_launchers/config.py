@@ -29,11 +29,9 @@ class Config:
     judge_memory_gib: int = 64
     judge_workers: int = 32
     terminal_memory_mb: int = 16384
-    terminal_max_retries: int = 2
     eval_max_tasks: int = 0
     eval_samples_per_prompt: int = 5
     skip_eval_before_train: bool = False
-    resume_initial_eval: bool = True
     num_rollout: int = 100
     num_critic_only_steps: int = 30
     rollout_batch_size: int = 32
@@ -55,8 +53,8 @@ class Config:
             raise ValueError("max-restarts must be non-negative")
         if self.terminal_memory_mb < 1 or self.eval_samples_per_prompt < 1:
             raise ValueError("Sandbox memory and evaluation sample count must be positive")
-        if self.terminal_max_retries < 0 or self.eval_max_tasks < 0:
-            raise ValueError("Trial retries and evaluation task limit must be nonnegative")
+        if self.eval_max_tasks < 0:
+            raise ValueError("Evaluation task limit must be nonnegative")
         if self.num_rollout < 1 or not 0 <= self.num_critic_only_steps <= self.num_rollout:
             raise ValueError("Critic-only steps must be between zero and num-rollout")
         if self.rollout_batch_size < 1 or self.samples_per_prompt < 2 or self.critic_steps_per_rollout < 1:
@@ -109,10 +107,7 @@ class Config:
             f"{self.source}/modal_launchers/docker-compose-host.yaml",
             "--terminal-memory-mb",
             str(self.terminal_memory_mb),
-            "--terminal-max-retries",
-            str(self.terminal_max_retries),
             *(["--skip-eval-before-train"] if self.skip_eval_before_train else []),
-            *(["--resume-initial-eval"] if self.resume_initial_eval else []),
             "--num-rollout",
             str(self.num_rollout),
             "--num-critic-only-steps",
@@ -177,7 +172,6 @@ def parse_args(argv=None):
         "judge_memory_gib",
         "judge_workers",
         "terminal_memory_mb",
-        "terminal_max_retries",
         "eval_max_tasks",
         "eval_samples_per_prompt",
         "num_rollout",
@@ -187,7 +181,7 @@ def parse_args(argv=None):
         "critic_steps_per_rollout",
     ):
         parser.add_argument(f"--{name.replace('_', '-')}", type=int, default=getattr(Config, name))
-    for name in ("skip_eval_before_train", "resume_initial_eval"):
+    for name in ("skip_eval_before_train",):
         parser.add_argument(
             f"--{name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=getattr(Config, name)
         )
@@ -208,14 +202,12 @@ def check_manifest(config, *, wandb_project, wandb_entity):
         actual = dict(original)
         actual.setdefault("nodes", 1)  # Existing single-node manifests predate this field.
         # Old manifests predate these controls. Their recipe values match the
-        # defaults; the new recovery and sandbox defaults also apply to them.
+        # defaults; the new resource defaults also apply to them.
         for name in (
             "terminal_memory_mb",
-            "terminal_max_retries",
             "eval_max_tasks",
             "eval_samples_per_prompt",
             "skip_eval_before_train",
-            "resume_initial_eval",
             "num_rollout",
             "num_critic_only_steps",
             "rollout_batch_size",

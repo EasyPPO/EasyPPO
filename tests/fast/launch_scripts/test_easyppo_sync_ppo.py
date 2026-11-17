@@ -373,17 +373,13 @@ def test_sync_eval_controls_share_the_async_defaults_and_overrides(launcher, mon
     assert config["datasets"][0]["name"].endswith("_quick") == bool(maximum)
 
 
-def test_terminal_recovery_controls_reach_training(launcher, monkeypatch):
+def test_terminal_memory_and_eval_controls_reach_training(launcher, monkeypatch):
     backend = _backend(monkeypatch, launcher)
-    args = launcher.ScriptArgs(
-        terminal_memory_mb=32768, terminal_max_retries=3, skip_eval_before_train=True, resume_initial_eval=True
-    )
+    args = launcher.ScriptArgs(terminal_memory_mb=32768, skip_eval_before_train=True)
     launcher.execute(args)
     argv = shlex.split(backend.training[0]["train_args"])
     assert "--skip-eval-before-train" in argv
-    assert argv[argv.index("--eval-progress-dir") + 1] == args.trial_root + "/initial-eval"
     assert argv[argv.index("--terminal-memory-mb") + 1] == "32768"
-    assert argv[argv.index("--terminal-max-retries") + 1] == "3"
 
 
 @pytest.mark.parametrize("samples", [0, -1])

@@ -8,12 +8,12 @@ import pytest
 pytest.importorskip("harbor")
 pytest.importorskip("minisweagent")
 
+from agentic_critic.harbor_terminal import MiniSweTerminalAgent, run_trial
+from agentic_critic.terminal_env import TerminalConfig, TerminalTrace
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig, TaskConfig, TrialConfig
 from harbor.trial.trial import Trial
 
-from agentic_critic.harbor_terminal import MiniSweTerminalAgent, run_trial
-from agentic_critic.terminal_env import TerminalConfig, TerminalTrace
 from tests.agentic_critic.test_terminal_data import make_task
 from tests.agentic_critic.test_terminal_env import Tokenizer, action
 
@@ -68,6 +68,8 @@ async def test_adapter_uses_real_mini_parser_and_writes_trace(tmp_path):
     ],
 )
 async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, has_reward, raises):
+    from agentic_critic import harbor_terminal
+
     trace = TerminalTrace()
     result = SimpleNamespace(
         exception_info=SimpleNamespace(exception_type=error, exception_message="failure") if error else None,
@@ -86,7 +88,7 @@ async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, h
             paths=SimpleNamespace(trial_dir=tmp_path),
         )
 
-    monkeypatch.setattr(Trial, "create", create)
+    monkeypatch.setattr(harbor_terminal.Trial, "create", create)
     kwargs = dict(
         task_path=tmp_path,
         trials_dir=tmp_path,
@@ -94,7 +96,6 @@ async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, h
         tokenizer=Tokenizer(),
         decode=None,
         config=TerminalConfig(),
-        max_retries=0,
     )
     if raises:
         with pytest.raises(RuntimeError):

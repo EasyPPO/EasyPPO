@@ -216,7 +216,6 @@ class InferenceRolloutFn(BaseRolloutFn):
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
         self.eval_prompt_dataset_cache = {}
-        self._initial_eval_pending = True
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -241,23 +240,10 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
         state = input.generate_state or self.state
-        # Only the first pre-training evaluation has stable weights across a
-        # restart without a training checkpoint. Never reuse it after training.
-        progress_dir = None
-        if (
-            self._initial_eval_pending
-            and input.rollout_id == 0
-            and input.initial_weights
-            and not getattr(state.args, "skip_eval_before_train", False)
-            and input.generate_state is None
-        ):
-            progress_dir = getattr(state.args, "eval_progress_dir", None)
-        self._initial_eval_pending = False
         results = await run_eval_datasets(
             state,
             self.eval_prompt_dataset_cache,
             kv_cache_namespace=compute_kv_cache_namespace(state.args, input),
-            progress_dir=progress_dir,
         )
         return RolloutFnEvalOutput(data=results)
 

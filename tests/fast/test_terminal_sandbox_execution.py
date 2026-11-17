@@ -1,4 +1,4 @@
-"""CPU contracts for Harbor's retry queue and Docker configuration; no cloud calls."""
+"""CPU contracts for Harbor trial failures and Docker configuration; no cloud calls."""
 
 import asyncio
 from types import SimpleNamespace
@@ -30,19 +30,8 @@ def test_remote_judge_removes_only_local_gateway_and_reprepare_is_reversible(tmp
         assert "other" in str(actual)
 
 
-@pytest.mark.parametrize(
-    "error,failures,expected",
-    [
-        ("EnvironmentStartTimeoutError", 1, 2),
-        ("RewardFileNotFoundError", 1, 2),
-        ("RewardFileNotFoundError", 9, 3),
-        ("ValueError", 9, 1),
-        ("AgentTimeoutError", 1, 1),
-    ],
-)
-async def test_native_harbor_retries_are_bounded_and_bind_each_attempt(
-    monkeypatch, tmp_path, error, failures, expected
-):
+@pytest.mark.parametrize("error", [None, "EnvironmentStartTimeoutError", "RewardFileNotFoundError"])
+async def test_harbor_trial_runs_once_and_forwards_docker_configuration(monkeypatch, tmp_path, error):
     attempts, bindings = [], []
 
     async def create(config):
@@ -51,12 +40,9 @@ async def test_native_harbor_retries_are_bounded_and_bind_each_attempt(
         trial_dir.mkdir(exist_ok=True)
 
         async def run():
-            failed = len(attempts) <= failures
             return SimpleNamespace(
-                exception_info=SimpleNamespace(exception_type=error, exception_message="failure") if failed else None,
-                verifier_result=(
-                    SimpleNamespace(rewards={"reward": 0.7}) if not failed or error == "AgentTimeoutError" else None
-                ),
+                exception_info=SimpleNamespace(exception_type=error, exception_message="failure") if error else None,
+                verifier_result=SimpleNamespace(rewards={"reward": 0.7}) if not error else None,
             )
 
         return SimpleNamespace(
@@ -67,8 +53,6 @@ async def test_native_harbor_retries_are_bounded_and_bind_each_attempt(
         )
 
     monkeypatch.setattr(Trial, "create", create)
-    # Keep the framework's actual retry loop while removing only backoff time.
-    monkeypatch.setattr("harbor.trial.queue.asyncio.sleep", AsyncMock())
     kwargs = dict(
         task_path=tmp_path,
         trials_dir=tmp_path,
@@ -77,17 +61,16 @@ async def test_native_harbor_retries_are_bounded_and_bind_each_attempt(
         decode=None,
         config=TerminalConfig(),
         memory_mb=16384,
-        max_retries=2,
         docker_compose=(str(tmp_path / "host.yaml"),),
     )
-    if failures > 2:
+    if error:
         with pytest.raises(RuntimeError, match=error):
             await run_trial(**kwargs)
     else:
         trace, rewards, _ = await run_trial(**kwargs)
         assert rewards == {"reward": 0.7}
-        assert trace.truncated == (error == "AgentTimeoutError")
-    assert len(attempts) == len(bindings) == expected
+        assert not trace.truncated
+    assert len(attempts) == len(bindings) == 1
     assert attempts[0].environment.override_memory_mb == 16384
     assert attempts[0].environment.import_path is None
     assert attempts[0].environment.extra_docker_compose == [tmp_path / "host.yaml"]

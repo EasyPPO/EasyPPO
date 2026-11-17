@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 import torch
+from tests.fast.ray.rollout.conftest import make_args, make_sample
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.training_utils.types import TrainStepOutcome
 from miles.ray.rollout import rollout_executor as rollout_executor_module
@@ -36,8 +38,6 @@ from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRec
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
-from tests.fast.ray.rollout.conftest import make_args, make_sample
-from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 
 class FakeInferenceController:
@@ -283,25 +283,6 @@ class _CountingRolloutFn:
             status=Sample.Status.COMPLETED,
         )
         return RolloutFnTrainOutput(samples=[[sample]])
-
-
-@pytest.mark.parametrize("rollout_id,hf_dir,expected", [(0, "/model", True), (0, None, False), (1, "/model", False)])
-async def test_shared_executor_marks_only_initial_weights(monkeypatch, rollout_id, hf_dir, expected):
-    executor = RolloutExecutor.__new__(RolloutExecutor)
-    executor.args = make_args(hf_checkpoint="/model")
-    executor.use_legacy_rollout_v1 = False
-    executor._metric_checker = None
-    observed = []
-
-    def evaluate(input):
-        observed.append(input.initial_weights)
-        return RolloutFnEvalOutput(data={})
-
-    executor.eval_generate_rollout = evaluate
-    monkeypatch.setattr(rollout_executor_module, "save_debug_rollout_data", lambda *a, **kw: None)
-    monkeypatch.setattr(rollout_executor_module, "log_eval_rollout_data", lambda *a, **kw: {})
-    await executor.eval(rollout_id, hf_dir=hf_dir)
-    assert observed == [expected]
 
 
 def _load_executor_state(directory: Path, *, rollout_id: int) -> dict:

@@ -72,9 +72,8 @@ share the training node's CPU and RAM. `--terminal-memory-mb 16384` sets the
 per-container memory request; size node RAM and concurrency together.
 The gVisor Docker daemon uses host networking and the supplied Compose overlay.
 The shared judge runs in a CPU VM because go-judge fails to initialize its
-execution environments under gVisor. Transient
-infrastructure and missing-reward failures receive up to
-`--terminal-max-retries 2` fresh trial attempts; exhausted failures remain errors.
+execution environments under gVisor. Infrastructure and verifier failures stop
+the run with an error.
 The judge endpoint uses a per-attempt connection token, passed only to verifier
 execution. Prepared task files store an environment placeholder for that token.
 
@@ -111,14 +110,6 @@ The old cluster call is cancelled before the judge is replaced. All nodes restar
 errors stop the launcher. Ctrl-C stops the current attempt; rerun to resume.
 The local client must stay alive for automatic restarts. Each attempt has a
 24-hour platform limit and is stopped ten minutes before its judge expires.
-
-`--resume-initial-eval` is enabled by default. Completed, scored initial-eval
-samples are saved under the run's trial directory and reused on restart with
-the same model, tasks and sampling settings. Other trials finish even if one
-fails; an incomplete evaluation reports an error, never a partial or zero-filled
-score. Trained-model evaluations run afresh. Use `--no-resume-initial-eval` to
-disable initial-eval recovery. Recovery needs the files committed to the Volume;
-the training wrapper commits local writes when it exits, including on failure.
 
 A checkpoint becomes resumable only after actor, critic, and rollout state are
 saved and committed to the Volume. On multiple nodes, every node commits its

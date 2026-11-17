@@ -62,8 +62,6 @@ def test_one_round_smoke_plan_reaches_actor_update_without_startup_eval():
             "--skip-eval-before-train",
             "--terminal-memory-mb",
             "32768",
-            "--terminal-max-retries",
-            "1",
             "--concurrency",
             "1",
         ]
@@ -79,10 +77,9 @@ def test_one_round_smoke_plan_reaches_actor_update_without_startup_eval():
         "--eval-max-tasks": "2",
         "--eval-samples-per-prompt": "1",
         "--terminal-memory-mb": "32768",
-        "--terminal-max-retries": "1",
     }.items():
         assert command[command.index(flag) + 1] == value
-    assert "--skip-eval-before-train" in command and "--resume-initial-eval" in command
+    assert "--skip-eval-before-train" in command
 
 
 def test_manifest_rejects_changed_mode_or_topology(tmp_path):
@@ -104,7 +101,7 @@ def test_manifest_rejects_unowned_output(tmp_path):
         check_manifest(config, wandb_project="test", wandb_entity=None)
 
 
-def test_legacy_run_accepts_default_recovery_settings_and_pins_them(tmp_path):
+def test_legacy_run_accepts_default_controls_and_pins_them(tmp_path):
     from pathlib import Path
 
     config = Config(mode="full_detach", run_id="test", mount=str(tmp_path))
@@ -114,11 +111,9 @@ def test_legacy_run_accepts_default_recovery_settings_and_pins_them(tmp_path):
     legacy = dict(current)
     for name in (
         "terminal_memory_mb",
-        "terminal_max_retries",
         "eval_max_tasks",
         "eval_samples_per_prompt",
         "skip_eval_before_train",
-        "resume_initial_eval",
         "num_rollout",
         "num_critic_only_steps",
         "rollout_batch_size",

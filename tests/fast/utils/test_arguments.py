@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
 from miles.backends.megatron_utils.megatron_config import get_megatron_arg_parser
@@ -46,7 +47,6 @@ from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.object_store_config import compute_mooncake_init_kwargs_vanilla
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
-from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
@@ -755,22 +755,6 @@ def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
         ft_components=[],
     )
     return SimpleNamespace(**(defaults | overrides))
-
-
-@pytest.mark.parametrize("legacy,snapshot", [(False, False), (True, False), (False, True)])
-def test_initial_eval_progress_requires_native_shared_engine(monkeypatch, legacy, snapshot):
-    monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "1" if legacy else "0")
-    args = _fully_async_candidate_args(
-        eval_progress_dir="/progress",
-        eval_num_gpus=int(snapshot),
-        rollout_external_engine_addrs=None,
-        custom_inference_engine_provider_path=None,
-    )
-    if legacy or snapshot:
-        with pytest.raises(ValueError, match="native shared-engine"):
-            _resolve_rollout_functions(args)
-    else:
-        _resolve_rollout_functions(args)
 
 
 def test_naming_the_fully_async_class_enables_the_mode():
