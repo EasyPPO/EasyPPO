@@ -90,7 +90,7 @@ def test_one_step_async_recipe(launcher, monkeypatch, tmp_path, mode, centering)
     assert (
         value("--terminal-max-new-tokens") == value("--rollout-max-response-len") == ("24576" if frontier else "8192")
     )
-    assert value("--terminal-summary-tokens") == ("4096" if frontier else "2048")
+    assert value("--terminal-summary-tokens") == ("6144" if frontier else "2048")
     assert value("--terminal-compact-threshold") == ("12000" if frontier else "24576")
     assert ("--terminal-continue-on-length" in argv) == frontier
     assert value("--max-tokens-per-gpu") == "262144"

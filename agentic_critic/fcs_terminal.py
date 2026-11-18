@@ -7,14 +7,15 @@ from minisweagent.agents.default import Submitted
 from agentic_critic.fcs_env import (
     COMPACT_PROMPT,
     FCS_REASONING_EFFORT,
+    FCS_SUMMARY_EFFORT,
     NEXT_PROMPT,
     NO_CODE_PROMPT,
     RESUME_PROMPT,
     TASK_PROMPT,
     TRUNCATED_NO_SUBMISSION_PROMPT,
-    answer_text,
     extract_code,
     format_feedback,
+    summary_text,
 )
 from agentic_critic.terminal_env import TerminalAgent
 
@@ -30,9 +31,20 @@ class FcsSubmissionAgent(TerminalAgent):
 
     def _template_options(self, kind: str) -> dict:
         return {
-            "enable_thinking": self.options.enable_thinking and kind != "summary",
-            "reasoning_effort": FCS_REASONING_EFFORT,
+            "enable_thinking": kind == "summary" or self.options.enable_thinking,
+            "reasoning_effort": FCS_SUMMARY_EFFORT if kind == "summary" else FCS_REASONING_EFFORT,
         }
+
+    def _prompt(self, messages: list[dict], *, kind: str = "action") -> list[int]:
+        prompt = super()._prompt(messages)
+        if kind == "summary":
+            # Qwen encodes low effort as a system instruction. Apply it to the
+            # new turn so that previously sampled IDs remain an exact prefix.
+            turn = self._encode(messages[-1:])
+            if prompt[-len(turn):] != turn:
+                raise ValueError("Cannot locate the FCS summary turn in the chat template")
+            return prompt[:-len(turn)] + self._encode(messages[-1:], kind="summary")
+        return prompt
 
     def _initial_messages(self, task: str) -> list[dict]:
         self.task_prompt = TASK_PROMPT.format(statement=task, max_submissions=self.max_submissions)
@@ -51,7 +63,7 @@ class FcsSubmissionAgent(TerminalAgent):
         )
 
     def _summary_resume(self, summary: str) -> list[dict]:
-        summary = answer_text(summary)
+        summary = summary_text(summary)
         if eos := getattr(self.tokenizer, "eos_token", None):
             summary = summary.replace(eos, "")
         return [{"role": "user", "content": RESUME_PROMPT.format(task=self.task_prompt, summary=summary.strip())}]

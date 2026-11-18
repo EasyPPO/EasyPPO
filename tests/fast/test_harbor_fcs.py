@@ -249,6 +249,11 @@ async def test_fcs_samples_match_reference_with_real_template(
 ):
     tokenizer_impl = request.getfixturevalue("tokenizer")
 
+    tokenizer_impl.chat_template = (
+        "{% if reasoning_effort == 'low' %}<|im_start|>system\nlow effort<|im_end|>\n{% endif %}"
+        + tokenizer_impl.chat_template
+    )
+
     from agentic_critic import harbor_terminal, miles_terminal
     from agentic_critic.fcs_env import ContextFull, TurnFormat, run_episode
     from agentic_critic.miles_fcs import episode_samples
@@ -261,6 +266,8 @@ async def test_fcs_samples_match_reference_with_real_template(
         "summarize</think>\n\nKeep the first algorithm.",
         "improve</think>\n\n```cpp\nint main(){return 0;}\n```",
     ]
+    if truncated_call == 1:
+        texts[1] = "unfinished private reasoning"
     token_lists = [
         tokenizer_impl.encode(
             text + ("" if i == truncated_call else tokenizer_impl.eos_token), add_special_tokens=False
@@ -340,7 +347,10 @@ async def test_fcs_samples_match_reference_with_real_template(
     )
     assert requests == reference_prompts
     assert tokenizer_impl.decode(requests[0]).endswith("<think>\n")
-    assert tokenizer_impl.decode(requests[1]).endswith("<think>\n\n</think>\n\n")
+    assert tokenizer_impl.decode(requests[1]).endswith("<think>\n")
+    assert "low effort" in tokenizer_impl.decode(requests[1])
+    assert "low effort" not in tokenizer_impl.decode(requests[0] + requests[2])
+    assert "unfinished private reasoning" not in tokenizer_impl.decode(requests[2])
     assert tokenizer_impl.decode(requests[2]).endswith("<think>\n")
     assert len(result.samples) == len(expected) == 2
     for actual, wanted in zip(result.samples, expected, strict=True):

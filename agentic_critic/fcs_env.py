@@ -36,6 +36,7 @@ DEFAULT_MAX_SUBMISSIONS = 6
 DEFAULT_MAX_TURNS = 16
 
 FCS_REASONING_EFFORT = "medium"
+FCS_SUMMARY_EFFORT = "low"
 
 TASK_PROMPT = (
     "You are a competitive programmer. You may submit up to {max_submissions} C++ solutions. "
@@ -87,11 +88,11 @@ class TurnFormat:
 
     def __init__(self, tokenizer, eos_token: str = "<|im_end|>"):
         messages = [{"role": "user", "content": _SENTINEL}]
-        options = dict(tokenize=False, add_generation_prompt=True, reasoning_effort=FCS_REASONING_EFFORT)
-        rendered = tokenizer.apply_chat_template(messages, enable_thinking=True, **options)
+        options = dict(tokenize=False, add_generation_prompt=True, enable_thinking=True)
+        rendered = tokenizer.apply_chat_template(messages, reasoning_effort=FCS_REASONING_EFFORT, **options)
         self.pre, self.post = rendered.split(_SENTINEL)
-        summary = tokenizer.apply_chat_template(messages, enable_thinking=False, **options)
-        _, self.summary_post = summary.split(_SENTINEL)
+        summary = tokenizer.apply_chat_template(messages, reasoning_effort=FCS_SUMMARY_EFFORT, **options)
+        self.summary_pre, self.summary_post = summary.split(_SENTINEL)
         self.tokenizer = tokenizer
         self.eos_text = eos_token
 
@@ -106,8 +107,8 @@ class TurnFormat:
 
     def next_user_turn(self, content: str, *, summary: bool = False) -> list[int]:
         # A completion ends with the end-of-turn token; the template puts a newline after it.
-        suffix = self.summary_post if summary else self.post
-        return self.encode("\n" + self.pre.lstrip() + content + suffix)
+        prefix, suffix = (self.summary_pre, self.summary_post) if summary else (self.pre, self.post)
+        return self.encode("\n" + prefix.lstrip() + content + suffix)
 
     def end_of_turn(self) -> list[int]:
         return self.encode(self.eos_text)
@@ -155,6 +156,12 @@ class Episode:
 def answer_text(reply: str) -> str:
     """The part of a completion after its thinking block."""
     return reply.rsplit("</think>", 1)[-1]
+
+
+def summary_text(reply: str) -> str:
+    """Return visible summary text, including when generation ended inside thinking."""
+    _, closed, visible = reply.rpartition("</think>")
+    return visible if closed else ""
 
 
 def extract_code(reply: str) -> str | None:
@@ -264,7 +271,7 @@ def run_episode(
                 # The same result text, but the turn asks for a summary instead of the next solution.
                 add(fmt.next_user_turn(message + "\n\n" + COMPACT_PROMPT, summary=True), False, "compact_request")
                 summary_reply, _ = call("summary")
-                summary = answer_text(summary_reply).replace(fmt.eos_text, "").strip()
+                summary = summary_text(summary_reply).replace(fmt.eos_text, "").strip()
                 rounds.pop()  # the summary is not a round that could be kept
                 ep.n_compactions += 1
                 seg += 1
