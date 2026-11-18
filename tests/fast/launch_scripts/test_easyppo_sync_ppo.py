@@ -340,6 +340,8 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     if args.dataset == "frontiersmith":
         differences.remove("eval_samples_per_prompt")
         differences.remove("rollout_gpus_per_engine")
+        differences.remove("sglang_mem_fraction_static")
+        assert args.sglang_mem_fraction_static == 0.85
         differences.remove("terminal_environment")
         differences.remove("frontier_judge_url")
     assert differences == {

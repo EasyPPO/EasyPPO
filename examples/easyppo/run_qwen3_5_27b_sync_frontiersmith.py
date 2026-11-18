@@ -59,6 +59,7 @@ class ScriptArgs(GenerationArgs, _sync._SyncScriptArgs):
     dataset: Literal["frontiersmith"] = "frontiersmith"
     terminal_environment: Literal["docker", "daytona", "modal", "shared-judge"] = SYNC_TERMINAL_ENVIRONMENT
     rollout_gpus_per_engine: int = 1
+    sglang_mem_fraction_static: float = 0.85
     eval_samples_per_prompt: int = SYNC_EVAL_SAMPLES_PER_PROMPT
 
     def __post_init__(self):
