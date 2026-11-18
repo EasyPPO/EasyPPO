@@ -196,6 +196,8 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         index = cmd.index("--over-sampling-batch-size")
         assert cmd[index + 1] == expected_block
         del cmd[index : index + 2]
+    assert "--rollout-no-refill" in argv and "--rollout-no-refill" not in async_argv
+    argv.remove("--rollout-no-refill")
     assert "--keep-old-actor" in async_argv
     rollout_index = async_argv.index("--rollout-num-gpus")
     assert async_argv[rollout_index + 1] == str(args.rollout_num_gpus)

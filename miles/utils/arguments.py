@@ -875,6 +875,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
             # sampling
             parser.add_argument(
+                "--rollout-no-refill",
+                action="store_true",
+                help="Collect one fixed batch of prompt groups and fail an incomplete batch.",
+            )
+            parser.add_argument(
                 "--over-sampling-batch-size",
                 type=int,
                 default=None,

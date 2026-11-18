@@ -51,8 +51,8 @@ Miles/SGLang handles model decoding for both datasets.
 ## Batch and update schedule
 
 Each round accepts **32 prompt groups × 16 independent episodes = 512 episodes**.
-Synchronous training launches 32 groups and waits for all of them. If a group
-is rejected, the collector replaces just that group. Asynchronous training
+Synchronous training launches 32 groups and waits for all of them. Judge failures score zero for the affected submission.
+An incomplete synchronous batch fails without drawing replacement groups. Asynchronous training
 launches an initial block of 35 groups (560 episodes) and cancels the unused tail. Sampling is temperature=1, top-p=1,
 top-k=-1. Training seed is 1234; the data-shuffle seed is 42.
 
@@ -88,7 +88,7 @@ The default run contains 200 outer rounds. Rounds 1–30 train only the critic;
 the first actor update is round 31. This gives **800 critic updates and 170 actor
 updates**, including 120 critic updates during warmup. LR warmup is separately
 set to zero. Accepted training volume is nominally 102,400 episodes; actual trial
-starts also include replacements for rejected groups and, in async runs, oversampling.
+starts in async runs also include oversampling and replacements for rejected groups.
 
 ## Synchronous training
 
@@ -359,7 +359,8 @@ Native rewards are the default. FrontierSmith/FCS use the highest submission
 score scaled from `[0,100]` to `[0,1]`; the final verifier reads the submission
 ledger without submitting again. TMAX/TB use their task reward. Episodes without
 submissions score zero. Each judge verdict with `status: "error"` counts as a
-zero-score submission. Transport and verifier execution failures propagate as trial errors. Optional `test-count` mode reads
+zero-score submission. Judge request failures and invalid scores also count as zero for that submission;
+the ledger records the error. Optional `test-count` mode reads
 `passing_assertions/20`; a missing/unparseable count can fall back only to a
 valid binary result, with the reason saved in metadata.
 

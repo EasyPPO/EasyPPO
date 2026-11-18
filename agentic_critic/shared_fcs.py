@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
 from harbor.models.task.task import Task
 
 from agentic_critic.fcs_judge import judge_feedback
@@ -125,13 +126,13 @@ async def run_shared_judge_episode(
         try:
             verdict = await _submit(url, problem_id, code, timeout)
             feedback = judge_feedback(verdict)
-            verdicts.append(verdict)
-            return feedback
-        except Exception as exc:
-            exc.add_note(f"Frontier-CS problem {problem_id}, submission {len(verdicts) + 1}")
-            raise
+        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            verdict = {"status": "error", "error": f"Judge failure: {type(exc).__name__}: {exc}"}
+            feedback = judge_feedback(verdict)
         finally:
             judge_seconds += time.monotonic() - started
+        verdicts.append(verdict)
+        return feedback
 
     agent = FcsSubmissionAgent(
         tokenizer=tokenizer,

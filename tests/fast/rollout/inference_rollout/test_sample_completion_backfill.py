@@ -159,22 +159,26 @@ async def test_sync_driver_defaults_to_group_granularity(monkeypatch):
     assert [group[0].group_index for group in output.samples] == [1, 2]
 
 
-async def test_sync_replaces_only_the_rejected_group_while_others_are_pending(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=32))
+@pytest.mark.parametrize("invalid", [False, True])
+async def test_fixed_batch_never_draws_replacements(monkeypatch, invalid):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=32, rollout_no_refill=True))
     task = harness.run()
     await asyncio.sleep(0)
     assert len(harness.submitted_groups) == 32
-
-    harness.submitted_groups[0][0].reward = None
-    harness.finish_group(0)
-    async with asyncio.timeout(5):
-        while len(harness.submitted_groups) == 32:
-            await asyncio.sleep(0)
-    assert len(harness.submitted_groups) == 33
-    for index in range(1, 33):
+    if invalid:
+        harness.submitted_groups[0][0].reward = None
+    else:
+        harness.submitted_groups[0][0].reward = 0.0
+    for index in range(32):
         harness.finish_group(index)
-    output, _ = await task
-    assert len(output.samples) == 32
+    if invalid:
+        with pytest.raises(RuntimeError, match="31/32") as err:
+            await asyncio.wait_for(task, 5)
+        assert "group_has_missing_reward" in str(err.value.__cause__)
+    else:
+        output, _ = await task
+        assert len(output.samples) == 32
+    assert len(harness.submitted_groups) == 32
 
 
 @pytest.mark.parametrize(

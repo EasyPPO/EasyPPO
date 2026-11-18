@@ -124,8 +124,17 @@ async def generate_rollout_async(
     all_data = []
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
+    fixed_batch = getattr(args, "rollout_no_refill", False)
+    failure = None
+    if fixed_batch:
+        samples = data_source(target_data_size)
+        stamp_kv_cache_namespace(samples, namespace=kv_cache_namespace)
+        scheduler.on_submit(samples)
+        pendings.update(submit_generate_tasks(state, samples, scheduler.sample_done_callback))
     while len(data) < target_data_size:
-        while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
+        if fixed_batch and not pendings:
+            break
+        while not fixed_batch and scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
             stamp_kv_cache_namespace(samples, namespace=kv_cache_namespace)
@@ -140,6 +149,7 @@ async def generate_rollout_async(
             try:
                 group: list[Sample] = task.result()
             except Exception as e:
+                failure = e
                 logger.error(f"[rollout] Task raised exception: {e!r}", exc_info=True)
                 continue
 
@@ -158,6 +168,8 @@ async def generate_rollout_async(
             metric_gatherer.on_group_before_dynamic_filter(args, group)
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
+                if fixed_batch:
+                    failure = RuntimeError(f"Rejected prompt group: {filter_output.reason}")
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
                 SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
                 continue
@@ -171,6 +183,11 @@ async def generate_rollout_async(
                 SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="oversampling")
 
     pbar.close()
+    if fixed_batch and len(data) != target_data_size:
+        state.reset()
+        raise RuntimeError(
+            f"Rollout {rollout_id} collected {len(data)}/{target_data_size} fixed prompt groups"
+        ) from failure
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
         "Finish rollout: text_preview=%s, label=%s, reward_summary=%s",

@@ -79,6 +79,7 @@ def _execute(args: _SyncScriptArgs, *, dataset: str, script_path: str) -> None:
     checkpoint_args += ["--use-checkpoint-opt-param-scheduler"]
     argv = (
         checkpoint_args
+        + ["--rollout-no-refill"]
         + _recipe._rollout_args(args)
         + _recipe._terminal_args(args)
         # train.py finishes rollout before updating the actor. Its current

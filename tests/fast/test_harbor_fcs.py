@@ -167,14 +167,14 @@ async def test_harbor_uploads_long_source_and_verifier_uses_best_submission(monk
         {"status": "done", "score": float("nan")},
     ],
 )
-def test_failed_submission_never_enters_reward_ledger(monkeypatch, tmp_path, result):
+def test_invalid_judge_verdict_enters_ledger_as_zero(monkeypatch, tmp_path, result):
     source, ledger = tmp_path / "solution.cpp", tmp_path / "ledger.json"
     source.write_text("code")
     ledger.write_text("[]")
     monkeypatch.setattr(verifier, "submit_solution", lambda *a, **kw: result)
-    with pytest.raises((ValueError, RuntimeError)):
-        verifier._submit(solution=source, ledger=ledger, judge_url="http://judge", problem_id="0", timeout=1)
-    assert ledger.read_text() == "[]"
+    verdict = verifier._submit(solution=source, ledger=ledger, judge_url="http://judge", problem_id="0", timeout=1)
+    assert json.loads(ledger.read_text()) == [verdict]
+    assert verdict["status"] == "error" and verifier._reward(verdict) == 0
 
 
 def test_empty_submission_and_no_submission_are_valid_zeros(tmp_path):
@@ -485,22 +485,19 @@ async def test_direct_trial_preserves_partial_evidence_and_classifies_interrupti
         if end == "agent_timeout":
             trace, reward, _ = await task
             assert trace.truncated and trace.exit_status == "AgentTimeoutError" and reward == {"reward": 0.4}
-        else:
-            if end == "cancel":
-                task.cancel()
-            with pytest.raises(
-                {
-                    "cancel": asyncio.CancelledError,
-                    "judge_timeout": TimeoutError,
-                    "bad_score": ValueError,
-                    "http_error": httpx.HTTPStatusError,
-                }[end]
-            ):
+        elif end == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
                 await task
+        else:
+            trace, reward, _ = await task
+            assert trace.submission_scores == [40, 0, 0] and reward == {"reward": 0.4}
     (directory,) = (tmp_path / "trials").iterdir()
-    assert json.loads((directory / "verifier/judge-result.json").read_text()) == [{"status": "done", "score": 40}]
-    assert (directory / "verifier/reward.json").exists() == (end == "agent_timeout")
-    assert n_post == 2
+    ledger = json.loads((directory / "verifier/judge-result.json").read_text())
+    assert ledger[0] == {"status": "done", "score": 40}
+    assert all(v["status"] == "error" for v in ledger[1:])
+    assert (directory / "verifier/reward.json").exists() == (end != "cancel")
+    assert n_post == (2 if end in ("cancel", "agent_timeout") else 3)
 
 
 @pytest.mark.asyncio

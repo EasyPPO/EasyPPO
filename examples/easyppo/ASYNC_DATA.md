@@ -61,8 +61,8 @@ The Frontier agent reads the prepared statement and submits C++ solutions to
 the shared judge. The synchronous recipe sends requests from each rollout
 worker. The asynchronous recipe defaults to a Harbor submission container.
 Both use the highest bounded submission score divided by 100 as the episode
-reward. A final judge error verdict scores zero for that submission. HTTP
-errors and polling timeouts interrupt the trial. `judge-result.json` records
+reward. Judge error verdicts, HTTP errors, polling timeouts and invalid scores
+count as zero for the affected submission. `judge-result.json` records
 the verdicts and `reward.json` records the verified numeric reward.
 
 Set `--frontier-judge-timeout` during preparation to cover judging and queue

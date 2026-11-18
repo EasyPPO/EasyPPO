@@ -2,10 +2,11 @@
 
 Iterative tasks return the highest shared-judge submission score / 100.
 Legacy final-file tasks submit once. A judge error verdict scores zero.
-Request failures propagate to Harbor.
+Iterative submissions with judge request failures score zero.
 """
 
 import argparse
+import http.client
 import json
 import math
 import os
@@ -86,8 +87,11 @@ def _verify(*, solution: Path, logs: Path, judge_url: str, problem_id: str, time
 
 def _submit(*, solution: Path, ledger: Path, judge_url: str, problem_id: str, timeout: float) -> dict:
     code = solution.read_text(encoding="utf-8")
-    result = submit_solution(judge_url, problem_id, code, timeout=timeout)
-    _reward(result)  # Validate the verdict before appending it.
+    try:
+        result = submit_solution(judge_url, problem_id, code, timeout=timeout)
+        _reward(result)
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, AttributeError) as exc:
+        result = {"status": "error", "error": f"Judge failure: {type(exc).__name__}: {exc}"}
     submissions = json.loads(ledger.read_text(encoding="utf-8"))
     submissions.append(result)
     pending = ledger.with_suffix(".tmp")
