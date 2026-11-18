@@ -192,17 +192,7 @@ def _run_head(store, process, volume, config, addresses, judge_url, judge_token)
             # The launcher talks to Ray Jobs over HTTP; the raylets and Ray
             # workers retain their TCP GCS address in the inherited environment.
             env = dict(os.environ, RAY_ADDRESS=f"http://{addresses[0]}:{DASHBOARD_PORT}")
-            trainer = subprocess.Popen(command, cwd=config.source, env=env)
-            try:
-                while trainer.poll() is None:
-                    _check_health(store, process, config.nodes)
-                    if not _cluster_ready(ray, addresses, config.gpus):
-                        raise RuntimeError("A Ray node disappeared during training")
-                    time.sleep(1)
-                if check and trainer.returncode:
-                    raise subprocess.CalledProcessError(trainer.returncode, command)
-            finally:
-                _stop_process(trainer)
+            subprocess.run(command, cwd=config.source, env=env, check=check)
 
         train(config, judge_url, judge_token, run_command=run_command)
         _commit_all(store, volume, config.nodes, uuid4().hex)

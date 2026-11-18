@@ -163,6 +163,40 @@ def test_ray_head_has_jobs_endpoint_and_worker_joins_it():
     assert "--num-gpus=8" in head and "--num-gpus=8" in worker
 
 
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_head_checks_topology_only_before_training(monkeypatch, tmp_path, exit_code):
+    import subprocess
+    import sys
+    from unittest.mock import Mock
+
+    from modal_launchers import runtime
+
+    addresses = ["10.0.0.1", "10.0.0.2"]
+    ray = Mock()
+    ray.nodes.side_effect = [[{"Alive": True, "NodeManagerAddress": ip, "Resources": {"GPU": 8}} for ip in addresses]]
+    monkeypatch.setitem(sys.modules, "ray", ray)
+    store = Store()
+    store.set("finished/1", "1")
+    commit = Mock()
+    monkeypatch.setattr(multinode, "_commit_all", commit)
+
+    def train(config, judge_url, judge_token, *, run_command):
+        run_command([sys.executable, "-c", f"raise SystemExit({exit_code})"], check=True)
+
+    monkeypatch.setattr(runtime, "train", train)
+    config = SimpleNamespace(gpus=8, nodes=2, source=tmp_path)
+    if exit_code:
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            multinode._run_head(store, None, None, config, addresses, "", "")
+        assert error.value.returncode == exit_code
+        commit.assert_not_called()
+    else:
+        multinode._run_head(store, None, None, config, addresses, "", "")
+        commit.assert_called_once()
+    ray.nodes.assert_called_once()
+    ray.shutdown.assert_called_once()
+
+
 def test_old_single_node_manifest_can_still_resume(tmp_path):
     import json
     from pathlib import Path
