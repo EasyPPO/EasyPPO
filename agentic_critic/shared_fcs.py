@@ -12,7 +12,8 @@ from uuid import uuid4
 
 from harbor.models.task.task import Task
 
-from agentic_critic.fcs_terminal import FcsSubmissionAgent, judge_feedback
+from agentic_critic.fcs_judge import judge_feedback
+from agentic_critic.fcs_terminal import FcsSubmissionAgent
 from miles.utils.http_utils import GeneralHttpClientProvider
 from scripts.frontiersmith_verifier import write_submission_rewards
 

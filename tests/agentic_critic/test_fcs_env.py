@@ -1,7 +1,6 @@
-from dataclasses import dataclass, field
-
 from agentic_critic.critic_input import build_full, build_shared, value_mask
 from agentic_critic.fcs_env import COMPACT_PROMPT, TASK_PROMPT, TurnFormat, extract_code, run_episode
+from agentic_critic.fcs_judge import JudgeResult, judge_feedback
 
 EOS = "<|im_end|>"
 
@@ -24,19 +23,6 @@ class CharTokenizer:
         return "".join(chr(i) for i in ids)
 
 
-@dataclass
-class FakeCase:
-    status: str
-
-
-@dataclass
-class FakeResult:
-    score: float
-    status: str = "done"
-    compile_msg: str = ""
-    cases: list = field(default_factory=list)
-
-
 def code_reply(tag: str) -> str:
     return f"plan for {tag}</think>\n\n```cpp\n// {tag}\nint main(){{}}\n```{EOS}"
 
@@ -54,7 +40,7 @@ def run(replies, scores, finished=None, **kw):
         statement="S",
         fmt=fmt,
         generate=generate,
-        judge=lambda code: FakeResult(next(score_it), cases=[FakeCase("Accepted"), FakeCase("Wrong Answer")]),
+        judge=lambda code: JudgeResult(next(score_it), "done", case_statuses=["Accepted", "Wrong Answer"]),
         **kw,
     )
     return ep, prompts, fmt
@@ -236,3 +222,12 @@ def test_keep_last_turns_segments_feed_the_critic_input_code():
     assert full.tokens == [t for e in ep.events for t in e.tokens]
     assert fmt.decode([t for t, m in zip(full.tokens, value_mask(full, segments)) if m]) == "".join(replies)
     assert [ci.tokens for ci in build_shared(segments)] == [seg.tokens for seg in segments]
+
+
+def test_judge_feedback_preserves_official_case_status_and_supports_score_only_cases():
+    result = judge_feedback({
+        "status": "done",
+        "score": 25,
+        "cases": [{"status": "Time Limit Exceeded", "scoreRatio": 0}, {"scoreRatio": 1}],
+    })
+    assert result.case_statuses == ["Time Limit Exceeded", "Accepted"]

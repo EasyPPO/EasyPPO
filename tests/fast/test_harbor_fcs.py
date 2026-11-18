@@ -107,7 +107,7 @@ async def test_harbor_uploads_long_source_and_verifier_uses_best_submission(monk
         sources.append(code)
         return next(responses)
 
-    monkeypatch.setattr(verifier, "_judge", judge)
+    monkeypatch.setattr(verifier, "submit_solution", judge)
 
     async def upload_file(source_path, target_path):
         (container / Path(target_path).name).write_bytes(Path(source_path).read_bytes())
@@ -171,7 +171,7 @@ def test_failed_submission_never_enters_reward_ledger(monkeypatch, tmp_path, res
     source, ledger = tmp_path / "solution.cpp", tmp_path / "ledger.json"
     source.write_text("code")
     ledger.write_text("[]")
-    monkeypatch.setattr(verifier, "_judge", lambda *a, **kw: result)
+    monkeypatch.setattr(verifier, "submit_solution", lambda *a, **kw: result)
     with pytest.raises((ValueError, RuntimeError)):
         verifier._submit(solution=source, ledger=ledger, judge_url="http://judge", problem_id="0", timeout=1)
     assert ledger.read_text() == "[]"

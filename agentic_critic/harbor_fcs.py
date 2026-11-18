@@ -5,8 +5,8 @@ from pathlib import Path
 
 from harbor.utils.env import resolve_env_vars
 
-from agentic_critic.fcs_judge import JudgeResult
-from agentic_critic.fcs_terminal import FcsSubmissionAgent, judge_feedback
+from agentic_critic.fcs_judge import JudgeResult, judge_feedback
+from agentic_critic.fcs_terminal import FcsSubmissionAgent
 from agentic_critic.harbor_terminal import MiniSweTerminalAgent
 
 

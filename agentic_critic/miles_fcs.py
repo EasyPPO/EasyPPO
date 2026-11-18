@@ -17,7 +17,6 @@ import json
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from agentic_critic import fcs_judge_http
 from agentic_critic.fcs_env import (
     DEFAULT_MAX_SUBMISSIONS,
     DEFAULT_MAX_TURNS,
@@ -26,7 +25,9 @@ from agentic_critic.fcs_env import (
     TurnFormat,
     run_episode,
 )
+from agentic_critic.fcs_judge import judge_feedback
 from agentic_critic.miles_samples import critic_episode
+from scripts.frontiersmith_verifier import submit_solution
 
 
 def episode_samples(ep: Episode, call_logprobs: list[list[float]]) -> list[dict]:
@@ -103,7 +104,10 @@ async def generate(input):
         return [item[1] for item in items], output["meta_info"]["finish_reason"]["type"] != "length"
 
     def judge(code: str):
-        return fcs_judge_http.judge(args.fcs_judge_url, str(base.metadata["problem_id"]), code)
+        verdict = submit_solution(
+            args.fcs_judge_url, str(base.metadata["problem_id"]), code, timeout=900, wait_ready=False, poll_s=1
+        )
+        return judge_feedback(verdict)
 
     def run() -> Episode:
         return run_episode(

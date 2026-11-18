@@ -127,7 +127,6 @@ class Event:
 class Episode:
     events: list[Event] = field(default_factory=list)  # everything, in time order (the critic's Full view)
     scores: list[float] = field(default_factory=list)  # one per submission
-    submission_segments: list[int] = field(default_factory=list)  # the segment each submission was made in
     n_compactions: int = 0
     truncated_turns: int = 0  # completions that hit the per-turn token limit
     finish_reason: str = ""
@@ -170,7 +169,7 @@ def format_feedback(result, index: int, max_submissions: int, best: float) -> st
     elif result.status == "Judge Error":
         detail = "The judge returned an error for this submission."
     else:
-        counts = Counter(c.status for c in result.cases)
+        counts = Counter(result.case_statuses)
         detail = "Cases: " + ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
     return FEEDBACK_PROMPT.format(
         index=index,
@@ -204,7 +203,7 @@ def run_episode(
     generate(prompt_token_ids) -> (completion_token_ids, finished). `finished` is False when the
     completion hit the per-turn token limit before the end-of-turn token.
     It may raise ContextFull instead; the episode then ends there with what it has.
-    judge(code) -> a JudgeResult (see fcs_judge / fcs_judge_http).
+    judge(code) -> a JudgeResult (see fcs_judge).
     `compact_threshold_tokens=None` disables compaction (the zero-compaction sanity setting).
     `compaction`: "summary" (the actor writes one) or "keep_last_turns" (the last `keep_turns` rounds are kept
     verbatim and nothing is written).
@@ -242,7 +241,6 @@ def run_episode(
             else:
                 result = judge(code)
                 ep.scores.append(result.score)
-                ep.submission_segments.append(seg)
                 if len(ep.scores) >= max_submissions:
                     ep.finish_reason = "submissions_exhausted"
                     return

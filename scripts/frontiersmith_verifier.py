@@ -37,8 +37,14 @@ def _wait_ready(judge_url: str, *, timeout: float = 60) -> None:
             time.sleep(2)
 
 
-def _judge(judge_url: str, problem_id: str, code: str, *, timeout: float) -> dict:
-    _wait_ready(judge_url)
+def submit_solution(
+    judge_url: str, problem_id: str, code: str, *, timeout: float, wait_ready: bool = True, poll_s: float = 2
+) -> dict:
+    if not code.strip():
+        return {"status": "error", "error": "Error: compile failed: empty program"}
+    judge_url = judge_url.rstrip("/")
+    if wait_ready:
+        _wait_ready(judge_url)
     submission = _request(f"{judge_url}/submit", {"pid": problem_id, "lang": "cpp", "code": code})
     deadline = time.monotonic() + timeout
     while True:
@@ -47,7 +53,7 @@ def _judge(judge_url: str, problem_id: str, code: str, *, timeout: float) -> dic
             return result
         if time.monotonic() >= deadline:
             raise TimeoutError(f"FrontierSmith judge timed out on {problem_id}")
-        time.sleep(2)
+        time.sleep(poll_s)
 
 
 def _reward(result: dict) -> float:
@@ -70,7 +76,7 @@ def _verify(*, solution: Path, logs: Path, judge_url: str, problem_id: str, time
     if not code.strip():
         result = {"status": "missing_solution"}
     else:
-        result = _judge(judge_url.rstrip("/"), problem_id, code, timeout=timeout)
+        result = submit_solution(judge_url, problem_id, code, timeout=timeout)
     (logs / "judge-result.json").write_text(json.dumps(result, indent=2))
     reward = _reward(result) if code.strip() else 0.0
     # Harbor's reward JSON accepts only numeric values. Keep diagnostics separate.
@@ -80,11 +86,7 @@ def _verify(*, solution: Path, logs: Path, judge_url: str, problem_id: str, time
 
 def _submit(*, solution: Path, ledger: Path, judge_url: str, problem_id: str, timeout: float) -> dict:
     code = solution.read_text(encoding="utf-8")
-    result = (
-        _judge(judge_url.rstrip("/"), problem_id, code, timeout=timeout)
-        if code.strip()
-        else {"status": "error", "error": "Error: compile failed: empty program"}
-    )
+    result = submit_solution(judge_url, problem_id, code, timeout=timeout)
     _reward(result)  # Validate the verdict before appending it.
     submissions = json.loads(ledger.read_text(encoding="utf-8"))
     submissions.append(result)
