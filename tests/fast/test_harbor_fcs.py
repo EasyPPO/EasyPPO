@@ -59,7 +59,7 @@ async def test_only_cpp_submits_and_feedback_keeps_the_best_score():
     )
     trace = await agent.run_async("statement")
     assert codes == ["first", "second"]
-    assert prompts[0] == "<user>" + TASK_PROMPT.format(statement="statement") + "</user><assistant>"
+    assert prompts[0] == "<user>" + TASK_PROMPT.format(statement="statement", max_submissions=2) + "</user><assistant>"
     assert "No ```cpp code block" in prompts[1]
     assert "score=80.00/100" in prompts[2] and "Best score so far: 80.00/100" in prompts[2]
     assert trace.submission_scores == [80, 20]
@@ -107,7 +107,7 @@ async def test_harbor_uploads_long_source_and_verifier_uses_best_submission(monk
         sources.append(code)
         return next(responses)
 
-    monkeypatch.setattr(verifier, "_judge", judge)
+    monkeypatch.setattr(verifier, "submit_solution", judge)
 
     async def upload_file(source_path, target_path):
         (container / Path(target_path).name).write_bytes(Path(source_path).read_bytes())
@@ -171,7 +171,7 @@ def test_failed_submission_never_enters_reward_ledger(monkeypatch, tmp_path, res
     source, ledger = tmp_path / "solution.cpp", tmp_path / "ledger.json"
     source.write_text("code")
     ledger.write_text("[]")
-    monkeypatch.setattr(verifier, "_judge", lambda *a, **kw: result)
+    monkeypatch.setattr(verifier, "submit_solution", lambda *a, **kw: result)
     with pytest.raises((ValueError, RuntimeError)):
         verifier._submit(solution=source, ledger=ledger, judge_url="http://judge", problem_id="0", timeout=1)
     assert ledger.read_text() == "[]"
@@ -284,6 +284,7 @@ async def test_fcs_samples_match_reference_with_real_template(
         generate=generate,
         judge=lambda code: JudgeResult(next(reference_scores), "done"),
         max_submissions=3 if budget_stop else 2,
+        max_turns=16 if budget_stop else 2,
         compact_threshold_tokens=1200,
     )
     expected = episode_samples(reference, [[-0.5] * len(tokens) for tokens in token_lists])
@@ -313,7 +314,7 @@ async def test_fcs_samples_match_reference_with_real_template(
             submit=submit,
             config=kwargs["config"],
             max_submissions=kwargs["fcs_max_submissions"],
-            max_turns=16,
+            max_turns=16 if budget_stop else 2,
         )
         return await agent.run_async("statement"), {"reward": 0.8}, "/trial"
 
@@ -338,6 +339,9 @@ async def test_fcs_samples_match_reference_with_real_template(
         )
     )
     assert requests == reference_prompts
+    assert tokenizer_impl.decode(requests[0]).endswith("<think>\n")
+    assert tokenizer_impl.decode(requests[1]).endswith("<think>\n\n</think>\n\n")
+    assert tokenizer_impl.decode(requests[2]).endswith("<think>\n")
     assert len(result.samples) == len(expected) == 2
     for actual, wanted in zip(result.samples, expected, strict=True):
         if budget_stop and wanted is expected[-1]:
@@ -372,3 +376,168 @@ async def test_exact_soft_threshold_does_not_request_an_extra_summary():
     assert actual == prompts and trace.n_compactions == 0
     assert agent._should_compact(len(prompts[1]) + 1, 1)
     assert agent._should_compact(agent.options.max_context_tokens - 100, 100)
+
+
+def _direct_trial(tmp_path, *, agent_timeout=60.0, submit_timeout=60.0):
+    task = make_task(tmp_path / "tasks")
+    with (task / "task.toml").open("a") as config:
+        config.write(
+            f'\n[agent]\ntimeout_sec={agent_timeout}\n[verifier.env]\nFCS_ITERATIVE_SUBMISSIONS="1"\nPROBLEM_ID="63"\nMAX_POLL_TIME="{submit_timeout}"\nJUDGE_URL="https://dataset.invalid"\n'
+        )
+    return dict(
+        task_path=task,
+        trials_dir=tmp_path / "trials",
+        environment="shared-judge",
+        judge_url="https://judge.example",
+        tokenizer=Tokenizer(),
+        config=TerminalConfig(
+            compaction="none",
+            max_context_tokens=200000,
+            compact_threshold=150000,
+            max_new_tokens=80000,
+            max_total_tokens=120000,
+        ),
+        agent_protocol="fcs-submit",
+        fcs_max_submissions=3,
+    )
+
+
+@pytest.mark.asyncio
+async def test_direct_trial_uses_launch_origin_and_persists_best_verdict(monkeypatch, tmp_path):
+    import httpx
+    from miles.utils.http_utils import GeneralHttpClientProvider
+
+    requests = []
+    verdicts = [{"status": "done", "score": 50}, {"status": "done", "score": 80}, {"status": "error"}]
+
+    def handle(req):
+        assert req.url.host == "judge.example" and req.headers["Authorization"] == "Bearer test-credential"
+        if req.method == "POST":
+            data = json.loads(req.content)
+            assert data["pid"] == "63" and data["lang"] == "cpp"
+            requests.append(data["code"])
+            return httpx.Response(200, json={"sid": len(requests)})
+        return httpx.Response(200, json=verdicts[int(req.url.path.rsplit("/", 1)[-1]) - 1])
+
+    replies = iter(["x" * 70000, "second", "third"])
+
+    async def decode(*_):
+        return completion(f"```cpp\n{next(replies)}\n```")
+
+    monkeypatch.setenv("FRONTIERCS_JUDGE_TOKEN", "test-credential")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: client)
+        trace, rewards, folder = await run_trial(decode=decode, **_direct_trial(tmp_path))
+    assert [len(code) for code in requests] == [70000, 6, 5]
+    assert trace.submission_scores == [50, 80, 0] and rewards == {"reward": 0.8}
+    directory = Path(folder)
+    assert json.loads((directory / "verifier/reward.json").read_text()) == rewards
+    assert json.loads((directory / "verifier/judge-result.json").read_text()) == verdicts
+    assert json.loads((directory / "timing.json").read_text())["judge_seconds"] >= 0
+    assert all("test-credential" not in p.read_text() for p in directory.rglob("*.json"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", ["cancel", "agent_timeout", "judge_timeout", "bad_score", "http_error"])
+async def test_direct_trial_preserves_partial_evidence_and_classifies_interruptions(monkeypatch, tmp_path, end):
+    import httpx
+    from miles.utils.http_utils import GeneralHttpClientProvider
+
+    started = asyncio.Event()
+    n_post = 0
+
+    async def handle(req):
+        nonlocal n_post
+        if req.method == "POST":
+            n_post += 1
+            return httpx.Response(200, json={"sid": n_post})
+        if req.url.path == "/result/1":
+            return httpx.Response(200, json={"status": "done", "score": 40})
+        started.set()
+        if end == "bad_score":
+            return httpx.Response(200, json={"status": "done", "score": -1})
+        if end == "http_error":
+            return httpx.Response(502)
+        await asyncio.Future()
+
+    async def decode(*_):
+        return completion("```cpp\nx\n```")
+
+    kwargs = _direct_trial(
+        tmp_path,
+        agent_timeout=0.1 if end == "agent_timeout" else 5,
+        submit_timeout=0.1 if end == "judge_timeout" else 5,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: client)
+        task = asyncio.create_task(run_trial(decode=decode, **kwargs))
+        await asyncio.wait_for(started.wait(), 3)
+        if end == "agent_timeout":
+            trace, reward, _ = await task
+            assert trace.truncated and trace.exit_status == "AgentTimeoutError" and reward == {"reward": 0.4}
+        else:
+            if end == "cancel":
+                task.cancel()
+            with pytest.raises(
+                {
+                    "cancel": asyncio.CancelledError,
+                    "judge_timeout": TimeoutError,
+                    "bad_score": ValueError,
+                    "http_error": httpx.HTTPStatusError,
+                }[end]
+            ):
+                await task
+    (directory,) = (tmp_path / "trials").iterdir()
+    assert json.loads((directory / "verifier/judge-result.json").read_text()) == [{"status": "done", "score": 40}]
+    assert (directory / "verifier/reward.json").exists() == (end == "agent_timeout")
+    assert n_post == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides, error",
+    [
+        ({"agent_protocol": "terminal"}, "requires the fcs-submit"),
+        ({"memory_mb": 512}, "terminal-memory-mb"),
+        ({"docker_compose": ("compose.yaml",)}, "terminal-docker-compose"),
+        ({"judge_url": None}, "fcs-judge-url"),
+    ],
+)
+async def test_shared_judge_validates_configuration_before_episode(tmp_path, overrides, error):
+    with pytest.raises(ValueError, match=error):
+        await run_trial(decode=None, **(_direct_trial(tmp_path) | overrides))
+    assert not (tmp_path / "trials").exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_trial_cancellation_drains_persistence(monkeypatch, tmp_path):
+    import threading
+
+    from agentic_critic import shared_fcs
+
+    writing = threading.Event()
+    release = threading.Event()
+    persist = shared_fcs._persist_episode
+
+    def slow_persist(*args, **kwargs):
+        writing.set()
+        assert release.wait(5)
+        return persist(*args, **kwargs)
+
+    async def decode(*_):
+        return completion("No submission")
+
+    monkeypatch.setattr(shared_fcs, "_persist_episode", slow_persist)
+    kwargs = _direct_trial(tmp_path) | {"fcs_max_turns": 1}
+    task = asyncio.create_task(run_trial(decode=decode, **kwargs))
+    assert await asyncio.to_thread(writing.wait, 3)
+    try:
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(list((tmp_path / "trials").glob("*/agent/easyppo-trajectory.json"))) == 1

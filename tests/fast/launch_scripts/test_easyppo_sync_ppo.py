@@ -63,6 +63,7 @@ def test_single_gpu_9b_uses_matching_conversion_and_training_model(launcher, mon
         tensor_model_parallel_size=1,
         rollout_gpus_per_engine=1,
         join_ray_workers=False,
+        terminal_environment="docker",
         terminal_docker_compose=["/deployment/host network.yaml"],
     )
     launcher.prepare(args)
@@ -70,6 +71,7 @@ def test_single_gpu_9b_uses_matching_conversion_and_training_model(launcher, mon
     assert backend.conversions[0]["megatron_model_type"] == "qwen3.5-9B"
     assert backend.training[0]["megatron_model_type"] == "qwen3.5-9B"
     argv = shlex.split(backend.training[0]["train_args"])
+    assert "--fcs-judge-url" not in argv and args.frontier_judge_url == "http://host.docker.internal:8081"
     assert "--sequence-parallel" not in argv
     assert argv[argv.index("--terminal-docker-compose") + 1] == "/deployment/host network.yaml"
     for flag in ("--actor-num-gpus-per-node", "--critic-num-gpus-per-node", "--rollout-num-gpus-per-engine"):
@@ -93,8 +95,14 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         assert argv.count(flag) == 1
         return argv[argv.index(flag) + 1]
 
+    if args.dataset == "frontiersmith":
+        assert value("--terminal-environment") == "shared-judge"
+        assert value("--fcs-judge-url") == "http://127.0.0.1:8081"
+    else:
+        assert value("--terminal-environment") == "docker"
+        assert "--fcs-judge-url" not in argv
     assert submitted["train_script"] == "train.py"
-    assert submitted["megatron_model_type"] == "qwen3.5-27B"
+    assert submitted["megatron_model_type"] == ("qwen3.8-27B" if args.dataset == "frontiersmith" else "qwen3.5-27B")
     assert submitted["extra_env_vars"] == {"PYTHONPATH": args.megatron_path}
     expected = {
         "--advantage-estimator": "ppo",
@@ -124,14 +132,14 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--rollout-max-context-len": "131072" if args.dataset == "frontiersmith" else "32768",
         "--terminal-max-new-tokens": "24576" if args.dataset == "frontiersmith" else "8192",
         "--rollout-max-response-len": "24576" if args.dataset == "frontiersmith" else "8192",
-        "--terminal-summary-tokens": "3072" if args.dataset == "frontiersmith" else "2048",
+        "--terminal-summary-tokens": "4096" if args.dataset == "frontiersmith" else "2048",
         "--terminal-compact-threshold": "12000" if args.dataset == "frontiersmith" else "24576",
         "--max-tokens-per-gpu": "262144",
         "--actor-num-nodes": "4",
         "--actor-num-gpus-per-node": "8",
         "--critic-num-nodes": "4",
         "--critic-num-gpus-per-node": "8",
-        "--rollout-num-gpus-per-engine": "4",
+        "--rollout-num-gpus-per-engine": "1" if args.dataset == "frontiersmith" else "4",
         "--tensor-model-parallel-size": "4",
     }
     assert {flag: value(flag) for flag in expected} == expected
@@ -169,7 +177,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
     assert evaluation["path"] == args.validation_data
     assert evaluation["name"] == ("fcs" if args.dataset == "frontiersmith" else "tb21")
     assert evaluation["max_samples"] is None and evaluation["sample_seed"] == 42
-    assert value("--n-samples-per-eval-prompt") == "5"
+    assert value("--n-samples-per-eval-prompt") == ("3" if args.dataset == "frontiersmith" else "5")
     assert value("--prompt-data") == args.train_data
 
     # All remaining flags must be identical to the existing async clipped-PPO
@@ -219,7 +227,7 @@ def test_prepare_uses_the_fixed_training_and_evaluation_corpus(launcher, monkeyp
         assert preparation[preparation.index("--dataset") + 1] == "tmax"
         assert "--tokenizer" in preparation
         assert args.validation_data.endswith("tb21.eval.jsonl")
-    assert backend.conversions[0]["megatron_model_type"] == "qwen3.5-27B"
+    assert backend.conversions[0]["megatron_model_type"] == ("qwen3.8-27B" if args.dataset == "frontiersmith" else "qwen3.5-27B")
     assert backend.training == []
 
 
@@ -328,7 +336,15 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     async_args = asynchronous.ScriptArgs(run_id=args.run_id)
     sync_fields = {field.name for field in fields(args)} - {"max_keep", "checkpoint_commit_hook"}
     assert sync_fields == {field.name for field in fields(async_args)}
-    assert {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)} == {
+    differences = {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)}
+    if args.dataset == "frontiersmith":
+        differences.remove("eval_samples_per_prompt")
+        differences.remove("rollout_gpus_per_engine")
+        differences.remove("sglang_mem_fraction_static")
+        assert args.sglang_mem_fraction_static == 0.85
+        differences.remove("terminal_environment")
+        differences.remove("frontier_judge_url")
+    assert differences == {
         "score_centering",
         "score_centering_candidates",
         "score_centering_is",
@@ -349,7 +365,8 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
 
     assert options(launcher.main) - {"--max-keep", "--checkpoint-commit-hook"} == options(asynchronous.main)
     assert args.eval_max_tasks == async_args.eval_max_tasks == 0
-    assert args.eval_samples_per_prompt == async_args.eval_samples_per_prompt == 5
+    assert args.eval_samples_per_prompt == (3 if args.dataset == "frontiersmith" else 5)
+    assert async_args.eval_samples_per_prompt == 5
     assert (args.num_nodes, args.trainer_num_nodes, args.rollout_num_gpus) == (4, 4, 32)
     assert (async_args.num_nodes, async_args.trainer_num_nodes, async_args.rollout_num_gpus) == (8, 2, 48)
     assert args.colocate and not async_args.colocate
@@ -379,9 +396,24 @@ def test_sync_eval_controls_share_the_async_defaults_and_overrides(launcher, mon
     assert config["datasets"][0]["name"].endswith("_quick") == bool(maximum)
 
 
+def test_shared_judge_environment_reaches_submit_only_recipe(launcher, monkeypatch):
+    backend = _backend(monkeypatch, launcher)
+    args = launcher.ScriptArgs(terminal_environment="shared-judge", frontier_judge_url="https://shared-judge.example")
+    if args.dataset == "tmax":
+        with pytest.raises(ValueError, match="submit-only"):
+            launcher.execute(args)
+        assert not backend.training
+        return
+    launcher.execute(args)
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert argv[argv.index("--terminal-environment") + 1] == "shared-judge"
+    assert argv[argv.index("--fcs-judge-url") + 1] == "https://shared-judge.example"
+    assert "--terminal-docker-compose" not in argv
+
+
 def test_terminal_memory_and_eval_controls_reach_training(launcher, monkeypatch):
     backend = _backend(monkeypatch, launcher)
-    args = launcher.ScriptArgs(terminal_memory_mb=32768, skip_eval_before_train=True)
+    args = launcher.ScriptArgs(terminal_environment="docker", terminal_memory_mb=32768, skip_eval_before_train=True)
     launcher.execute(args)
     argv = shlex.split(backend.training[0]["train_args"])
     assert "--skip-eval-before-train" in argv

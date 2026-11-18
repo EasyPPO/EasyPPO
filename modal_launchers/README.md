@@ -6,8 +6,7 @@ configure the Modal CLI (`modal setup`). Set
 `miles-run_qwen3_5_27b_sync_frontiersmith` and its run ID is `--run-id`.
 
 FrontierSmith/FCS use the [submit-only interaction and reward rules](../examples/easyppo/RECIPES.md#rewards-validation-and-checkpoints).
-Each Harbor trial runs the submission client in its local Docker container;
-the shared judge compiles and executes submitted C++.
+The rollout worker sends each C++ submission to an isolated CPU judge for compilation and execution.
 
 The image starts from the immutable Miles v0.1.3 digest in
 [`release-lock.json`](../release-lock.json), with Python 3.12, CUDA 13 and
@@ -33,7 +32,7 @@ Multi-node allocations use RDMA and require eight GPUs per node; `--gpus 4`
 is available only with `--nodes 1`. Each invocation selects one experiment.
 Review the allocation before launching. Keep the client running in tmux.
 
-Prepare the shared pinned Qwen3.5-27B model once (CPU download, then single-node GPU conversion, even with `--nodes 2/4`):
+Prepare the shared pinned Qwen3.8-27B model once (CPU download, then single-node GPU conversion, even with `--nodes 2/4`):
 
 ```bash
 python -m modal_launchers.frontiersmith --action prepare \
@@ -63,23 +62,24 @@ and use a corresponding fresh run ID for a new experiment.
 
 Append `--launch` to the selected command to start it. Both use 100 rounds,
 30 critic-only rounds, four critic updates per round, 32 × 16 episodes, and
-180 × 5 evaluation trials initially and every ten rounds. Checkpoints are
+180 × 3 = 540 evaluation trials initially and every ten rounds. The FCS score averages
+the three episode rewards per task across all 180 tasks. Checkpoints are
 saved every five rounds; two complete sets are retained. Generation limits
 match `Claude.md`. Use identical resource options for both experiments.
 
-`--concurrency` sets SGLang/Harbor concurrency per engine (default 8).
-Training starts a CPU judge with 32 CPUs and 64 GiB memory; adjust
-`--judge-cpus`, `--judge-memory-gib`, and `--judge-workers` together with trial
-concurrency. Each GPU node starts one local Docker daemon; Harbor creates
-episode containers on that node using its Docker backend. These containers
-share the training node's CPU and RAM. `--terminal-memory-mb 16384` sets the
-per-container memory request; size node RAM and concurrency together.
-The gVisor Docker daemon uses host networking and the supplied Compose overlay.
-The shared judge runs in a CPU VM because go-judge fails to initialize its
-execution environments under gVisor. A judge error verdict scores the submission
-zero. Transport and verifier execution failures stop the run.
-The judge endpoint uses a per-attempt connection token, passed to submission-client and verifier
-execution. Prepared task files store an environment placeholder for that token.
+The default `--terminal-environment shared-judge` sends requests directly to
+the CPU judge. `--concurrency` limits active episodes per inference engine.
+With two 8-GPU nodes, TP4 and the default of 128, Miles admits up to 512 episodes.
+The judge queues submissions separately with 32 workers, 32 CPUs and 64 GiB of memory.
+Tune its capacity with `--judge-workers`, `--judge-cpus` and `--judge-memory-gib`.
+A judge error verdict scores that submission zero. Transport failures stop the run.
+Each direct trial records its start, finish and cumulative judge wait in `timing.json`
+alongside its trajectory and verifier results.
+
+Use `--terminal-environment docker` to run each submission client and verifier
+in a local Harbor container. This mode defaults to eight episodes per engine
+and `--terminal-memory-mb 16384` per sandbox. The shared judge runs in a CPU VM
+in both modes. Each attempt authenticates with its own judge connection token.
 
 Preview one actor/critic training round with a small final evaluation:
 
@@ -109,11 +109,10 @@ Rerun the original command with the same run ID and settings to resume. A
 manifest rejects changes to the critic mode, topology, image, or other launch
 settings. Do not run two clients with the same run ID concurrently.
 
-Timeouts automatically restart the selected experiment, up to `--max-restarts 3`.
-The old cluster call is cancelled before the judge is replaced. All nodes restart together. Other training
-errors stop the launcher. Ctrl-C stops the current attempt; rerun to resume.
-The local client must stay alive for automatic restarts. Each attempt has a
-24-hour platform limit and is stopped ten minutes before its judge expires.
+The local client rotates the cluster ten minutes before the 24-hour judge expires,
+up to `--max-restarts 3`. It cancels the old cluster before replacing the judge.
+Preflight errors, training failures, and cleanup failures stop the launcher.
+Ctrl-C stops the current attempt. Rerun the original command to resume.
 
 A checkpoint becomes resumable only after actor, critic, and rollout state are
 saved and committed to the Volume. On multiple nodes, every node commits its

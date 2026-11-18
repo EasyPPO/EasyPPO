@@ -1,4 +1,4 @@
-# Qwen3.5-27B terminal recipes
+# 27B terminal recipes
 
 The [README](../../README.md) provides environment setup, data/model downloads,
 Ray startup, judge operation, and complete launch commands. This reference
@@ -22,8 +22,8 @@ The launch interface is the same shape, with the dataset selected by filename.
 
 ## Model and data
 
-The model is `Qwen/Qwen3.5-27B`, pinned to HF revision
-`fc05daec18b0a78c049392ed2e771dde82bdf654`. The Megatron actor uses the converted
+FrontierSmith uses `Qwen/Qwen3.8-27B` at `37561816e66b5b9153b1b64c10968c18c1e6f4a0` with the checkpoint chat template.
+TMAX uses `Qwen/Qwen3.5-27B` at `fc05daec18b0a78c049392ed2e771dde82bdf654`. The Megatron actor uses the converted
 checkpoint. The critic loads the same converted reference backbone through the
 native model loader and uses a separate scalar value head. Its parameters,
 optimizer, scheduler, and memory are independent of the actor.
@@ -39,11 +39,14 @@ filters exact evaluation overlap, duplicate executable fixtures, and initial
 instructions that exceed the action budget. The manifests and generated
 JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md).
 
-Harbor runs task containers on the rollout executor. Frontier tasks use the
-[submit-only protocol](#rewards-validation-and-checkpoints) and a shared judge;
-TMAX/TB expose bash and use their supplied task verifiers. Model decoding is handled by Miles/SGLang.
-Frontier task containers provide C++, Python and the verifier HTTP client;
-the terminal agent runs in the rollout worker.
+Synchronous FrontierSmith uses the [submit-only protocol](#rewards-validation-and-checkpoints).
+Each rollout worker sends C++ to the shared judge over HTTP. Pass
+`--frontier-judge-url` at launch with an address reachable from every worker.
+The Modal launcher supplies its judge endpoint. For Docker-based FrontierSmith
+trials, select `--terminal-environment docker` and prepare the tasks with a
+container-reachable judge endpoint. Docker is the asynchronous recipe's default.
+TMAX/TB expose bash in Harbor containers and run their supplied task verifiers.
+Miles/SGLang handles model decoding for both datasets.
 
 ## Batch and update schedule
 
@@ -246,7 +249,7 @@ Both launchers read their generation defaults from [`frontiersmith.py`](frontier
 |---|---:|
 | Prompt + generation window | 131072 |
 | Tokens per action, including thinking | 24576 |
-| Tokens per summary, including thinking | 3072 |
+| Tokens per summary, thinking disabled | 4096 |
 | Compaction threshold | 12000 |
 
 `--terminal-continue-on-length` is enabled: a length-limited action or summary
@@ -304,7 +307,7 @@ and logs. Plan shared storage and host memory for the actual response length.
 | Recipe / allocation | Actor and critic training pool | Rollout |
 |---|---|---|
 | Async default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
-| Sync default: 4 nodes × 8 B200 | All 32 GPUs, TP4 × DP8, PP=CP=1 | Same 32 GPUs, 8 TP4 engines |
+| Sync default: 4 nodes × 8 B200 | All 32 GPUs, TP4 × DP8, PP=CP=1 | Same 32 GPUs, 32 TP1 engines for FrontierSmith or 8 TP4 engines for TMAX |
 
 Async uses disjoint training and rollout pools. Sync sets
 `--colocate --offload-rollout --offload-train`: rollout, critic training, and
@@ -369,17 +372,16 @@ Re-run data preparation for existing FrontierSmith/FCS tasks to update their
 instructions and verifier for `fcs-submit`. Old final-file verifier tasks are
 rejected by this agent.
 
-Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
-episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
-runs **180 × 5 = 900 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
-result names `fcs` / `tb21`.
+Validation defaults to the full evaluation set (`eval_max_tasks=0`) sampled at `1/1/-1`. Synchronous FrontierSmith averages three draws per task (180 × 3 = 540 trials).
+Async FrontierSmith uses five draws (900 trials), as do both TB2.1 recipes (445 trials).
+Result names are `fcs` and `tb21`.
 
 Use `--skip-eval-before-train` to enter training immediately, or
 `--eval-max-tasks 2 --eval-samples-per-prompt 1` for a small evaluation at every
 point.
 
 A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
-points, **18,900 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.
+points, totaling 11,340 synchronous or 18,900 asynchronous Frontier-CS trials, or 9,345 TB2.1 trials.
 Checkpoints are saved at rounds 10 through 200, giving 20 points.
 Epoch-triggered extra eval/save is disabled.
 
@@ -390,8 +392,8 @@ Smoke runs use `--eval-max-tasks 1 --eval-samples-per-prompt 1`.
 
 Evaluation logs include `eval/<name>/episode_raw_reward`, the mean over numeric
 returned episodes, and `eval/<name>/num_training_samples`, the number of physical
-segments. The top-level `eval/<name>` is a row mean, and
-`eval/<name>-none_reward_ratio` records missing row rewards.
+segments. The top-level `eval/<name>` weights each Harbor episode equally, and
+`eval/<name>-none_reward_ratio` records missing episode rewards.
 
 Actor and critic use separate native Megatron checkpoint directories,
 `checkpoints` and `checkpoints_critic`, with model/head, optimizer, scheduler,

@@ -5,6 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from examples.easyppo.frontiersmith import GenerationArgs
 from miles.utils.file_utils import atomic_write_text
 from modal_launchers.config import check_manifest
 
@@ -48,8 +49,8 @@ def prepare_run(config, judge_url):
 
 
 def check_models(config):
-    model = Path(config.models) / "Qwen3.5-27B"
-    converted = Path(config.models) / "Qwen3.5-27B_torch_dist"
+    model = Path(config.models) / GenerationArgs.model_name
+    converted = Path(config.models) / f"{GenerationArgs.model_name}_torch_dist"
     for path in (
         model / "config.json",
         model / "tokenizer_config.json",

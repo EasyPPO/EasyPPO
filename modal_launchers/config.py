@@ -6,9 +6,18 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from examples.easyppo.frontiersmith import (
+    DEFAULT_SGLANG_SERVER_CONCURRENCY,
+    SYNC_EVAL_SAMPLES_PER_PROMPT,
+    SYNC_TERMINAL_ENVIRONMENT,
+    GenerationArgs,
+)
+
 from miles.utils.file_utils import atomic_write_text
 
 MODES = ("full_detach", "actor-summary")
+TERMINAL_ENVIRONMENTS = ("shared-judge", "docker")
+DOCKER_MEMORY_MB = 16384
 
 
 @dataclass(frozen=True)
@@ -23,14 +32,15 @@ class Config:
     gpus: int = 8
     nodes: int = 1
     memory_gib: int = 1024
-    concurrency: int = 8
+    concurrency: int | None = None
     max_restarts: int = 3
     judge_cpus: int = 32
     judge_memory_gib: int = 64
     judge_workers: int = 32
-    terminal_memory_mb: int = 16384
+    terminal_environment: str = SYNC_TERMINAL_ENVIRONMENT
+    terminal_memory_mb: int | None = None
     eval_max_tasks: int = 0
-    eval_samples_per_prompt: int = 5
+    eval_samples_per_prompt: int = SYNC_EVAL_SAMPLES_PER_PROMPT
     skip_eval_before_train: bool = False
     num_rollout: int = 100
     num_critic_only_steps: int = 30
@@ -47,12 +57,24 @@ class Config:
             raise ValueError("nodes must be 1, 2 or 4")
         if self.nodes > 1 and self.gpus != 8:
             raise ValueError("Modal multi-node clusters require 8 GPUs per node")
+        if self.terminal_environment not in TERMINAL_ENVIRONMENTS:
+            raise ValueError("Choose shared-judge or docker as the terminal environment")
+        if self.concurrency is None:
+            concurrency = 8 if self.terminal_environment == "docker" else DEFAULT_SGLANG_SERVER_CONCURRENCY
+            object.__setattr__(self, "concurrency", concurrency)
+        if self.terminal_environment == "docker":
+            if self.terminal_memory_mb is None:
+                object.__setattr__(self, "terminal_memory_mb", DOCKER_MEMORY_MB)
+            elif self.terminal_memory_mb < 1:
+                raise ValueError("Sandbox memory must be positive")
+        elif self.terminal_memory_mb is not None:
+            raise ValueError("--terminal-memory-mb requires --terminal-environment docker")
         if min(self.memory_gib, self.concurrency, self.judge_cpus, self.judge_memory_gib, self.judge_workers) < 1:
             raise ValueError("Resources and concurrency must be positive")
         if self.max_restarts < 0:
             raise ValueError("max-restarts must be non-negative")
-        if self.terminal_memory_mb < 1 or self.eval_samples_per_prompt < 1:
-            raise ValueError("Sandbox memory and evaluation sample count must be positive")
+        if self.eval_samples_per_prompt < 1:
+            raise ValueError("Evaluation sample count must be positive")
         if self.eval_max_tasks < 0:
             raise ValueError("Evaluation task limit must be nonnegative")
         if self.num_rollout < 1 or not 0 <= self.num_critic_only_steps <= self.num_rollout:
@@ -81,6 +103,16 @@ class Config:
         return f"{self.output}/data"
 
     def command(self, action="train"):
+        terminal_flags = ["--terminal-environment", self.terminal_environment]
+        if self.terminal_environment == "docker":
+            terminal_flags.extend(
+                [
+                    "--terminal-docker-compose",
+                    f"{self.source}/modal_launchers/docker-compose-host.yaml",
+                    "--terminal-memory-mb",
+                    str(self.terminal_memory_mb),
+                ]
+            )
         return [
             "python3",
             f"{self.source}/examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py",
@@ -101,12 +133,7 @@ class Config:
             self.data,
             "--output-dir",
             f"{self.mount}/outputs",
-            "--terminal-environment",
-            "docker",
-            "--terminal-docker-compose",
-            f"{self.source}/modal_launchers/docker-compose-host.yaml",
-            "--terminal-memory-mb",
-            str(self.terminal_memory_mb),
+            *terminal_flags,
             *(["--skip-eval-before-train"] if self.skip_eval_before_train else []),
             "--num-rollout",
             str(self.num_rollout),
@@ -133,15 +160,13 @@ class Config:
             "--max-new-tokens",
             "24576",
             "--summary-tokens",
-            "3072",
+            "4096",
             "--compact-threshold",
             "12000",
             "--max-total-tokens",
             "120000",
             "--continue-on-length",
             "--tensor-model-parallel-size",
-            "4",
-            "--rollout-gpus-per-engine",
             "4",
             "--sglang-server-concurrency",
             str(self.concurrency),
@@ -153,12 +178,15 @@ class Config:
         # Retry limits and judge endpoint change across attempts; training identity does not.
         return {
             **{key: value for key, value in asdict(self).items() if key != "max_restarts"},
+            "hf_repo": GenerationArgs.hf_repo,
+            "hf_revision": GenerationArgs.hf_revision,
             "agent_protocol": "fcs-submit-v1",
         }
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Preview or launch one synchronous PPO experiment on Modal")
+    parser.add_argument("--terminal-environment", choices=TERMINAL_ENVIRONMENTS, default=Config.terminal_environment)
     parser.add_argument("--mode", choices=MODES, default=MODES[0])
     parser.add_argument("--run-id", default="sync-fs-full-detach-001")
     parser.add_argument("--action", choices=("train", "prepare", "cpu-smoke"), default="train")
@@ -204,12 +232,16 @@ def check_manifest(config, *, wandb_project, wandb_entity):
         original = json.loads(path.read_text())
         actual = dict(original)
         actual.setdefault("nodes", 1)  # Existing single-node manifests predate this field.
+        # Manifests predating this field used five evaluation draws.
+        actual.setdefault("eval_samples_per_prompt", 5)
+        # A manifest without a backend used one Docker sandbox per sample.
+        actual.setdefault("terminal_environment", "docker")
+        if actual["terminal_environment"] == "docker":
+            actual.setdefault("terminal_memory_mb", DOCKER_MEMORY_MB)
         # Old manifests predate these controls. Their recipe values match the
         # defaults; the new resource defaults also apply to them.
         for name in (
-            "terminal_memory_mb",
             "eval_max_tasks",
-            "eval_samples_per_prompt",
             "skip_eval_before_train",
             "num_rollout",
             "num_critic_only_steps",

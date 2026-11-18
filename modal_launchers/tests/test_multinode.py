@@ -1,6 +1,7 @@
 """CPU-only checks for topology, platform allocation and checkpoint barriers."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import replace
 from threading import Lock
 from types import SimpleNamespace
@@ -13,8 +14,9 @@ from modal_launchers.config import Config, check_manifest, parse_args
 
 @pytest.mark.parametrize("nodes", [2, 4])
 @pytest.mark.parametrize("gpu", ["H200", "B200"])
-def test_requested_topology_reaches_miles_and_modal(nodes, gpu, monkeypatch):
-    _, config = parse_args(["--nodes", str(nodes), "--gpu", gpu])
+@pytest.mark.parametrize("environment", ["docker", "shared-judge"])
+def test_requested_topology_reaches_miles_and_modal(nodes, gpu, environment, monkeypatch):
+    _, config = parse_args(["--nodes", str(nodes), "--gpu", gpu, "--terminal-environment", environment])
     command = config.command()
     assert command[command.index("--num-nodes") + 1] == str(nodes)
     assert command[command.index("--num-gpus-per-node") + 1] == "8"
@@ -38,11 +40,26 @@ def test_requested_topology_reaches_miles_and_modal(nodes, gpu, monkeypatch):
     modal = SimpleNamespace(App=App, Volume=SimpleNamespace(from_name=lambda *a, **kw: object()), clustered=clustered)
     monkeypatch.setattr(frontiersmith, "_training_image", lambda *a: object())
     monkeypatch.setattr(frontiersmith, "_secrets", lambda *a: [])
-    frontiersmith._build_training(modal, config)
+    _, _, _, training = frontiersmith._build_training(modal, config)
+    daemon_starts = []
+    from modal_launchers import docker_runtime
+
+    def fake_daemon(path):
+        daemon_starts.append(path)
+        return nullcontext()
+
+    modal.Cluster = SimpleNamespace(from_context=lambda: object())
+    monkeypatch.setattr(docker_runtime, "docker_daemon", fake_daemon)
+    monkeypatch.setattr(multinode, "run_node", lambda *args: None)
+    training("http://judge", "token")
     settings = dict(functions)
     assert settings["training"]["gpu"] == f"{gpu}:8"
     assert settings["training"]["max_containers"] == nodes
     assert settings["training"]["retries"] == 0
+    assert bool(daemon_starts) == (environment == "docker")
+    assert settings["training"].get("experimental_options", {}) == (
+        {"enable_docker": True} if environment == "docker" else {}
+    )
     assert settings["preflight"]["max_containers"] == 1
     assert "gpu" not in settings["preflight"]
     assert clusters == [{"size": nodes, "rdma": True}]

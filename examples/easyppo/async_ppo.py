@@ -15,6 +15,7 @@ from typing import Literal
 
 import agentic_critic
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
+from examples.easyppo.frontiersmith import DEFAULT_SGLANG_SERVER_CONCURRENCY, DOCKER_JUDGE_URL
 from miles.utils.external_utils import command_utils as U
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.workers.types import ClusterBackend
@@ -51,9 +52,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     eval_data: str = ""
     tasks_dir: str = ""
     frontier_source_dir: str = ""
-    frontier_judge_url: str = "http://host.docker.internal:8081"
+    frontier_judge_url: str = ""
     frontier_judge_timeout: int = 3600
-    terminal_environment: Literal["docker", "daytona", "modal"] = "docker"
+    terminal_environment: Literal["docker", "daytona", "modal", "shared-judge"] = "docker"
     terminal_memory_mb: int | None = None
     terminal_docker_compose: list[str] = field(default_factory=list)
     fcs_max_submissions: int = DEFAULT_MAX_SUBMISSIONS
@@ -109,7 +110,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tensor_model_parallel_size: int = 4
     rollout_gpus_per_engine: int = 4
     sglang_mem_fraction_static: float = 0.7
-    sglang_server_concurrency: int = 128
+    sglang_server_concurrency: int = DEFAULT_SGLANG_SERVER_CONCURRENCY
     eval_interval: int = 10
     eval_samples_per_prompt: int = 5
     eval_temperature: float = 1.0
@@ -126,6 +127,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.dataset not in _RECIPES:
             raise ValueError("Choose frontiersmith or tmax")
+        if not self.frontier_judge_url:
+            self.frontier_judge_url = (
+                "http://127.0.0.1:8081" if self.terminal_environment == "shared-judge" else DOCKER_JUDGE_URL
+            )
         recipe = _RECIPES[self.dataset]
         if self.rollout_batch_size == 0:
             self.rollout_batch_size = recipe.batch
@@ -190,7 +195,7 @@ def _validate(args: ScriptArgs) -> None:
     if args.rollout_gpus_per_engine <= 0 or args.rollout_num_gpus % args.rollout_gpus_per_engine:
         raise ValueError("Rollout GPUs must divide into complete inference engines")
     if args.rollout_gpus_per_engine not in (1, 2, 4, 8):
-        raise ValueError("Qwen3.5-27B rollout TP must divide its attention and recurrent heads")
+        raise ValueError(f"{args.model_name} rollout TP must divide its attention and recurrent heads")
     if args.sglang_server_concurrency <= 0:
         raise ValueError("SGLang server concurrency must be positive")
     if args.tensor_model_parallel_size <= 0 or trainer_gpus % args.tensor_model_parallel_size:
@@ -212,6 +217,11 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("Evaluation task limit and subset seed must be nonnegative")
     if args.eval_samples_per_prompt <= 0:
         raise ValueError("Evaluation samples per prompt must be positive")
+    if args.terminal_environment == "shared-judge":
+        if args.dataset != "frontiersmith":
+            raise ValueError("shared-judge requires the FrontierSmith submit-only protocol")
+        if args.terminal_memory_mb is not None or args.terminal_docker_compose:
+            raise ValueError("Docker Compose and sandbox memory options require a sandbox environment")
     if args.terminal_memory_mb is not None and args.terminal_memory_mb <= 0:
         raise ValueError("Terminal sandbox memory must be positive")
     if args.fcs_max_submissions < 1 or args.fcs_max_turns < 1:
@@ -432,8 +442,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
             if args.dataset == "frontiersmith"
             else []
         ),
-        "--chat-template-path",
-        args.chat_template_path,
+        *(["--chat-template-path", args.chat_template_path] if args.chat_template_path else []),
         "--terminal-enable-thinking",
         *(["--terminal-continue-on-length"] if args.continue_on_length else []),
         "--terminal-tasks-dir",
@@ -442,6 +451,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         args.trial_root,
         "--terminal-environment",
         args.terminal_environment,
+        *(["--fcs-judge-url", args.frontier_judge_url] if args.terminal_environment == "shared-judge" else []),
         *(["--terminal-memory-mb", str(args.terminal_memory_mb)] if args.terminal_memory_mb is not None else []),
         *[value for path in args.terminal_docker_compose for value in ("--terminal-docker-compose", path)],
         "--terminal-compaction",

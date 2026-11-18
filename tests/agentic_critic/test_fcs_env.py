@@ -1,7 +1,6 @@
-from dataclasses import dataclass, field
-
 from agentic_critic.critic_input import build_full, build_shared, value_mask
 from agentic_critic.fcs_env import COMPACT_PROMPT, TASK_PROMPT, TurnFormat, extract_code, run_episode
+from agentic_critic.fcs_judge import JudgeResult, judge_feedback
 
 EOS = "<|im_end|>"
 
@@ -9,28 +8,19 @@ EOS = "<|im_end|>"
 class CharTokenizer:
     """One token per character; enough to exercise the append-only bookkeeping."""
 
-    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+    def apply_chat_template(
+        self, messages, tokenize=False, add_generation_prompt=True, enable_thinking=True, reasoning_effort="medium"
+    ):
+        assert reasoning_effort == "medium"
         assert not tokenize and add_generation_prompt and len(messages) == 1
-        return f"<|im_start|>user\n{messages[0]['content']}{EOS}\n<|im_start|>assistant\n<think>\n"
+        opening = "<think>\n" if enable_thinking else "<think>\n\n</think>\n\n"
+        return f"<|im_start|>user\n{messages[0]['content']}{EOS}\n<|im_start|>assistant\n{opening}"
 
     def encode(self, text, add_special_tokens=False):
         return [ord(c) for c in text]
 
     def decode(self, ids):
         return "".join(chr(i) for i in ids)
-
-
-@dataclass
-class FakeCase:
-    status: str
-
-
-@dataclass
-class FakeResult:
-    score: float
-    status: str = "done"
-    compile_msg: str = ""
-    cases: list = field(default_factory=list)
 
 
 def code_reply(tag: str) -> str:
@@ -50,7 +40,7 @@ def run(replies, scores, finished=None, **kw):
         statement="S",
         fmt=fmt,
         generate=generate,
-        judge=lambda code: FakeResult(next(score_it), cases=[FakeCase("Accepted"), FakeCase("Wrong Answer")]),
+        judge=lambda code: JudgeResult(next(score_it), "done", case_statuses=["Accepted", "Wrong Answer"]),
         **kw,
     )
     return ep, prompts, fmt
@@ -66,11 +56,14 @@ def test_extract_code_ignores_the_thinking_block():
     assert extract_code("no code here") is None
 
 
-def test_first_turn_is_the_single_turn_training_prompt():
+def test_first_turn_describes_judge_and_configured_submission_limit():
     ep, prompts, fmt = run([code_reply("a")], [30.0], max_submissions=1)
     expected = fmt.tokenizer.apply_chat_template(
-        [{"role": "user", "content": TASK_PROMPT.format(statement="S")}], tokenize=False, add_generation_prompt=True
+        [{"role": "user", "content": TASK_PROMPT.format(statement="S", max_submissions=1)}],
+        tokenize=False,
+        add_generation_prompt=True,
     )
+    assert "up to 1 C++" in expected and "-std=gnu++17" in expected
     assert prompts[0] == expected
 
 
@@ -99,10 +92,14 @@ def test_context_is_append_only_and_every_prompt_is_the_log_so_far():
 
 
 def test_truncated_completion_gets_an_end_of_turn_mark_that_is_not_an_actor_token():
-    ep, _, fmt = run(["cut off mid", code_reply("a")], [10.0], finished=[False, True], max_submissions=1)
+    ep, prompts, fmt = run(
+        ["draft\n```cpp\nint main() {}\n```", code_reply("a")], [10.0], finished=[False, True], max_submissions=1
+    )
+    assert ep.scores == [10.0]
+    assert "output token limit" in prompts[1] and "No solution was submitted" in prompts[1]
     assert ep.truncated_turns == 1
     kinds = [e.kind for e in ep.events]
-    assert kinds[:4] == ["task", "action", "truncation_mark", "no_code"]
+    assert kinds[:4] == ["task", "action", "truncation_mark", "truncated_no_submission"]
     mark = ep.events[2]
     assert not mark.actor and fmt.decode(mark.tokens) == EOS
 
@@ -116,11 +113,16 @@ def test_compaction_starts_a_new_segment_from_task_and_summary():
 
     # The summary is written with the whole segment in view, and the request carries the judge result.
     assert "// a" in prompts[1] and COMPACT_PROMPT in prompts[1] and "score=10.00/100" in prompts[1]
+    assert prompts[1].endswith("<think>\n\n</think>\n\n") and prompts[2].endswith("<think>\n")
     # After compaction the actor sees the task and the summary, not the old attempt or its thinking.
     assert "SUMMARY-1" in prompts[2] and "// a" not in prompts[2] and "thinking" not in prompts[2]
     assert prompts[2].startswith("<|im_start|>user\nYou are a competitive programmer.")
     # ... and the environment does not hand the score or the remaining budget back to it.
-    assert "10.00" not in prompts[2] and "submission(s) left" not in prompts[2] and "best score" not in prompts[2].lower()
+    assert (
+        "10.00" not in prompts[2]
+        and "submission(s) left" not in prompts[2]
+        and "Best score so far: 10.00" not in prompts[2]
+    )
     # The full log still has everything, in time order.
     assert [e.segment for e in ep.events] == sorted(e.segment for e in ep.events)
     assert "".join(fmt.decode(e.tokens) for e in ep.events if e.actor) == "".join(replies)
@@ -201,12 +203,12 @@ def test_keep_last_turns_starts_a_new_segment_from_the_task_and_the_last_round_v
 
 def test_keep_last_turns_keeps_several_rounds_and_a_cut_reply_keeps_its_end_mark():
     replies = [code_reply("a"), code_reply("b").replace(EOS, ""), code_reply("c")]
-    ep, prompts, fmt = run(replies, [10.0, 20.0, 30.0], finished=[True, False, True], max_submissions=3,
+    ep, prompts, fmt = run(replies, [10.0, 20.0, 30.0], finished=[True, False, True], max_submissions=2,
                            compact_threshold_tokens=1, compaction="keep_last_turns", keep_turns=2)  # fmt: skip
     assert "// a" in prompts[2] and "// b" in prompts[2]
     assert replies[1] + EOS in prompts[2]
     # with enough rounds kept, the actor sees what it would see without compaction
-    no_compaction, plain, _ = run(replies, [10.0, 20.0, 30.0], finished=[True, False, True], max_submissions=3)
+    no_compaction, plain, _ = run(replies, [10.0, 20.0, 30.0], finished=[True, False, True], max_submissions=2)
     assert prompts == plain and no_compaction.n_compactions == 0
 
 
@@ -220,3 +222,12 @@ def test_keep_last_turns_segments_feed_the_critic_input_code():
     assert full.tokens == [t for e in ep.events for t in e.tokens]
     assert fmt.decode([t for t, m in zip(full.tokens, value_mask(full, segments)) if m]) == "".join(replies)
     assert [ci.tokens for ci in build_shared(segments)] == [seg.tokens for seg in segments]
+
+
+def test_judge_feedback_preserves_official_case_status_and_supports_score_only_cases():
+    result = judge_feedback({
+        "status": "done",
+        "score": 25,
+        "cases": [{"status": "Time Limit Exceeded", "scoreRatio": 0}, {"scoreRatio": 1}],
+    })
+    assert result.case_statuses == ["Time Limit Exceeded", "Accepted"]

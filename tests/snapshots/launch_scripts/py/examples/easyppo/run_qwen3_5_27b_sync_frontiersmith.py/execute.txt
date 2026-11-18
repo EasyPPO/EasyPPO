@@ -45,8 +45,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --vocab-size 248320
   --rotary-base 10000000
   --attention-output-gate
-  --hf-checkpoint /root/models/Qwen3.5-27B
-  --ref-load /root/models/Qwen3.5-27B_torch_dist
+  --hf-checkpoint /root/models/Qwen3.8-27B
+  --ref-load /root/models/Qwen3.8-27B_torch_dist
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
   --critic-save /root/shared_data/260101-000000-000/checkpoints_critic
@@ -74,7 +74,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-interval 10
   --no-eval-on-epoch
   --no-save-on-epoch
-  --n-samples-per-eval-prompt 5
+  --n-samples-per-eval-prompt 3
   --eval-temperature 1.0
   --eval-top-p 1.0
   --eval-top-k -1
@@ -82,18 +82,18 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --terminal-agent-protocol fcs-submit
   --fcs-max-submissions 6
   --fcs-max-turns 16
-  --chat-template-path <REPO_ROOT>/agentic_critic/qwen3_5_interleaved.jinja
   --terminal-enable-thinking
   --terminal-continue-on-length
   --terminal-tasks-dir /root/datasets/harbor
   --terminal-trials-dir /root/shared_data/260101-000000-000/trials
-  --terminal-environment docker
+  --terminal-environment shared-judge
+  --fcs-judge-url http://127.0.0.1:8081
   --terminal-compaction summary
   --terminal-compact-threshold 12000
   --terminal-max-context-tokens 131072
   --terminal-max-new-tokens 24576
   --terminal-max-total-tokens 120000
-  --terminal-summary-tokens 3072
+  --terminal-summary-tokens 4096
   --terminal-max-steps 300
   --terminal-command-timeout 120
   --terminal-max-output-chars 16000
@@ -135,8 +135,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --num-gpus-per-node 8
   --colocate
   --offload-rollout
-  --rollout-num-gpus-per-engine 4
-  --sglang-mem-fraction-static 0.7
+  --rollout-num-gpus-per-engine 1
+  --sglang-mem-fraction-static 0.85
   --sglang-server-concurrency 128
   --tensor-model-parallel-size 4
   --sequence-parallel

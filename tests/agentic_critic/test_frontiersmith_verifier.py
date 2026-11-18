@@ -25,7 +25,7 @@ def test_verifier_writes_numeric_reward_and_separate_diagnostics(monkeypatch, tm
     solution = tmp_path / "solution.cpp"
     solution.write_text("int main() {}")
     result = {"status": "done", "score": 42.5, "cases": [{"scoreRatio": 0.425}], "scoreUnbounded": 50}
-    monkeypatch.setattr(verifier, "_judge", lambda *args, **kwargs: result)
+    monkeypatch.setattr(verifier, "submit_solution", lambda *args, **kwargs: result)
     verifier._verify(
         solution=solution, logs=tmp_path, judge_url="http://judge/", problem_id="frontiersmith_0", timeout=30
     )
@@ -46,7 +46,7 @@ def test_infrastructure_failures_leave_no_zero_or_stale_reward(monkeypatch, tmp_
     def fail(*args, **kwargs):
         raise failure
 
-    monkeypatch.setattr(verifier, "_judge", fail)
+    monkeypatch.setattr(verifier, "submit_solution", fail)
     with pytest.raises(type(failure)):
         verifier._verify(
             solution=solution, logs=tmp_path, judge_url="http://judge", problem_id="frontiersmith_0", timeout=30
@@ -55,7 +55,7 @@ def test_infrastructure_failures_leave_no_zero_or_stale_reward(monkeypatch, tmp_
 
 
 def test_missing_solution_is_task_failure_without_contacting_judge(monkeypatch, tmp_path):
-    monkeypatch.setattr(verifier, "_judge", lambda *args, **kwargs: pytest.fail("should not submit missing solution"))
+    monkeypatch.setattr(verifier, "submit_solution", lambda *args, **kwargs: pytest.fail("should not submit missing solution"))
     verifier._verify(
         solution=tmp_path / "missing.cpp",
         logs=tmp_path,
@@ -68,17 +68,17 @@ def test_missing_solution_is_task_failure_without_contacting_judge(monkeypatch, 
 
 def test_judge_uses_upstream_json_contract_and_polls_until_done(monkeypatch):
     calls = []
-    results = iter([{"sid": "123"}, {"status": "queued"}, {"status": "done", "score": 55}])
+    results = iter([{"ok": True}, {"sid": "123"}, {"status": "queued"}, {"status": "done", "score": 55}])
 
     def request(url, payload=None):
         calls.append((url, payload))
         return next(results)
 
-    monkeypatch.setattr(verifier, "_wait_ready", lambda url: None)
     monkeypatch.setattr(verifier, "_request", request)
     monkeypatch.setattr(verifier.time, "sleep", lambda seconds: None)
-    assert verifier._judge("http://judge", "frontiersmith_3", "code", timeout=30)["score"] == 55
+    assert verifier.submit_solution("http://judge", "frontiersmith_3", "code", timeout=30)["score"] == 55
     assert calls == [
+        ("http://judge/health", None),
         ("http://judge/submit", {"pid": "frontiersmith_3", "lang": "cpp", "code": "code"}),
         ("http://judge/result/123", None),
         ("http://judge/result/123", None),
@@ -91,7 +91,7 @@ def test_judge_timeout_is_an_error(monkeypatch):
     timestamps = iter([0, 31])
     monkeypatch.setattr(verifier.time, "monotonic", lambda: next(timestamps))
     with pytest.raises(TimeoutError, match="timed out"):
-        verifier._judge("http://judge", "frontiersmith_3", "code", timeout=30)
+        verifier.submit_solution("http://judge", "frontiersmith_3", "code", timeout=30)
 
 
 def test_modal_judge_token_is_attached_to_requests(monkeypatch):
@@ -107,3 +107,9 @@ def test_modal_judge_token_is_attached_to_requests(monkeypatch):
     monkeypatch.setattr(verifier.urllib.request, "urlopen", urlopen)
     assert verifier._request("https://judge/problems") == {"ok": True}
     assert requests[0].get_header("Authorization") == "Bearer test-token"
+
+
+def test_empty_program_is_a_compile_error_without_an_http_request(monkeypatch):
+    monkeypatch.setattr(verifier, "_request", lambda *args: pytest.fail("unexpected judge request"))
+    result = verifier.submit_solution("http://judge", "1", "  ", timeout=30)
+    assert result == {"status": "error", "error": "Error: compile failed: empty program"}

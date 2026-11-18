@@ -2,6 +2,8 @@ import asyncio
 import copy
 import logging
 import uuid
+from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any
 
 from tqdm import tqdm
@@ -31,15 +33,32 @@ async def run_eval_datasets(
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
-    coros = []
-    for dataset_cfg in args.eval_datasets:
-        coros.append(
-            eval_rollout_single_dataset(
-                state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace
-            )
-        )
-    results_list = await asyncio.gather(*coros)
-    return {k: v for r in results_list for k, v in r.items()}
+    return await collect_eval_datasets(
+        eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace)
+        for dataset_cfg in args.eval_datasets
+    )
+
+
+@asynccontextmanager
+async def _eval_tasks():
+    tasks = []
+    try:
+        yield tasks
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+async def collect_eval_datasets(coros):
+    async with _eval_tasks() as tasks:
+        for coro in coros:
+            tasks.append(asyncio.create_task(coro))
+        # Observe failures in completion order and merge results in configuration order.
+        for completed in asyncio.as_completed(tasks):
+            await completed
+        return {key: value for task in tasks for key, value in task.result().items()}
 
 
 async def eval_rollout_single_dataset(
@@ -71,8 +90,16 @@ async def eval_rollout_single_dataset(
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         )
-    dataset = prompt_dataset_cache[cache_key]
+    return await run_eval_samples(
+        args,
+        dataset_cfg,
+        prompt_dataset_cache[cache_key],
+        partial(generate_and_rm, state),
+        kv_cache_namespace=kv_cache_namespace,
+    )
 
+
+async def run_eval_samples(args, dataset_cfg, dataset, generate_sample, *, kv_cache_namespace=None):
     base_sampling_params = compute_sampling_params(
         args,
         temperature=dataset_cfg.temperature,
@@ -81,55 +108,53 @@ async def eval_rollout_single_dataset(
         max_new_tokens=dataset_cfg.max_response_len,
     )
 
-    tasks = []
-    # do multiple samples for eval prompts
-    sample_index = 0
-    for _i, prompt_sample in enumerate(dataset_cfg.select_samples(dataset.samples)):
-        for j in range(dataset_cfg.n_samples_per_eval_prompt):
-            # use the same prompt for multiple samples
-            sample = copy.deepcopy(prompt_sample)
-            sample.index = sample_index
-            sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
-            stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
-            if policy_uses_routing_key(args):
-                sample.routing_key = str(uuid.uuid4())
-            sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
-                sampling_params = base_sampling_params.copy()
-                sampling_params["sampling_seed"] = args.rollout_seed + j
-            tasks.append(
-                asyncio.create_task(
-                    generate_and_rm(
-                        state,
-                        sample,
-                        sampling_params=sampling_params,
-                        evaluation=True,
+    async with _eval_tasks() as tasks:
+        # do multiple samples for eval prompts
+        sample_index = 0
+        for prompt_sample in dataset_cfg.select_samples(dataset.samples):
+            for j in range(dataset_cfg.n_samples_per_eval_prompt):
+                # use the same prompt for multiple samples
+                sample = copy.deepcopy(prompt_sample)
+                sample.index = sample_index
+                sample_index += 1
+                sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+                sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
+                stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
+                if policy_uses_routing_key(args):
+                    sample.routing_key = str(uuid.uuid4())
+                sampling_params = base_sampling_params
+                if getattr(args, "sglang_enable_deterministic_inference", False):
+                    sampling_params = base_sampling_params.copy()
+                    sampling_params["sampling_seed"] = args.rollout_seed + j
+                tasks.append(
+                    asyncio.create_task(
+                        generate_sample(
+                            sample,
+                            sampling_params=sampling_params,
+                            evaluation=True,
+                        )
                     )
                 )
-            )
 
-    data = []
-    do_print = True
-    pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
-    async for sample in as_completed_async(tasks):
-        if do_print:
-            # TODO improve this after enhancing samples' type
-            s = (sample[0] if len(sample) > 0 else None) if isinstance(sample, list) else sample
-            if s is not None:
-                logger.info(
-                    "eval_rollout_single_dataset example data: "
-                    f"{[str(s.prompt) + s.response]} "
-                    f"reward={s.reward}"
-                )
-            do_print = False
-        if isinstance(sample, list):
-            data.extend(sample)
-        else:
-            data.append(sample)
-        pbar.update(1)
-    pbar.close()
+        data = []
+        do_print = True
+        with tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}") as pbar:
+            async for sample in as_completed_async(tasks):
+                if do_print:
+                    # TODO improve this after enhancing samples' type
+                    s = (sample[0] if len(sample) > 0 else None) if isinstance(sample, list) else sample
+                    if s is not None:
+                        logger.info(
+                            "eval_rollout_single_dataset example data: "
+                            f"{[str(s.prompt) + s.response]} "
+                            f"reward={s.reward}"
+                        )
+                    do_print = False
+                if isinstance(sample, list):
+                    data.extend(sample)
+                else:
+                    data.append(sample)
+                pbar.update(1)
 
     data.sort(key=lambda sample: sample.index)
 

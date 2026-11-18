@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("miles.utils.types")
 
 from agentic_critic import miles_fcs  # noqa: E402
-from tests.agentic_critic.test_fcs_env import EOS, CharTokenizer, FakeCase, FakeResult, code_reply  # noqa: E402
+from tests.agentic_critic.test_fcs_env import EOS, CharTokenizer, code_reply  # noqa: E402
 
 
 def test_generate_returns_valid_miles_samples(monkeypatch):
@@ -26,7 +26,7 @@ def test_generate_returns_valid_miles_samples(monkeypatch):
         return {"text": text, "meta_info": {"output_token_logprobs": [(-0.25, ord(c), None) for c in text], "finish_reason": {"type": "stop"}}}
 
     monkeypatch.setattr(miles_fcs, "_post", fake_post)
-    monkeypatch.setattr(miles_fcs.fcs_judge_http, "judge", lambda url, pid, code: FakeResult(next(scores), cases=[FakeCase("Accepted")]))
+    monkeypatch.setattr(miles_fcs, "submit_solution", lambda *a, **kw: {"status": "done", "score": next(scores)})
     args = SimpleNamespace(
         partial_rollout=False, sglang_router_ip="127.0.0.1", sglang_router_port=1, sglang_router_policy="round_robin",
         rollout_max_response_len=4096, rollout_max_context_len=None, use_rollout_routing_replay=False,

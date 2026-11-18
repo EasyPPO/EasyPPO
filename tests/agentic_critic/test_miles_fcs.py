@@ -1,6 +1,7 @@
 from agentic_critic.fcs_env import ContextFull, TurnFormat, run_episode
+from agentic_critic.fcs_judge import JudgeResult
 from agentic_critic.miles_fcs import episode_samples
-from tests.agentic_critic.test_fcs_env import EOS, CharTokenizer, FakeCase, FakeResult, code_reply
+from tests.agentic_critic.test_fcs_env import EOS, CharTokenizer, code_reply
 
 
 def run(replies, scores, full_after=None, **kw):
@@ -14,7 +15,7 @@ def run(replies, scores, full_after=None, **kw):
         logprobs.append([-0.5 - 0.01 * len(logprobs)] * len(ids))
         return ids, True
 
-    ep = run_episode(statement="S", fmt=fmt, generate=generate, judge=lambda code: FakeResult(next(score_it), cases=[FakeCase("Accepted")]), **kw)
+    ep = run_episode(statement="S", fmt=fmt, generate=generate, judge=lambda code: JudgeResult(next(score_it), "done", case_statuses=["Accepted"]), **kw)
     return ep, logprobs, fmt
 
 

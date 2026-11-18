@@ -9,7 +9,7 @@
   <a href="https://arxiv.org/abs/2609.36802">EasyPPO paper</a>
 </p>
 
-This branch trains **Qwen3.5-27B** on terminal tasks with an independent memory
+This branch trains **Qwen3.8-27B** on FrontierSmith and **Qwen3.5-27B** on TMAX with an independent memory
 critic. It includes one-step asynchronous Score Centering/TIS training and
 synchronous clipped PPO. Each recipe supports `full_detach` and `actor-summary`
 critic contexts.
@@ -61,9 +61,9 @@ needed for the separate KV compression experiments.
 Set `MODEL_DIR`, `DATA_DIR`, and `RUN_DIR` to the site's model, prepared-data,
 and output locations. Provide the code and assets to the workers through the
 platform's storage or distribution mechanism; no particular filesystem,
-mount point, or deployment user is required. Task bind-mount source paths
-must be accessible to the Docker daemon that runs Harbor tasks. Configure
-that daemon access and offload CPU/RAM capacity through the platform.
+mount point, or deployment user is required. Provision CPU/RAM capacity for offload.
+Recipes using Harbor Docker also need Docker access and task bind-mount source
+paths on the daemon host.
 Use `--megatron-path` if Megatron lives outside the launcher's default location.
 
 ## 2. Cluster integration
@@ -106,10 +106,9 @@ python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-Preparation downloads `Qwen/Qwen3.5-27B` at revision
-`fc05daec18b0a78c049392ed2e771dde82bdf654` and converts its Megatron checkpoint.
-The HF model is stored in `$MODEL_DIR/Qwen3.5-27B`; the converted model is
-`$MODEL_DIR/Qwen3.5-27B_torch_dist`. Preparation requires the GPU environment
+Preparation downloads the pinned Hugging Face model to `$MODEL_DIR/<model>` and
+converts it to `$MODEL_DIR/<model>_torch_dist`. See the [model revisions](examples/easyppo/RECIPES.md#model-and-data).
+Preparation requires the GPU environment
 for model conversion. It does not start task containers.
 
 | Dataset | Prepared training input | Full evaluation input |
@@ -121,7 +120,7 @@ The Frontier judge and both problem corpora are bundled under
 [`Frontier-CS/`](Frontier-CS/README.md). Data preparation uses these local files;
 it does not clone additional repositories. All 200 Smith and 180 FCS problems are used.
 The ten published cross-corpus aliases are retained and recorded in the manifest.
-Keep `$DATA_DIR/harbor` available at the same path on every task Docker host.
+Make `$DATA_DIR/harbor` available at the same path on every rollout worker and task Docker host.
 See [ASYNC_DATA.md](examples/easyppo/ASYNC_DATA.md) for source versions and manifests.
 
 ## 4. Run the task environments and judges
@@ -144,26 +143,28 @@ It does not need Miles, CUDA, Ray, model weights or the training cluster's share
 filesystem. Compose mounts one merged `problems/` directory, plus local `data/`
 and `submissions/` directories. The checkout can live at any path.
 
-All FrontierSmith and Frontier-CS trials share this service. Set
-`--frontier-judge-url` during preparation to a URL reachable from every task
-container, using the service DNS name or reachable address. `FRONTIERCS_JUDGE_BIND_IP` controls
+All FrontierSmith and Frontier-CS trials share this service. Set `JUDGE_URL`
+to its DNS name or address reachable from all rollout workers and, when
+using Harbor Docker, from the task containers. `FRONTIERCS_JUDGE_BIND_IP` controls
 which local interface the judge listens on; it is not the client's target URL.
 The upstream API has no authentication; expose port 8081 on a trusted network.
 
 The merged bank contains 200 Smith and 180 FCS problems; the training and evaluation
 JSONL files include all 200 and 180 respectively. Each corpus retains its pinned checkers
 and test data. Checker/interactor scores are scaled from `[0,100]` to `[0,1]`.
-Harbor starts only each trial's `main` sandbox. Its verifier submits
-`/app/solution.cpp` to the shared judge, then writes `reward.json` and
-`judge-result.json`. Trial teardown does not stop the judge.
+The Frontier agent submits each C++ solution to the shared judge and records the
+best score across submissions as the episode reward. The synchronous FrontierSmith recipe and its Modal launcher
+default to `--terminal-environment shared-judge`. Rollout workers send C++
+directly to the judge. Pass `--frontier-judge-url "$JUDGE_URL"` when launching
+standalone training. On a single host, the default is `http://127.0.0.1:8081`.
+Modal supplies its own judge endpoint.
 
-`--frontier-judge-timeout` defaults to 3600 seconds including queue wait; the
-Harbor verifier deadline adds 90 seconds. Rerun preparation when changing the
-judge URL or timeout. The single-host URL default is
-`http://host.docker.internal:8081`; use the actual remote judge URL for a
-separate machine. The rollout executor uses its local Docker daemon. For a
-conservative initial concurrency, use `--sglang-server-concurrency 1` (eight
-concurrent trials with the default sync allocation).
+The asynchronous FrontierSmith recipe defaults to Harbor Docker. Select
+`--terminal-environment docker` to use it in the synchronous recipe. Its
+containers read the judge URL from the prepared task, with single-host default
+`http://host.docker.internal:8081`. Repeat preparation when the Docker endpoint
+changes. Both transports read the queue-inclusive `--frontier-judge-timeout`
+from the prepared tasks (default 3600 seconds).
 
 From the judge's `Frontier-CS/algorithmic` directory, use `docker compose logs -f`
 to view logs and `docker compose down` to stop the service. Results remain in
@@ -202,7 +203,7 @@ done
 for MEMORY_MODE in full_detach actor-summary; do
   python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
     --action train --critic-context-mode "$MEMORY_MODE" \
-    --run-id "sync-fs-$MEMORY_MODE" \
+    --frontier-judge-url "$JUDGE_URL" --run-id "sync-fs-$MEMORY_MODE" \
     --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 
   python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \
@@ -242,20 +243,20 @@ the launcher's W&B configuration.
 
 Training performs initial validation, then validation and checkpointing every
 ten rounds, including the final round. By default, `--eval-max-tasks 0` selects
-the **full validation set** and `--eval-samples-per-prompt 5` runs five independent
+the **full validation set** and each launcher samples independent
 episodes per task at temperature/top-p/top-k `1/1/-1`.
 
 | Dataset | Trials per validation point | Trials over 21 points in a fresh 200-round run |
 |---|---:|---:|
-| Frontier-CS | 180 × 5 = **900** | **18,900** |
+| Frontier-CS, synchronous | 180 × 3 = **540** | **11,340** |
+| Frontier-CS, asynchronous | 180 × 5 = **900** | **18,900** |
 | Terminal-Bench 2.1 | 89 × 5 = **445** | **9,345** |
 
 Full-set results use `fcs` or `tb21`. For an explicit quick subset, add
 `--eval-max-tasks 16`; selection and order are fixed with seed 42, and result
 names become `fcs_quick` or `tb21_quick`. Use `--eval-samples-per-prompt 1` when
 one trial per task is sufficient, including smoke runs. Evaluation reward
-summaries average numeric returned episodes; five trials per task do not
-change training's 16-sample prompt groups.
+summaries average numeric returned episodes; training uses 16-sample prompt groups.
 
 Outputs for a run are organized as:
 

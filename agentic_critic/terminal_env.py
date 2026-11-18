@@ -7,8 +7,10 @@ The decoder returns the actual sampled token IDs and log probabilities.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from jinja2 import StrictUndefined, Template
@@ -272,6 +274,28 @@ class TerminalTrace:
                 sample.update(rollout_topk_token_ids=ids, rollout_topk_log_probs=logps)
         return samples
 
+    def write_trajectory(self, messages: list[dict], logs_dir: Path) -> None:
+        # Avoid asdict() deep-copying potentially large top-k arrays. Persist them
+        # losslessly in a compact sidecar and keep only field references in JSON.
+        payload = asdict(replace(self, topk_token_ids=None, topk_log_probs=None))
+        payload.pop("topk_token_ids")
+        payload.pop("topk_log_probs")
+        if self.topk_token_ids is not None:
+            # NumPy is only needed when the optional candidate feature is active.
+            import numpy as np
+
+            archive, segments = {}, []
+            for i, (ids, logps) in enumerate(zip(self.topk_token_ids, self.topk_log_probs, strict=True)):
+                ids_key, logps_key = f"segment_{i}_token_ids", f"segment_{i}_log_probs"
+                archive[ids_key], archive[logps_key] = ids, logps
+                segments.append({"token_ids": ids_key, "log_probs": logps_key, "shape": list(ids.shape)})
+            path = logs_dir / "easyppo-topk.npz"
+            np.savez_compressed(path, **archive)
+            payload["topk_candidates"] = {"path": path.name, "segments": segments}
+        (logs_dir / "easyppo-trajectory.json").write_text(
+            json.dumps({"trace": payload, "messages": messages}, ensure_ascii=False)
+        )
+
     def segment_metadata(self, index: int) -> dict:
         calls = [call for call in self.calls if call["segment"] == index]
         summaries = [call["token_span"] for call in calls if call["kind"] == "summary"]
@@ -314,7 +338,10 @@ class TerminalAgent(DefaultAgent):
         self._eos_token_ids = frozenset([eos] if isinstance(eos, int) else eos or ())
         self._completed_prefix: _CompletedPrefix | None = None
 
-    def _encode(self, messages: list[dict], *, add_generation_prompt: bool = True) -> list[int]:
+    def _template_options(self, kind: str) -> dict:
+        return {"enable_thinking": self.options.enable_thinking}
+
+    def _encode(self, messages: list[dict], *, add_generation_prompt: bool = True, kind: str = "action") -> list[int]:
         clean = [{"role": m["role"], "content": m["content"]} for m in messages]
         return list(
             self.tokenizer.apply_chat_template(
@@ -322,12 +349,12 @@ class TerminalAgent(DefaultAgent):
                 tokenize=True,
                 add_generation_prompt=add_generation_prompt,
                 return_dict=False,
-                enable_thinking=self.options.enable_thinking,
+                **self._template_options(kind),
             )
         )
 
-    def _prompt(self, messages: list[dict]) -> list[int]:
-        canonical = self._encode(messages)
+    def _prompt(self, messages: list[dict], *, kind: str = "action") -> list[int]:
+        canonical = self._encode(messages, kind=kind)
         previous = self._completed_prefix
         if previous is not None and canonical[: len(previous.canonical)] == previous.canonical:
             # Preserve the IDs actually sampled, including noncanonical BPE
@@ -336,13 +363,13 @@ class TerminalAgent(DefaultAgent):
             return previous.sampled + canonical[len(previous.canonical) :]
         return canonical
 
-    def _remember_completion(self, messages: list[dict], prompt: list[int], result: Completion):
+    def _remember_completion(self, messages: list[dict], prompt: list[int], result: Completion, *, kind: str):
         self._completed_prefix = None
         needs_end = result.tokens[-1] not in self._eos_token_ids
         if needs_end and result.finish_reason != "length":
             return  # No proven completed-message boundary: do not guess one.
         completed = self._encode(
-            messages + [{"role": "assistant", "content": result.text}], add_generation_prompt=False
+            messages + [{"role": "assistant", "content": result.text}], add_generation_prompt=False, kind=kind
         )
         end = next((i for i in range(len(completed) - 1, -1, -1) if completed[i] in self._eos_token_ids), None)
         if end is None or self.tokenizer.decode(completed[end + 1 :]).strip():
@@ -362,7 +389,7 @@ class TerminalAgent(DefaultAgent):
         return Template(template, undefined=StrictUndefined).render(**kwargs)
 
     async def _complete(self, messages: list[dict], *, limit: int, kind: str) -> Completion:
-        prompt = self._prompt(messages)
+        prompt = self._prompt(messages, kind=kind)
         limit = min(
             limit,
             self.options.max_context_tokens - len(prompt),
@@ -380,7 +407,7 @@ class TerminalAgent(DefaultAgent):
             self.trace.truncated_turns += 1
             if not self.options.continue_on_length:
                 raise EpisodeLimit("GenerationLimit")
-        self._remember_completion(messages, prompt, result)
+        self._remember_completion(messages, prompt, result, kind=kind)
         return result
 
     async def _compact(self):
@@ -389,7 +416,7 @@ class TerminalAgent(DefaultAgent):
         current_size = len(self._prompt(self.messages))
         # Trigger early enough for another full action or the summary request.
         request = self._summary_request()
-        summary_overhead = len(self._prompt(request)) - current_size
+        summary_overhead = len(self._prompt(request, kind="summary")) - current_size
         reserve = max(self.options.max_new_tokens, self.options.summary_tokens + summary_overhead)
         if not self._should_compact(current_size, reserve):
             return

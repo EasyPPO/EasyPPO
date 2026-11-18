@@ -451,7 +451,7 @@ def test_harbor_persists_candidates_losslessly_in_npz_only(tmp_path, enabled):
         reply = miles_terminal._completion_from_output(_metadata(reply), candidate_count=3)
     trace = TerminalTrace()
     trace.record([1], reply, kind="summary")
-    harbor_terminal._write_trajectory(trace, [{"role": "assistant", "content": "x"}], tmp_path)
+    trace.write_trajectory([{"role": "assistant", "content": "x"}], tmp_path)
     raw = (tmp_path / "easyppo-trajectory.json").read_text()
     payload = json.loads(raw)["trace"]
     assert "topk_token_ids" not in payload and "topk_log_probs" not in payload

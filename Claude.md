@@ -1,4 +1,4 @@
-# Qwen3.5-27B Synchronous PPO on FrontierSmith
+# Qwen3.8-27B Synchronous PPO on FrontierSmith
 
 The main objective is to test whether, in synchronous agentic PPO, giving the
 critic access to the full episode history improves value estimation compared
@@ -40,8 +40,8 @@ Set `--num-nodes` and `--num-gpus-per-node` to match the cluster allocation.
 Rollout, critic training, and actor training alternate on all allocated GPUs
 with offload enabled. Provision host memory for offload.
 
-Training and rollout default to TP4. With `N` total GPUs, this gives training
-DP `N / 4` and `N / 4` rollout engines. Adjust `--tensor-model-parallel-size`
+Training uses TP4 and rollout uses one GPU per engine by default. With `N`
+total GPUs, this gives training DP `N / 4` and `N` rollout engines. Adjust `--tensor-model-parallel-size`
 and `--rollout-gpus-per-engine` for the hardware, keeping the GPU count divisible
 by each parallel group size and the training batches divisible by training DP.
 
@@ -54,16 +54,16 @@ Set these variables for the commands below:
 | `MODEL_DIR` | Model and converted checkpoint directory |
 | `DATA_DIR` | Prepared Harbor tasks and datasets |
 | `RUN_DIR` | Training outputs |
-| `JUDGE_URL` | Judge service URL reachable from Harbor task containers |
+| `JUDGE_URL` | Judge service URL reachable from all rollout workers |
 
 Make the code and assets available to their execution processes through the
-platform's storage or distribution mechanism. Give Harbor access to Docker;
-task bind-mount source paths must exist on the corresponding daemon host.
+platform's storage or distribution mechanism. Each rollout worker needs the
+prepared tasks and HTTP access to the shared judge.
 Set `--megatron-path` when using a custom Megatron installation path.
 
 ## 2. Judge deployment
 
-Use one shared judge service for all Harbor trials. The bundled
+Use one shared judge service for all training and evaluation episodes. The bundled
 `Frontier-CS/algorithmic/` contains the judge and both corpora: **200 FrontierSmith
 training tasks and 180 FCS evaluation tasks**. The manifest records ten known
 cross-corpus overlaps retained in these sets.
@@ -97,11 +97,11 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-This prepares the pinned `Qwen/Qwen3.5-27B` model, Harbor tasks, and JSONL datasets,
+This prepares the pinned `Qwen/Qwen3.8-27B` model, Harbor tasks, and JSONL datasets,
 then converts the Megatron checkpoint. Reuse compatible existing artifacts:
-`$MODEL_DIR/Qwen3.5-27B` and `$MODEL_DIR/Qwen3.5-27B_torch_dist`.
-Checkpoint conversion requires GPUs. Regenerate task data after changing the
-judge URL or `--frontier-judge-timeout`, which are embedded in the task configuration.
+`$MODEL_DIR/Qwen3.8-27B` and `$MODEL_DIR/Qwen3.8-27B_torch_dist`.
+Checkpoint conversion requires GPUs. Regenerate task data after changing
+`--frontier-judge-timeout`. Supply the shared judge URL when launching training.
 
 ## 4. Training
 
@@ -127,7 +127,7 @@ the W&B run ID is what attaches new metrics to the existing run.
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+  --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
@@ -136,12 +136,12 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-Set `--sglang-server-concurrency` to fit the Harbor host and judge capacity.
+Set `--sglang-server-concurrency` to fit the rollout workers and judge capacity.
 The default is 128 per engine; a value of 1 allows one concurrent trial per engine.
 
 Actor generation uses a 131072-token context window, up to 24576 tokens per
-action and 3072 per summary, with compaction at 12000 context tokens. Thinking
-counts toward these limits. Length-limited turns increment `truncated_turns`
+action (including thinking) and 4096 per summary (thinking disabled), with
+compaction above 12000 context tokens. Length-limited turns increment `truncated_turns`
 and continue; the cumulative episode generation budget is 120000 tokens.
 
 Training runs for 100 rounds, each with 32 prompt groups × 16 episodes.
@@ -150,7 +150,7 @@ rounds. Rounds 31–100 also perform one actor update. Checkpoints are saved eve
 five rounds. With `--max-keep 2`, only the two most recent complete checkpoint
 sets are kept. Older checkpoints are removed after the new actor, critic, and
 rollout state have all been saved. Evaluation runs initially, every ten rounds, and at the end,
-with 180 tasks × 5 trials per evaluation.
+with 180 tasks × 3 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
 and `trials/`. Use a new run ID for each new experiment. See [section 6](#6-resume-training)
@@ -175,7 +175,7 @@ environment with a fresh run ID.
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+  --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
   --run-id sync-fs-full-detach-001 \
@@ -187,17 +187,17 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
   --save-interval 5 --max-keep 2 \
   --max-context-tokens 131072 \
-  --max-new-tokens 24576 --summary-tokens 3072 \
+  --max-new-tokens 24576 --summary-tokens 4096 \
   --compact-threshold 12000 --max-total-tokens 120000 \
   --continue-on-length \
-  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 4
+  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
 ```
 
 **Actor-summary critic:**
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+  --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
   --run-id sync-fs-actor-summary-001 \
@@ -209,17 +209,17 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
   --save-interval 5 --max-keep 2 \
   --max-context-tokens 131072 \
-  --max-new-tokens 24576 --summary-tokens 3072 \
+  --max-new-tokens 24576 --summary-tokens 4096 \
   --compact-threshold 12000 --max-total-tokens 120000 \
   --continue-on-length \
-  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 4
+  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
 ```
 
 A step here means one rollout round of 512 episodes. Each round has four critic
 optimizer updates, each on 128 episodes. The first 30 rounds therefore perform
 120 critic updates and zero actor updates. Rounds 31–100 also update the actor
 once per round. Eval runs before training and after rounds 10, 20, …, 100, using
-all 180 FCS tasks with five trials each (`--eval-max-tasks 0` selects all tasks).
+all 180 FCS tasks with three trials each (`--eval-max-tasks 0` selects all tasks).
 
 Keep the initial model, 200-task training set, resource allocation, and other
 hyperparameters identical. Start both runs from the same base checkpoint;

@@ -744,15 +744,15 @@ class TestEvalMetrics:
     def test_compacted_draws_each_contribute_one_reward(self, monkeypatch):
         monkeypatch.setattr("miles.ray.rollout.metrics.tracking.log", lambda *a, **kw: None)
         samples = []
-        rewards = [1.0, 1.0, 1.0, 0.0]
-        for index, segment in [(0, 0), (0, 1), (0, 2), (1, 0)]:
+        rewards = [1.0, 1.0, 1.0, 0.0, 0.2]
+        for index, segment in [(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)]:
             sample = make_sample(group_index=0, index=index, rollout_id=index)
             sample.metadata.update(segment=segment, harbor_rewards={"reward": rewards[len(samples)]})
             samples.append(sample)
         data = {"fcs": {"samples": samples, "rewards": rewards}}
         logged = log_eval_rollout_data(0, make_args(log_passrate=False), data)
-        assert logged["eval/fcs"] == 0.5
-        assert data["fcs"]["rewards"] == [1.0, 1.0, 1.0, 0.0]
+        assert logged["eval/fcs"] == pytest.approx((1.0 + 0.0 + 0.2) / 3)
+        assert data["fcs"]["rewards"] == [1.0, 1.0, 1.0, 0.0, 0.2]
 
     def test_eval_metrics_are_not_namespaced_by_policy(self, monkeypatch):
         """Pinning the status quo: a run training several policies is refused an eval, so eval keeps one step axis."""

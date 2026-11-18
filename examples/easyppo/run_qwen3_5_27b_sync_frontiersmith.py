@@ -1,6 +1,6 @@
 """Synchronous clipped PPO on FrontierSmith with Frontier-CS evaluation.
 
-Requires a shared Frontier judge, a configured Miles cluster, and Harbor Docker access.
+Requires a configured Miles cluster and a Frontier judge reachable from its rollout workers.
 Use MILES_SCRIPT_EXTERNAL_RAY=1 for platform-managed Ray; SSH bootstrap is optional.
 The prepare action downloads the pinned model, prepares the bundled data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
@@ -15,18 +15,20 @@ Args:
         MILES_SCRIPT_EXTERNAL_RAY=1 skips joining an already managed cluster.
     --dataset: Fixed to frontiersmith; use the separate TMAX launcher for TMAX.
     --critic-context-mode: full_detach (default) or actor-summary.
-    --max-new-tokens / --summary-tokens: Per-call limits including thinking (24576 / 3072).
+    --max-new-tokens / --summary-tokens: Action limit including thinking / summary limit with thinking disabled (24576 / 4096).
     --compact-threshold / --max-context-tokens: Context limits (12000 / 131072).
     --continue-on-length / --no-continue-on-length: Continue length-limited turns (default: on).
     --model-dir / --data-dir / --output-dir: Model, task and run paths available in the job environment.
-    --frontier-judge-url / --frontier-judge-timeout: Shared judge endpoint and queue-inclusive timeout baked into prepared tasks.
+    --terminal-environment: shared-judge (default) submits directly from rollout workers.
+    --frontier-judge-url: Judge HTTP(S) address for the workers (default: http://127.0.0.1:8081 for shared-judge).
+    --frontier-judge-timeout: Queue-inclusive submission timeout stored in the prepared tasks.
     --score-centering: Rejected; this entrypoint uses ordinary clipped PPO.
-    --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and five samples by default.
+    --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and three samples by default.
 
 Example (configured four-node allocation; set path variables for the site):
     MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \\
         --action train --critic-context-mode full_detach --model-dir "$MODEL_DIR" \\
-        --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
+        --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" --frontier-judge-url "$JUDGE_URL"
 """
 
 import sys
@@ -43,7 +45,11 @@ if sys.path[0] != _REPO_ROOT:
     sys.path.insert(0, _REPO_ROOT)
 
 from examples.easyppo import sync_ppo as _sync  # noqa: E402
-from examples.easyppo.frontiersmith import GenerationArgs  # noqa: E402
+from examples.easyppo.frontiersmith import (
+    SYNC_EVAL_SAMPLES_PER_PROMPT,
+    SYNC_TERMINAL_ENVIRONMENT,
+    GenerationArgs,
+)  # noqa: E402
 
 from miles.utils.external_utils import command_utils as U  # noqa: E402
 
@@ -51,6 +57,10 @@ from miles.utils.external_utils import command_utils as U  # noqa: E402
 @dataclass
 class ScriptArgs(GenerationArgs, _sync._SyncScriptArgs):
     dataset: Literal["frontiersmith"] = "frontiersmith"
+    terminal_environment: Literal["docker", "daytona", "modal", "shared-judge"] = SYNC_TERMINAL_ENVIRONMENT
+    rollout_gpus_per_engine: int = 1
+    sglang_mem_fraction_static: float = 0.85
+    eval_samples_per_prompt: int = SYNC_EVAL_SAMPLES_PER_PROMPT
 
     def __post_init__(self):
         super().__post_init__()

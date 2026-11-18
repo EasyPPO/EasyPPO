@@ -5,8 +5,6 @@ in-process episode; no global registry or external agent server is needed.
 """
 
 import asyncio
-import json
-from dataclasses import asdict, replace
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
@@ -15,29 +13,6 @@ from harbor.trial.trial import Trial
 
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
 from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
-
-
-def _write_trajectory(trace: TerminalTrace, messages: list[dict], logs_dir: Path) -> None:
-    # Avoid asdict() deep-copying potentially large top-k arrays. Persist them
-    # losslessly in a compact sidecar and keep only field references in JSON.
-    payload = asdict(replace(trace, topk_token_ids=None, topk_log_probs=None))
-    payload.pop("topk_token_ids")
-    payload.pop("topk_log_probs")
-    if trace.topk_token_ids is not None:
-        # NumPy is only needed when the optional candidate feature is active.
-        import numpy as np
-
-        archive, segments = {}, []
-        for i, (ids, logps) in enumerate(zip(trace.topk_token_ids, trace.topk_log_probs, strict=True)):
-            ids_key, logps_key = f"segment_{i}_token_ids", f"segment_{i}_log_probs"
-            archive[ids_key], archive[logps_key] = ids, logps
-            segments.append({"token_ids": ids_key, "log_probs": logps_key, "shape": list(ids.shape)})
-        path = logs_dir / "easyppo-topk.npz"
-        np.savez_compressed(path, **archive)
-        payload["topk_candidates"] = {"path": path.name, "segments": segments}
-    (logs_dir / "easyppo-trajectory.json").write_text(
-        json.dumps({"trace": payload, "messages": messages}, ensure_ascii=False)
-    )
 
 
 class MiniSweTerminalAgent(BaseAgent):
@@ -91,7 +66,7 @@ class MiniSweTerminalAgent(BaseAgent):
             context.n_input_tokens = sum(c["prompt_tokens"] for c in self.trace.calls)
             context.n_output_tokens = self.trace.generated_tokens
             self.logs_dir.mkdir(parents=True, exist_ok=True)
-            _write_trajectory(self.trace, agent.messages, self.logs_dir)
+            self.trace.write_trajectory(agent.messages, self.logs_dir)
 
 
 async def run_trial(
@@ -104,15 +79,31 @@ async def run_trial(
     config,
     memory_mb: int | None = None,
     docker_compose: tuple[str, ...] = (),
+    judge_url: str | None = None,
     agent_protocol: str = "terminal",
     fcs_max_submissions: int = DEFAULT_MAX_SUBMISSIONS,
     fcs_max_turns: int = DEFAULT_MAX_TURNS,
 ):
-    """Run native Harbor setup -> agent -> verifier -> teardown once.
+    """Run one episode with the selected environment and return its verified reward."""
+    if environment == "shared-judge":
+        if memory_mb is not None or docker_compose:
+            raise ValueError("shared-judge does not use --terminal-memory-mb or --terminal-docker-compose")
+        if agent_protocol != "fcs-submit":
+            raise ValueError("shared-judge requires the fcs-submit agent protocol")
+        # Only direct FCS submissions need the Miles HTTP client.
+        from agentic_critic.shared_fcs import run_shared_judge_episode
 
-    Infrastructure/verifier failures are errors, not zero-reward training data.
-    Harbor handles cancellation cleanup in Trial.run().
-    """
+        return await run_shared_judge_episode(
+            task_path=task_path,
+            trials_dir=trials_dir,
+            judge_url=judge_url,
+            tokenizer=tokenizer,
+            decode=decode,
+            config=config,
+            max_submissions=fcs_max_submissions,
+            max_turns=fcs_max_turns,
+        )
+
     agents = {
         "terminal": "agentic_critic.harbor_terminal:MiniSweTerminalAgent",
         "fcs-submit": "agentic_critic.harbor_fcs:HarborFcsAgent",

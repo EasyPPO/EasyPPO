@@ -91,7 +91,7 @@ with open(out / "heldout.jsonl", "w") as f:
 
 def samples_of(record: dict, group_index: int, rollout_id: int, first_index: int) -> list[Sample]:
     ep = Episode(events=[Event(**e) for e in record["events"]], scores=record["scores"],
-                 submission_segments=record["submission_segments"], n_compactions=record["n_compactions"])  # fmt: skip
+                 n_compactions=record["n_compactions"])  # fmt: skip
     n_calls = sum(e.actor for e in ep.events)
     fields = episode_samples(ep, [[0.0] * len(e.tokens) for e in ep.events if e.actor])
     assert n_calls and fields, "an episode without actor tokens cannot be trained on"
