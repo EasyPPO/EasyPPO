@@ -1,10 +1,10 @@
 import asyncio
-import copy
 import logging
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -22,6 +22,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 )
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
+from miles.rollout.inference_rollout.inference_rollout_eval import collect_eval_datasets, run_eval_samples
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
@@ -594,13 +595,10 @@ EVAL_PROMPT_DATASET = {}
 async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict[str, list[Any]]], list[list[Sample]]]:
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
-    coros = []
-    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
-        coros.append(eval_rollout_single_dataset(args, rollout_id, dataset_cfg))
-    results_list = await asyncio.gather(*coros)
-    results = {}
-    for r in results_list:
-        results.update(r)
+    results = await collect_eval_datasets(
+        eval_rollout_single_dataset(args, rollout_id, dataset_cfg)
+        for dataset_cfg in getattr(args, "eval_datasets", []) or []
+    )
     return RolloutFnEvalOutput(data=results), []
 
 
@@ -637,78 +635,7 @@ async def eval_rollout_single_dataset(
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         )
-    dataset = EVAL_PROMPT_DATASET[cache_key]
-
-    base_sampling_params = dict(
-        temperature=dataset_cfg.temperature,
-        top_p=dataset_cfg.top_p,
-        top_k=dataset_cfg.top_k,
-        max_new_tokens=dataset_cfg.max_response_len,
-        stop=args.rollout_stop,
-        stop_token_ids=args.rollout_stop_token_ids,
-        skip_special_tokens=args.rollout_skip_special_tokens,
-        no_stop_trim=True,
-        spaces_between_special_tokens=False,
-    )
-
-    tasks = []
-    # do multiple samples for eval prompts
-    sample_index = 0
-    for _i, prompt_sample in enumerate(dataset_cfg.select_samples(dataset.samples)):
-        for j in range(dataset_cfg.n_samples_per_eval_prompt):
-            # use the same prompt for multiple samples
-            sample = copy.deepcopy(prompt_sample)
-            sample.index = sample_index
-            sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
-            sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
-            if policy_uses_routing_key(args):
-                sample.routing_key = str(uuid.uuid4())
-            sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
-                sampling_params = base_sampling_params.copy()
-                sampling_params["sampling_seed"] = args.rollout_seed + j
-            tasks.append(
-                asyncio.create_task(
-                    generate_and_rm(
-                        args,
-                        sample,
-                        sampling_params=sampling_params,
-                        evaluation=True,
-                    )
-                )
-            )
-
-    data = []
-    do_print = True
-    pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
-    for coro in asyncio.as_completed(tasks):
-        sample = await coro
-        if do_print:
-            logged_sample = sample[0] if isinstance(sample, list) else sample
-            logger.info(
-                "eval_rollout_single_dataset example data: "
-                f"{[str(logged_sample.prompt) + logged_sample.response]} "
-                f"reward={logged_sample.reward}"
-            )
-            do_print = False
-        if isinstance(sample, list):
-            data.extend(sample)
-        else:
-            data.append(sample)
-        pbar.update(1)
-    pbar.close()
-
-    data.sort(key=lambda sample: sample.index)
-
-    reward_key = args.eval_reward_key or args.reward_key
-    return {
-        dataset_cfg.name: {
-            "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
-            "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
-            "samples": data,
-        }
-    }
+    return await run_eval_samples(args, dataset_cfg, EVAL_PROMPT_DATASET[cache_key], partial(generate_and_rm, args))
 
 
 def generate_rollout(

@@ -1,5 +1,6 @@
 """Fixed evaluation task budgets reach both rollout backends before task creation."""
 
+import asyncio
 import base64
 import json
 from collections import Counter
@@ -144,3 +145,67 @@ async def test_subset_and_fullset_fanout_create_independent_episodes_without_mut
     assert len(created) == 1  # Selection is per-call; the full cached dataset is intact.
     assert all(sample.index is None and sample.reward is None for sample in raw)
     assert [sample.metadata for sample in raw] == [{"task_id": i} for i in range(task_count)]
+
+
+@pytest.mark.parametrize("backend", ["native", "legacy"])
+@pytest.mark.parametrize("cancel_eval", [False, True])
+async def test_interrupted_eval_settles_draws_across_datasets(monkeypatch, backend, cancel_eval):
+    module = inference_rollout_eval if backend == "native" else sglang_rollout
+    datasets = [EvalDatasetConfig(name, name, n_samples_per_eval_prompt=2) for name in ("first", "second")]
+    args = SimpleNamespace(
+        eval_datasets=datasets,
+        group_rm=False,
+        hf_checkpoint="/model",
+        apply_chat_template=False,
+        chat_template_path=None,
+        rollout_stop=None,
+        rollout_stop_token_ids=None,
+        rollout_skip_special_tokens=False,
+        sglang_router_policy="random",
+    )
+    cache = {
+        cfg.cache_key + ("/model", False, None): SimpleNamespace(samples=[Sample(prompt=cfg.name)]) for cfg in datasets
+    }
+    started = set()
+    settled = set()
+    all_started, fail, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    trial_error = ValueError("verifier failed")
+
+    async def generate(_state, sample, **kwargs):
+        draw = (sample.prompt, sample.index)
+        started.add(draw)
+        if len(started) == 4:
+            all_started.set()
+        try:
+            if draw == ("first", 0):
+                await fail.wait()
+                raise trial_error
+            await release.wait()
+        finally:
+            await asyncio.sleep(0)
+            settled.add(draw)
+            if draw == ("second", 1):
+                raise RuntimeError("sibling cleanup failed")
+
+    monkeypatch.setattr(module, "generate_and_rm", generate)
+    if backend == "native":
+        evaluation = module.run_eval_datasets(SimpleNamespace(args=args), cache)
+    else:
+        monkeypatch.setattr(module, "EVAL_PROMPT_DATASET", cache)
+        evaluation = module.eval_rollout(args, 0)
+    task = asyncio.create_task(evaluation)
+    try:
+        await asyncio.wait_for(all_started.wait(), timeout=5)
+        if cancel_eval:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+        else:
+            fail.set()
+            with pytest.raises(ValueError) as caught:
+                await asyncio.wait_for(task, timeout=5)
+            assert caught.value is trial_error
+        assert settled == started
+    finally:
+        fail.set()
+        release.set()
