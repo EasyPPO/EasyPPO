@@ -25,6 +25,7 @@ import toml
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from examples.easyppo.frontiersmith import DOCKER_JUDGE_URL as DEFAULT_JUDGE_URL  # noqa: E402
 from scripts.make_miles_terminal_data import task_records, write_jsonl  # noqa: E402
 
 SOURCE_URL = "https://github.com/FrontierCS/FrontierSmith.git"
@@ -34,7 +35,6 @@ EVAL_SOURCE_REVISION = "59687e5428266a22a49cf51f981b912103bfa91d"
 DEFAULT_SOURCE_DIR = Path(__file__).resolve().parents[1] / "Frontier-CS"
 _MANIFEST = Path("data/sample_lists/frontiersmith_train_200.json")
 _ADAPTER = Path("harbor/adapters/frontier-cs-algorithm")
-DEFAULT_JUDGE_URL = "http://host.docker.internal:8081"
 DEFAULT_JUDGE_TIMEOUT = 3600
 # The submit-only client and verifier use the Python standard library.
 SUBMISSION_IMAGE = (

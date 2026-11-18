@@ -63,6 +63,7 @@ def test_single_gpu_9b_uses_matching_conversion_and_training_model(launcher, mon
         tensor_model_parallel_size=1,
         rollout_gpus_per_engine=1,
         join_ray_workers=False,
+        terminal_environment="docker",
         terminal_docker_compose=["/deployment/host network.yaml"],
     )
     launcher.prepare(args)
@@ -70,6 +71,7 @@ def test_single_gpu_9b_uses_matching_conversion_and_training_model(launcher, mon
     assert backend.conversions[0]["megatron_model_type"] == "qwen3.5-9B"
     assert backend.training[0]["megatron_model_type"] == "qwen3.5-9B"
     argv = shlex.split(backend.training[0]["train_args"])
+    assert "--fcs-judge-url" not in argv and args.frontier_judge_url == "http://host.docker.internal:8081"
     assert "--sequence-parallel" not in argv
     assert argv[argv.index("--terminal-docker-compose") + 1] == "/deployment/host network.yaml"
     for flag in ("--actor-num-gpus-per-node", "--critic-num-gpus-per-node", "--rollout-num-gpus-per-engine"):
@@ -93,6 +95,12 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         assert argv.count(flag) == 1
         return argv[argv.index(flag) + 1]
 
+    if args.dataset == "frontiersmith":
+        assert value("--terminal-environment") == "shared-judge"
+        assert value("--fcs-judge-url") == "http://127.0.0.1:8081"
+    else:
+        assert value("--terminal-environment") == "docker"
+        assert "--fcs-judge-url" not in argv
     assert submitted["train_script"] == "train.py"
     assert submitted["megatron_model_type"] == "qwen3.5-27B"
     assert submitted["extra_env_vars"] == {"PYTHONPATH": args.megatron_path}
@@ -332,6 +340,8 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     if args.dataset == "frontiersmith":
         differences.remove("eval_samples_per_prompt")
         differences.remove("rollout_gpus_per_engine")
+        differences.remove("terminal_environment")
+        differences.remove("frontier_judge_url")
     assert differences == {
         "score_centering",
         "score_centering_candidates",
@@ -401,7 +411,7 @@ def test_shared_judge_environment_reaches_submit_only_recipe(launcher, monkeypat
 
 def test_terminal_memory_and_eval_controls_reach_training(launcher, monkeypatch):
     backend = _backend(monkeypatch, launcher)
-    args = launcher.ScriptArgs(terminal_memory_mb=32768, skip_eval_before_train=True)
+    args = launcher.ScriptArgs(terminal_environment="docker", terminal_memory_mb=32768, skip_eval_before_train=True)
     launcher.execute(args)
     argv = shlex.split(backend.training[0]["train_args"])
     assert "--skip-eval-before-train" in argv

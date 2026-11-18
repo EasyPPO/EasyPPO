@@ -15,7 +15,7 @@ from typing import Literal
 
 import agentic_critic
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
-from examples.easyppo.frontiersmith import DEFAULT_SGLANG_SERVER_CONCURRENCY
+from examples.easyppo.frontiersmith import DEFAULT_SGLANG_SERVER_CONCURRENCY, DOCKER_JUDGE_URL
 from miles.utils.external_utils import command_utils as U
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.workers.types import ClusterBackend
@@ -52,7 +52,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     eval_data: str = ""
     tasks_dir: str = ""
     frontier_source_dir: str = ""
-    frontier_judge_url: str = "http://host.docker.internal:8081"
+    frontier_judge_url: str = ""
     frontier_judge_timeout: int = 3600
     terminal_environment: Literal["docker", "daytona", "modal", "shared-judge"] = "docker"
     terminal_memory_mb: int | None = None
@@ -127,6 +127,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.dataset not in _RECIPES:
             raise ValueError("Choose frontiersmith or tmax")
+        if not self.frontier_judge_url:
+            self.frontier_judge_url = (
+                "http://127.0.0.1:8081" if self.terminal_environment == "shared-judge" else DOCKER_JUDGE_URL
+            )
         recipe = _RECIPES[self.dataset]
         if self.rollout_batch_size == 0:
             self.rollout_batch_size = recipe.batch

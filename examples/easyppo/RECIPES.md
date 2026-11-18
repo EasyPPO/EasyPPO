@@ -39,12 +39,14 @@ filters exact evaluation overlap, duplicate executable fixtures, and initial
 instructions that exceed the action budget. The manifests and generated
 JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md).
 
-Harbor runs task containers on the rollout executor. Frontier tasks use the
-[submit-only protocol](#rewards-validation-and-checkpoints) and a shared judge;
-TMAX/TB expose bash and use their supplied task verifiers. Model decoding is handled by Miles/SGLang.
-For FrontierSmith, `--terminal-environment shared-judge` sends C++ from the rollout
-worker to that same judge over HTTP. Pass `--frontier-judge-url` at launch with an address
-reachable from the rollout worker. The Modal launcher selects this mode by default.
+Synchronous FrontierSmith uses the [submit-only protocol](#rewards-validation-and-checkpoints).
+Each rollout worker sends C++ to the shared judge over HTTP. Pass
+`--frontier-judge-url` at launch with an address reachable from every worker.
+The Modal launcher supplies its judge endpoint. For Docker-based FrontierSmith
+trials, select `--terminal-environment docker` and prepare the tasks with a
+container-reachable judge endpoint. Docker is the asynchronous recipe's default.
+TMAX/TB expose bash in Harbor containers and run their supplied task verifiers.
+Miles/SGLang handles model decoding for both datasets.
 
 ## Batch and update schedule
 

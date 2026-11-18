@@ -40,8 +40,8 @@ Set `--num-nodes` and `--num-gpus-per-node` to match the cluster allocation.
 Rollout, critic training, and actor training alternate on all allocated GPUs
 with offload enabled. Provision host memory for offload.
 
-Training and rollout default to TP4. With `N` total GPUs, this gives training
-DP `N / 4` and `N / 4` rollout engines. Adjust `--tensor-model-parallel-size`
+Training uses TP4 and rollout uses one GPU per engine by default. With `N`
+total GPUs, this gives training DP `N / 4` and `N` rollout engines. Adjust `--tensor-model-parallel-size`
 and `--rollout-gpus-per-engine` for the hardware, keeping the GPU count divisible
 by each parallel group size and the training batches divisible by training DP.
 
@@ -54,16 +54,16 @@ Set these variables for the commands below:
 | `MODEL_DIR` | Model and converted checkpoint directory |
 | `DATA_DIR` | Prepared Harbor tasks and datasets |
 | `RUN_DIR` | Training outputs |
-| `JUDGE_URL` | Judge service URL reachable from Harbor task containers |
+| `JUDGE_URL` | Judge service URL reachable from all rollout workers |
 
 Make the code and assets available to their execution processes through the
-platform's storage or distribution mechanism. Give Harbor access to Docker;
-task bind-mount source paths must exist on the corresponding daemon host.
+platform's storage or distribution mechanism. Each rollout worker needs the
+prepared tasks and HTTP access to the shared judge.
 Set `--megatron-path` when using a custom Megatron installation path.
 
 ## 2. Judge deployment
 
-Use one shared judge service for all Harbor trials. The bundled
+Use one shared judge service for all training and evaluation episodes. The bundled
 `Frontier-CS/algorithmic/` contains the judge and both corpora: **200 FrontierSmith
 training tasks and 180 FCS evaluation tasks**. The manifest records ten known
 cross-corpus overlaps retained in these sets.
@@ -100,8 +100,8 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 This prepares the pinned `Qwen/Qwen3.5-27B` model, Harbor tasks, and JSONL datasets,
 then converts the Megatron checkpoint. Reuse compatible existing artifacts:
 `$MODEL_DIR/Qwen3.5-27B` and `$MODEL_DIR/Qwen3.5-27B_torch_dist`.
-Checkpoint conversion requires GPUs. Regenerate task data after changing the
-judge URL or `--frontier-judge-timeout`, which are embedded in the task configuration.
+Checkpoint conversion requires GPUs. Regenerate task data after changing
+`--frontier-judge-timeout`. Supply the shared judge URL when launching training.
 
 ## 4. Training
 
@@ -127,7 +127,7 @@ the W&B run ID is what attaches new metrics to the existing run.
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+  --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --run-id sync-fs-full-detach-001 \
   --critic-context-mode full_detach \
@@ -136,7 +136,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-Set `--sglang-server-concurrency` to fit the Harbor host and judge capacity.
+Set `--sglang-server-concurrency` to fit the rollout workers and judge capacity.
 The default is 128 per engine; a value of 1 allows one concurrent trial per engine.
 
 Actor generation uses a 131072-token context window, up to 24576 tokens per
@@ -175,7 +175,7 @@ environment with a fresh run ID.
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+  --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
   --run-id sync-fs-full-detach-001 \
@@ -190,14 +190,14 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
   --continue-on-length \
-  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 4
+  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
 ```
 
 **Actor-summary critic:**
 
 ```bash
 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
-  --action train \
+  --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
   --run-id sync-fs-actor-summary-001 \
@@ -212,7 +212,7 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --max-new-tokens 24576 --summary-tokens 3072 \
   --compact-threshold 12000 --max-total-tokens 120000 \
   --continue-on-length \
-  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 4
+  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
 ```
 
 A step here means one rollout round of 512 episodes. Each round has four critic

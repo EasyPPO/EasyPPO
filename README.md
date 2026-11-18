@@ -61,9 +61,9 @@ needed for the separate KV compression experiments.
 Set `MODEL_DIR`, `DATA_DIR`, and `RUN_DIR` to the site's model, prepared-data,
 and output locations. Provide the code and assets to the workers through the
 platform's storage or distribution mechanism; no particular filesystem,
-mount point, or deployment user is required. Task bind-mount source paths
-must be accessible to the Docker daemon that runs Harbor tasks. Configure
-that daemon access and offload CPU/RAM capacity through the platform.
+mount point, or deployment user is required. Provision CPU/RAM capacity for offload.
+Recipes using Harbor Docker also need Docker access and task bind-mount source
+paths on the daemon host.
 Use `--megatron-path` if Megatron lives outside the launcher's default location.
 
 ## 2. Cluster integration
@@ -121,7 +121,7 @@ The Frontier judge and both problem corpora are bundled under
 [`Frontier-CS/`](Frontier-CS/README.md). Data preparation uses these local files;
 it does not clone additional repositories. All 200 Smith and 180 FCS problems are used.
 The ten published cross-corpus aliases are retained and recorded in the manifest.
-Keep `$DATA_DIR/harbor` available at the same path on every task Docker host.
+Make `$DATA_DIR/harbor` available at the same path on every rollout worker and task Docker host.
 See [ASYNC_DATA.md](examples/easyppo/ASYNC_DATA.md) for source versions and manifests.
 
 ## 4. Run the task environments and judges
@@ -144,9 +144,9 @@ It does not need Miles, CUDA, Ray, model weights or the training cluster's share
 filesystem. Compose mounts one merged `problems/` directory, plus local `data/`
 and `submissions/` directories. The checkout can live at any path.
 
-All FrontierSmith and Frontier-CS trials share this service. Set
-`--frontier-judge-url` during preparation to a URL reachable from every task
-container, using the service DNS name or reachable address. `FRONTIERCS_JUDGE_BIND_IP` controls
+All FrontierSmith and Frontier-CS trials share this service. Set `JUDGE_URL`
+to its DNS name or address reachable from all rollout workers and, when
+using Harbor Docker, from the task containers. `FRONTIERCS_JUDGE_BIND_IP` controls
 which local interface the judge listens on; it is not the client's target URL.
 The upstream API has no authentication; expose port 8081 on a trusted network.
 
@@ -154,20 +154,18 @@ The merged bank contains 200 Smith and 180 FCS problems; the training and evalua
 JSONL files include all 200 and 180 respectively. Each corpus retains its pinned checkers
 and test data. Checker/interactor scores are scaled from `[0,100]` to `[0,1]`.
 The Frontier agent submits each C++ solution to the shared judge and records the
-best score across submissions as the episode reward. The standalone launchers
-default to Harbor Docker. Set `--terminal-environment shared-judge` to send
-submissions directly from the rollout worker using the same agent and judge.
-This is the default for the Modal launcher, which supplies the endpoint. When using
-shared-judge from a standalone launcher, pass `--frontier-judge-url` at launch with
-an address reachable from the rollout worker.
+best score across submissions as the episode reward. The synchronous FrontierSmith recipe and its Modal launcher
+default to `--terminal-environment shared-judge`. Rollout workers send C++
+directly to the judge. Pass `--frontier-judge-url "$JUDGE_URL"` when launching
+standalone training. On a single host, the default is `http://127.0.0.1:8081`.
+Modal supplies its own judge endpoint.
 
-`--frontier-judge-timeout` defaults to 3600 seconds including queue wait; the
-Harbor verifier deadline adds 90 seconds. Rerun preparation when changing the
-judge URL or timeout. The single-host URL default is
-`http://host.docker.internal:8081`; use the actual remote judge URL for a
-separate machine. The rollout executor uses its local Docker daemon. For a
-conservative initial concurrency, use `--sglang-server-concurrency 1` (eight
-concurrent trials with the default sync allocation).
+The asynchronous FrontierSmith recipe defaults to Harbor Docker. Select
+`--terminal-environment docker` to use it in the synchronous recipe. Its
+containers read the judge URL from the prepared task, with single-host default
+`http://host.docker.internal:8081`. Repeat preparation when the Docker endpoint
+changes. Both transports read the queue-inclusive `--frontier-judge-timeout`
+from the prepared tasks (default 3600 seconds).
 
 From the judge's `Frontier-CS/algorithmic` directory, use `docker compose logs -f`
 to view logs and `docker compose down` to stop the service. Results remain in
@@ -206,7 +204,7 @@ done
 for MEMORY_MODE in full_detach actor-summary; do
   python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
     --action train --critic-context-mode "$MEMORY_MODE" \
-    --run-id "sync-fs-$MEMORY_MODE" \
+    --frontier-judge-url "$JUDGE_URL" --run-id "sync-fs-$MEMORY_MODE" \
     --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 
   python examples/easyppo/run_qwen3_5_27b_sync_tmax.py \

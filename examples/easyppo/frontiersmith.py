@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 DEFAULT_SGLANG_SERVER_CONCURRENCY = 128
 SYNC_EVAL_SAMPLES_PER_PROMPT = 3
+SYNC_TERMINAL_ENVIRONMENT = "shared-judge"
+DOCKER_JUDGE_URL = "http://host.docker.internal:8081"
 
 
 @dataclass

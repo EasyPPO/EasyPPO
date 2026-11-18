@@ -6,7 +6,11 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from examples.easyppo.frontiersmith import DEFAULT_SGLANG_SERVER_CONCURRENCY, SYNC_EVAL_SAMPLES_PER_PROMPT
+from examples.easyppo.frontiersmith import (
+    DEFAULT_SGLANG_SERVER_CONCURRENCY,
+    SYNC_EVAL_SAMPLES_PER_PROMPT,
+    SYNC_TERMINAL_ENVIRONMENT,
+)
 
 from miles.utils.file_utils import atomic_write_text
 
@@ -32,7 +36,7 @@ class Config:
     judge_cpus: int = 32
     judge_memory_gib: int = 64
     judge_workers: int = 32
-    terminal_environment: str = "shared-judge"
+    terminal_environment: str = SYNC_TERMINAL_ENVIRONMENT
     terminal_memory_mb: int | None = None
     eval_max_tasks: int = 0
     eval_samples_per_prompt: int = SYNC_EVAL_SAMPLES_PER_PROMPT

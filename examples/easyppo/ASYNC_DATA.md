@@ -57,32 +57,17 @@ and filters tasks whose initial instruction cannot fit the action budget.
 Thus the eligible training count can be below the source's nominal 15K.
 The complete 89-task TB2.1 file remains evaluation input.
 
-The actor reads FrontierSmith/Frontier-CS statements from `/app/statement.txt`,
-writes `/app/solution.cpp`, and can compile and self-test through bash. The
-same terminal harness handles both corpora; it does not invoke the separate
-Frontier-CS `submit`-only wrapper. The final verifier calls one shared judge HTTP service.
+The Frontier agent reads the prepared statement and submits C++ solutions to
+the shared judge. The synchronous recipe sends requests from each rollout
+worker. The asynchronous recipe defaults to a Harbor submission container.
+Both use the highest bounded submission score divided by 100 as the episode
+reward. A final judge error verdict scores zero for that submission. HTTP
+errors and polling timeouts interrupt the trial. `judge-result.json` records
+the verdicts and `reward.json` records the verified numeric reward.
 
-Task directories must exist at the same absolute paths on every task Docker
-host. On the independent judge machine, clone the repository and run
-`docker compose up -d --build` from `Frontier-CS/algorithmic/`. Both corpora
-are already merged in `problems/`, with local `data/` and `submissions/` mounts.
-No generated judge Compose file or shared filesystem is required.
-Each Harbor trial contains only `main`; its teardown cannot remove the shared service.
-
-`--judge-url` must be reachable from every task container. The single-host default
-is `http://host.docker.internal:8081`; multi-host training must supply the judge
-host's private address. `--judge-timeout` defaults to 3600 seconds including queue
-wait; Harbor's verifier timeout is 90 seconds longer. Rerunning preparation updates
-these settings in existing tasks and removes their old sidecars using the bundled sources. The 27B launchers expose these preparation settings as
-`--frontier-judge-url` and `--frontier-judge-timeout`.
-Data preparation itself requires no Docker or GPU.
-
-FrontierSmith and Frontier-CS preserve their pinned checkers' bounded mean
-partial score divided by 100, in `[0, 1]`. This remains a continuous score;
-it is not converted into a count of passed assertions. Missing/empty C++
-solutions and explicit contestant compile failures score zero. Other judge
-errors, HTTP failures and poll timeouts fail the trial without a reward file.
-Only numeric values enter `reward.json`; full diagnostics go to
-`judge-result.json`. TMAX and Terminal-Bench retain their supplied verifier
-reward. These adapters do not silently replace dataset rewards with the T1
-paper's dense test-count reward.
+Set `--frontier-judge-timeout` during preparation to cover judging and queue
+wait. Reprepare when changing that timeout. Docker-based trials also use the
+judge URL embedded during preparation. Direct submissions use the launch-time
+`--frontier-judge-url`. See the [judge deployment instructions](../../README.md#4-run-the-task-environments-and-judges)
+for endpoint and reachability settings. TMAX and Terminal-Bench use their task
+verifiers and rewards.
