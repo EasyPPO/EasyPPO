@@ -305,7 +305,7 @@ and logs. Plan shared storage and host memory for the actual response length.
 | Recipe / allocation | Actor and critic training pool | Rollout |
 |---|---|---|
 | Async default: 8 nodes × 8 B200 | 16 GPUs, TP4 × DP4, PP=CP=1 | 48 GPUs, 12 TP4 engines |
-| Sync default: 4 nodes × 8 B200 | All 32 GPUs, TP4 × DP8, PP=CP=1 | Same 32 GPUs, 8 TP4 engines |
+| Sync default: 4 nodes × 8 B200 | All 32 GPUs, TP4 × DP8, PP=CP=1 | Same 32 GPUs, 32 TP1 engines for FrontierSmith or 8 TP4 engines for TMAX |
 
 Async uses disjoint training and rollout pools. Sync sets
 `--colocate --offload-rollout --offload-train`: rollout, critic training, and

@@ -51,6 +51,7 @@ from miles.utils.external_utils import command_utils as U  # noqa: E402
 @dataclass
 class ScriptArgs(GenerationArgs, _sync._SyncScriptArgs):
     dataset: Literal["frontiersmith"] = "frontiersmith"
+    rollout_gpus_per_engine: int = 1
     eval_samples_per_prompt: int = SYNC_EVAL_SAMPLES_PER_PROMPT
 
     def __post_init__(self):

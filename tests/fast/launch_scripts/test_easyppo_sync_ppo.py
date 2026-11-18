@@ -131,7 +131,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--actor-num-gpus-per-node": "8",
         "--critic-num-nodes": "4",
         "--critic-num-gpus-per-node": "8",
-        "--rollout-num-gpus-per-engine": "4",
+        "--rollout-num-gpus-per-engine": "1" if args.dataset == "frontiersmith" else "4",
         "--tensor-model-parallel-size": "4",
     }
     assert {flag: value(flag) for flag in expected} == expected
@@ -331,6 +331,7 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     differences = {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)}
     if args.dataset == "frontiersmith":
         differences.remove("eval_samples_per_prompt")
+        differences.remove("rollout_gpus_per_engine")
     assert differences == {
         "score_centering",
         "score_centering_candidates",

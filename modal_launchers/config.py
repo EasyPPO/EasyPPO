@@ -163,8 +163,6 @@ class Config:
             "--continue-on-length",
             "--tensor-model-parallel-size",
             "4",
-            "--rollout-gpus-per-engine",
-            "4",
             "--sglang-server-concurrency",
             str(self.concurrency),
             "--checkpoint-commit-hook",
