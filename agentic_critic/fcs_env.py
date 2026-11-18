@@ -58,11 +58,11 @@ NO_CODE_PROMPT = "No ```cpp code block was found in your reply."
 
 NEXT_PROMPT = "Submit an improved solution. Output ONLY the C++ code wrapped in ```cpp and ```."
 
-# The plain summarisation prompt of the KV compaction paper's summary baseline ("Summarize the following text:"),
-# reworded only because here the text comes before the request. It deliberately does not say
-# what to keep. The turn that carries it is environment text: it is never an actor token, so it gets no policy
-# gradient and no value target.
-COMPACT_PROMPT = "Summarize the text above:"
+COMPACT_PROMPT = (
+    "Write a brief progress summary for your next turn. You will receive the full original problem statement "
+    "again alongside this summary, so skip restating it. Summarize what you have learned from your attempts "
+    "and any judge feedback that will help you continue."
+)
 
 # After a compaction the actor restarts from the task and its own summary, and nothing else: the environment does
 # not repeat the best score or the number of submissions left. What the actor knows about its

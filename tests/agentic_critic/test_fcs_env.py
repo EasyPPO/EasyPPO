@@ -166,7 +166,8 @@ def test_the_summary_request_is_never_trained_on():
     """The instruction that asks for a summary is environment text: no policy gradient, no value target."""
     replies = [code_reply("a"), f"</think>SUMMARY-1{EOS}", code_reply("b")]
     ep, prompts, fmt = run(replies, [10.0, 20.0], max_submissions=2, compact_threshold_tokens=1)
-    assert COMPACT_PROMPT == "Summarize the text above:" and COMPACT_PROMPT in prompts[1]
+    assert COMPACT_PROMPT in prompts[1]
+    assert TASK_PROMPT.format(statement="S", max_submissions=2) in prompts[2]
     request = next(e for e in ep.events if e.kind == "compact_request")
     assert not request.actor and COMPACT_PROMPT in fmt.decode(request.tokens)
     # in the actor's sample of that segment, every token of the request has loss mask 0 ...
