@@ -132,7 +132,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--rollout-max-context-len": "131072" if args.dataset == "frontiersmith" else "32768",
         "--terminal-max-new-tokens": "24576" if args.dataset == "frontiersmith" else "8192",
         "--rollout-max-response-len": "24576" if args.dataset == "frontiersmith" else "8192",
-        "--terminal-summary-tokens": "3072" if args.dataset == "frontiersmith" else "2048",
+        "--terminal-summary-tokens": "4096" if args.dataset == "frontiersmith" else "2048",
         "--terminal-compact-threshold": "12000" if args.dataset == "frontiersmith" else "24576",
         "--max-tokens-per-gpu": "262144",
         "--actor-num-nodes": "4",

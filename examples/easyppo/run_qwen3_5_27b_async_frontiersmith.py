@@ -13,7 +13,7 @@ Args:
         MILES_SCRIPT_EXTERNAL_RAY=1 skips joining an already managed cluster.
     --dataset: Fixed to frontiersmith; use the separate TMAX launcher for TMAX.
     --critic-context-mode: full_detach (default) or actor-summary.
-    --max-new-tokens / --summary-tokens: Per-call limits including thinking (24576 / 3072).
+    --max-new-tokens / --summary-tokens: Action limit including thinking / summary limit with thinking disabled (24576 / 4096).
     --compact-threshold / --max-context-tokens: Context limits (12000 / 131072).
     --continue-on-length / --no-continue-on-length: Continue length-limited turns (default: on).
     --model-dir / --data-dir / --output-dir: Model, task and run paths available in the job environment.

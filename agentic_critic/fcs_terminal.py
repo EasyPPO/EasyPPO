@@ -6,10 +6,12 @@ from minisweagent.agents.default import Submitted
 
 from agentic_critic.fcs_env import (
     COMPACT_PROMPT,
+    FCS_REASONING_EFFORT,
     NEXT_PROMPT,
     NO_CODE_PROMPT,
     RESUME_PROMPT,
     TASK_PROMPT,
+    TRUNCATED_NO_SUBMISSION_PROMPT,
     answer_text,
     extract_code,
     format_feedback,
@@ -47,8 +49,14 @@ class FcsSubmissionAgent(TerminalAgent):
         self.max_submissions = max_submissions
         self.turns = 0
 
+    def _template_options(self, kind: str) -> dict:
+        return {
+            "enable_thinking": self.options.enable_thinking and kind != "summary",
+            "reasoning_effort": FCS_REASONING_EFFORT,
+        }
+
     def _initial_messages(self, task: str) -> list[dict]:
-        self.task_prompt = TASK_PROMPT.format(statement=task)
+        self.task_prompt = TASK_PROMPT.format(statement=task, max_submissions=self.max_submissions)
         return [{"role": "user", "content": self.task_prompt}]
 
     def _summary_request(self) -> list[dict]:
@@ -74,8 +82,10 @@ class FcsSubmissionAgent(TerminalAgent):
         response = await self._complete(self.messages, limit=self.options.max_new_tokens, kind="action")
         self.add_message("assistant", response.text)
         self.turns += 1
-        code = extract_code(response.text)
-        if code is None:
+        if response.finish_reason == "length":
+            self.trace.calls[-1]["action_status"] = "truncated_no_submission"
+            feedback = TRUNCATED_NO_SUBMISSION_PROMPT
+        elif (code := extract_code(response.text)) is None:
             self.trace.n_format_errors += 1
             self.trace.calls[-1]["action_status"] = "format_error"
             feedback = NO_CODE_PROMPT

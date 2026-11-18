@@ -59,7 +59,7 @@ async def test_only_cpp_submits_and_feedback_keeps_the_best_score():
     )
     trace = await agent.run_async("statement")
     assert codes == ["first", "second"]
-    assert prompts[0] == "<user>" + TASK_PROMPT.format(statement="statement") + "</user><assistant>"
+    assert prompts[0] == "<user>" + TASK_PROMPT.format(statement="statement", max_submissions=2) + "</user><assistant>"
     assert "No ```cpp code block" in prompts[1]
     assert "score=80.00/100" in prompts[2] and "Best score so far: 80.00/100" in prompts[2]
     assert trace.submission_scores == [80, 20]
@@ -284,6 +284,7 @@ async def test_fcs_samples_match_reference_with_real_template(
         generate=generate,
         judge=lambda code: JudgeResult(next(reference_scores), "done"),
         max_submissions=3 if budget_stop else 2,
+        max_turns=16 if budget_stop else 2,
         compact_threshold_tokens=1200,
     )
     expected = episode_samples(reference, [[-0.5] * len(tokens) for tokens in token_lists])
@@ -313,7 +314,7 @@ async def test_fcs_samples_match_reference_with_real_template(
             submit=submit,
             config=kwargs["config"],
             max_submissions=kwargs["fcs_max_submissions"],
-            max_turns=16,
+            max_turns=16 if budget_stop else 2,
         )
         return await agent.run_async("statement"), {"reward": 0.8}, "/trial"
 
@@ -338,6 +339,9 @@ async def test_fcs_samples_match_reference_with_real_template(
         )
     )
     assert requests == reference_prompts
+    assert tokenizer_impl.decode(requests[0]).endswith("<think>\n")
+    assert tokenizer_impl.decode(requests[1]).endswith("<think>\n\n</think>\n\n")
+    assert tokenizer_impl.decode(requests[2]).endswith("<think>\n")
     assert len(result.samples) == len(expected) == 2
     for actual, wanted in zip(result.samples, expected, strict=True):
         if budget_stop and wanted is expected[-1]:

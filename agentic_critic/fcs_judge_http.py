@@ -1,13 +1,11 @@
 """Client for the official Frontier-CS judge server (go-judge based), running in Docker.
 
-Returns the same `JudgeResult` shape as the local judge in `fcs_judge.py`, so the episode loop
-does not care which one is behind it. Model-written code is only ever executed inside the
+Model-written code is only ever executed inside the
 judge container's sandbox.
 """
 
 import json
 import time
-import urllib.error
 import urllib.request
 
 from agentic_critic.fcs_judge import CaseResult, JudgeResult
@@ -20,14 +18,6 @@ def _call(url: str, payload: dict | None = None, timeout: float = 60):
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)
-
-
-def healthy(base_url: str) -> bool:
-    try:
-        urllib.request.urlopen(f"{base_url.rstrip('/')}/health", timeout=5)
-        return True
-    except (urllib.error.URLError, OSError):
-        return False
 
 
 def judge(base_url: str, problem_id: str, code: str, *, poll_s: float = 1.0, timeout_s: float = 900) -> JudgeResult:

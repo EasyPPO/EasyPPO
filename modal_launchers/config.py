@@ -159,7 +159,7 @@ class Config:
             "--max-new-tokens",
             "24576",
             "--summary-tokens",
-            "3072",
+            "4096",
             "--compact-threshold",
             "12000",
             "--max-total-tokens",

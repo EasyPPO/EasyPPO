@@ -249,7 +249,7 @@ Both launchers read their generation defaults from [`frontiersmith.py`](frontier
 |---|---:|
 | Prompt + generation window | 131072 |
 | Tokens per action, including thinking | 24576 |
-| Tokens per summary, including thinking | 3072 |
+| Tokens per summary, thinking disabled | 4096 |
 | Compaction threshold | 12000 |
 
 `--terminal-continue-on-length` is enabled: a length-limited action or summary
