@@ -159,6 +159,24 @@ async def test_sync_driver_defaults_to_group_granularity(monkeypatch):
     assert [group[0].group_index for group in output.samples] == [1, 2]
 
 
+async def test_sync_replaces_only_the_rejected_group_while_others_are_pending(monkeypatch):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=32))
+    task = harness.run()
+    await asyncio.sleep(0)
+    assert len(harness.submitted_groups) == 32
+
+    harness.submitted_groups[0][0].reward = None
+    harness.finish_group(0)
+    async with asyncio.timeout(5):
+        while len(harness.submitted_groups) == 32:
+            await asyncio.sleep(0)
+    assert len(harness.submitted_groups) == 33
+    for index in range(1, 33):
+        harness.finish_group(index)
+    output, _ = await task
+    assert len(output.samples) == 32
+
+
 @pytest.mark.parametrize(
     ("reward_key", "missing_reward"),
     [(None, None), ("score", None), ("score", {"score": None})],

@@ -228,7 +228,7 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("FCS submission and turn limits must be positive")
     if args.dataset not in ("frontiersmith", "tmax"):
         raise ValueError("Choose frontiersmith or tmax")
-    if args.over_sampling_batch_size < args.rollout_batch_size:
+    if not args.colocate and args.over_sampling_batch_size < args.rollout_batch_size:
         raise ValueError("Oversampling batch cannot be smaller than the collected batch")
     if args.num_rollout <= 0 or not 0 <= args.num_critic_only_steps <= args.num_rollout:
         raise ValueError("Critic-only budget must be between zero and the positive rollout budget")

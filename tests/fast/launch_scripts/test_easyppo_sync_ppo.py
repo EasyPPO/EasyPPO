@@ -108,7 +108,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         "--advantage-estimator": "ppo",
         "--critic-context-mode": mode,
         "--rollout-batch-size": "32",
-        "--over-sampling-batch-size": "35",
+        "--over-sampling-batch-size": "1",
         "--n-samples-per-prompt": "16",
         "--global-batch-size": "512",
         "--critic-num-steps-per-rollout": "4",
@@ -186,10 +186,16 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
     asynchronous = import_launch_script(REPO_ROOT / f"examples/easyppo/run_qwen3_5_27b_async_{args.dataset}.py")
     monkeypatch.setattr(asynchronous.ScriptArgs, "create_backend", lambda self: backend)
     shared_args = {
-        name: value for name, value in vars(args).items() if name not in {"max_keep", "checkpoint_commit_hook"}
+        name: value
+        for name, value in vars(args).items()
+        if name not in {"max_keep", "checkpoint_commit_hook", "over_sampling_batch_size"}
     }
     asynchronous.execute(asynchronous.ScriptArgs(**(shared_args | {"num_nodes": args.num_nodes * 2})))
     async_argv = shlex.split(backend.training[-1]["train_args"])
+    for cmd, expected_block in ((argv, "1"), (async_argv, "35")):
+        index = cmd.index("--over-sampling-batch-size")
+        assert cmd[index + 1] == expected_block
+        del cmd[index : index + 2]
     assert "--keep-old-actor" in async_argv
     rollout_index = async_argv.index("--rollout-num-gpus")
     assert async_argv[rollout_index + 1] == str(args.rollout_num_gpus)
@@ -345,6 +351,7 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
         differences.remove("terminal_environment")
         differences.remove("frontier_judge_url")
     assert differences == {
+        "over_sampling_batch_size",
         "score_centering",
         "score_centering_candidates",
         "score_centering_is",

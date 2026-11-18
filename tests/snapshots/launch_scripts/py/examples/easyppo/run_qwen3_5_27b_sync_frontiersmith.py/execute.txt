@@ -61,7 +61,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --seed 1234
   --num-rollout 200
   --rollout-batch-size 32
-  --over-sampling-batch-size 35
+  --over-sampling-batch-size 1
   --n-samples-per-prompt 16
   --global-batch-size 512
   --rollout-temperature 1.0

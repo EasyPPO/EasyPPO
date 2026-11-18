@@ -13,6 +13,7 @@ from miles.utils.external_utils import command_utils as U
 class _SyncScriptArgs(_recipe.ScriptArgs):
     num_nodes: int = 4
     trainer_num_nodes: int = 0
+    over_sampling_batch_size: int = 1
     score_centering: bool = False
     score_centering_candidates: int = 0
     score_centering_is: Literal["none"] = "none"
@@ -30,6 +31,8 @@ class _SyncScriptArgs(_recipe.ScriptArgs):
 
 
 def _validate_sync_options(args: _SyncScriptArgs) -> None:
+    if args.over_sampling_batch_size != 1:
+        raise ValueError("Synchronous PPO fills the rollout one prompt group at a time")
     if args.score_centering:
         raise ValueError("Synchronous PPO launchers do not support --score-centering")
     if (

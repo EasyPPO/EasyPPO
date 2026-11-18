@@ -51,9 +51,9 @@ Miles/SGLang handles model decoding for both datasets.
 ## Batch and update schedule
 
 Each round accepts **32 prompt groups × 16 independent episodes = 512 episodes**.
-The first collection block launches 35 groups × 16 = 560 episodes. Additional
-blocks may be needed to collect 32 complete groups; the collector cancels the
-unused tail and waits for trial cleanup. Sampling is temperature=1, top-p=1,
+Synchronous training launches 32 groups and waits for all of them. If a group
+is rejected, the collector replaces just that group. Asynchronous training
+launches an initial block of 35 groups (560 episodes) and cancels the unused tail. Sampling is temperature=1, top-p=1,
 top-k=-1. Training seed is 1234; the data-shuffle seed is 42.
 
 The actor performs one optimizer update over the accepted round. The critic
@@ -88,7 +88,7 @@ The default run contains 200 outer rounds. Rounds 1–30 train only the critic;
 the first actor update is round 31. This gives **800 critic updates and 170 actor
 updates**, including 120 critic updates during warmup. LR warmup is separately
 set to zero. Accepted training volume is nominally 102,400 episodes; actual trial
-starts include oversampling and any additional collection.
+starts also include replacements for rejected groups and, in async runs, oversampling.
 
 ## Synchronous training
 
