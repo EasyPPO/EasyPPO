@@ -32,7 +32,7 @@ Multi-node allocations use RDMA and require eight GPUs per node; `--gpus 4`
 is available only with `--nodes 1`. Each invocation selects one experiment.
 Review the allocation before launching. Keep the client running in tmux.
 
-Prepare the shared pinned Qwen3.5-27B model once (CPU download, then single-node GPU conversion, even with `--nodes 2/4`):
+Prepare the shared pinned Qwen3.8-27B model once (CPU download, then single-node GPU conversion, even with `--nodes 2/4`):
 
 ```bash
 python -m modal_launchers.frontiersmith --action prepare \

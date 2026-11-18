@@ -195,7 +195,7 @@ def _validate(args: ScriptArgs) -> None:
     if args.rollout_gpus_per_engine <= 0 or args.rollout_num_gpus % args.rollout_gpus_per_engine:
         raise ValueError("Rollout GPUs must divide into complete inference engines")
     if args.rollout_gpus_per_engine not in (1, 2, 4, 8):
-        raise ValueError("Qwen3.5-27B rollout TP must divide its attention and recurrent heads")
+        raise ValueError(f"{args.model_name} rollout TP must divide its attention and recurrent heads")
     if args.sglang_server_concurrency <= 0:
         raise ValueError("SGLang server concurrency must be positive")
     if args.tensor_model_parallel_size <= 0 or trainer_gpus % args.tensor_model_parallel_size:
@@ -442,8 +442,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
             if args.dataset == "frontiersmith"
             else []
         ),
-        "--chat-template-path",
-        args.chat_template_path,
+        *(["--chat-template-path", args.chat_template_path] if args.chat_template_path else []),
         "--terminal-enable-thinking",
         *(["--terminal-continue-on-length"] if args.continue_on_length else []),
         "--terminal-tasks-dir",

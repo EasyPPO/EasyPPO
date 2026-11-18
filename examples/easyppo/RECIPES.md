@@ -1,4 +1,4 @@
-# Qwen3.5-27B terminal recipes
+# 27B terminal recipes
 
 The [README](../../README.md) provides environment setup, data/model downloads,
 Ray startup, judge operation, and complete launch commands. This reference
@@ -22,8 +22,8 @@ The launch interface is the same shape, with the dataset selected by filename.
 
 ## Model and data
 
-The model is `Qwen/Qwen3.5-27B`, pinned to HF revision
-`fc05daec18b0a78c049392ed2e771dde82bdf654`. The Megatron actor uses the converted
+FrontierSmith uses `Qwen/Qwen3.8-27B` at `37561816e66b5b9153b1b64c10968c18c1e6f4a0` with the checkpoint chat template.
+TMAX uses `Qwen/Qwen3.5-27B` at `fc05daec18b0a78c049392ed2e771dde82bdf654`. The Megatron actor uses the converted
 checkpoint. The critic loads the same converted reference backbone through the
 native model loader and uses a separate scalar value head. Its parameters,
 optimizer, scheduler, and memory are independent of the actor.

@@ -223,20 +223,16 @@ def test_prepare_selects_the_data_recipe(launcher, monkeypatch, tmp_path):
             calls.append(kwargs)
 
     monkeypatch.setattr(launcher.ScriptArgs, "create_backend", lambda self: Backend())
-    launcher.prepare(
-        launcher.ScriptArgs(
-            data_dir=str(tmp_path / "data"),
-            model_dir=str(tmp_path / "models"),
-        )
-    )
+    args = launcher.ScriptArgs(data_dir=str(tmp_path / "data"), model_dir=str(tmp_path / "models"))
+    launcher.prepare(args)
     assert calls[1][:2] == ["hf", "download"]
     assert "--revision" in calls[1]
-    if launcher.ScriptArgs().dataset == "frontiersmith":
+    if args.dataset == "frontiersmith":
         assert calls[2][1].endswith("make_miles_frontiersmith_data.py")
     else:
         assert calls[2][1].endswith("make_miles_terminal_data.py")
         assert "tmax" in calls[2] and "--tokenizer" in calls[2]
-    assert calls[3]["megatron_model_type"] == "qwen3.5-27B"
+    assert calls[3]["megatron_model_type"] == ("qwen3.8-27B" if args.dataset == "frontiersmith" else "qwen3.5-27B")
 
 
 def test_critic_warmstart_explicitly_resets_training_state(launcher):

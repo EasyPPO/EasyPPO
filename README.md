@@ -9,7 +9,7 @@
   <a href="https://arxiv.org/abs/2609.36802">EasyPPO paper</a>
 </p>
 
-This branch trains **Qwen3.5-27B** on terminal tasks with an independent memory
+This branch trains **Qwen3.8-27B** on FrontierSmith and **Qwen3.5-27B** on TMAX with an independent memory
 critic. It includes one-step asynchronous Score Centering/TIS training and
 synchronous clipped PPO. Each recipe supports `full_detach` and `actor-summary`
 critic contexts.
@@ -106,10 +106,9 @@ python examples/easyppo/run_qwen3_5_27b_async_tmax.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-Preparation downloads `Qwen/Qwen3.5-27B` at revision
-`fc05daec18b0a78c049392ed2e771dde82bdf654` and converts its Megatron checkpoint.
-The HF model is stored in `$MODEL_DIR/Qwen3.5-27B`; the converted model is
-`$MODEL_DIR/Qwen3.5-27B_torch_dist`. Preparation requires the GPU environment
+Preparation downloads the pinned Hugging Face model to `$MODEL_DIR/<model>` and
+converts it to `$MODEL_DIR/<model>_torch_dist`. See the [model revisions](examples/easyppo/RECIPES.md#model-and-data).
+Preparation requires the GPU environment
 for model conversion. It does not start task containers.
 
 | Dataset | Prepared training input | Full evaluation input |

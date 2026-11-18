@@ -14,7 +14,7 @@ critic-memory options.
 
 | Setting | Value |
 |---|---|
-| Model | Qwen3.5-27B |
+| Model | FrontierSmith: Qwen3.8-27B; TMAX: Qwen3.5-27B |
 | Training / evaluation | FrontierSmith / Frontier-CS, or TMAX-15K / Terminal-Bench 2.1 |
 | Driver | `train_async.py`, one-batch lookahead |
 | Actor objective | Miles Score Centering with TIS, weight cap 2 |

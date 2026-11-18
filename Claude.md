@@ -1,4 +1,4 @@
-# Qwen3.5-27B Synchronous PPO on FrontierSmith
+# Qwen3.8-27B Synchronous PPO on FrontierSmith
 
 The main objective is to test whether, in synchronous agentic PPO, giving the
 critic access to the full episode history improves value estimation compared
@@ -97,9 +97,9 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-This prepares the pinned `Qwen/Qwen3.5-27B` model, Harbor tasks, and JSONL datasets,
+This prepares the pinned `Qwen/Qwen3.8-27B` model, Harbor tasks, and JSONL datasets,
 then converts the Megatron checkpoint. Reuse compatible existing artifacts:
-`$MODEL_DIR/Qwen3.5-27B` and `$MODEL_DIR/Qwen3.5-27B_torch_dist`.
+`$MODEL_DIR/Qwen3.8-27B` and `$MODEL_DIR/Qwen3.8-27B_torch_dist`.
 Checkpoint conversion requires GPUs. Regenerate task data after changing
 `--frontier-judge-timeout`. Supply the shared judge URL when launching training.
 

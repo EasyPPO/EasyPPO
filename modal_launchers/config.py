@@ -10,6 +10,7 @@ from examples.easyppo.frontiersmith import (
     DEFAULT_SGLANG_SERVER_CONCURRENCY,
     SYNC_EVAL_SAMPLES_PER_PROMPT,
     SYNC_TERMINAL_ENVIRONMENT,
+    GenerationArgs,
 )
 
 from miles.utils.file_utils import atomic_write_text
@@ -177,6 +178,8 @@ class Config:
         # Retry limits and judge endpoint change across attempts; training identity does not.
         return {
             **{key: value for key, value in asdict(self).items() if key != "max_restarts"},
+            "hf_repo": GenerationArgs.hf_repo,
+            "hf_revision": GenerationArgs.hf_revision,
             "agent_protocol": "fcs-submit-v1",
         }
 

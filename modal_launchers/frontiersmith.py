@@ -244,7 +244,7 @@ def _prepare(modal, config):
         )
         try:
             snapshot_download(
-                ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/Qwen3.5-27B"
+                ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/{ScriptArgs.model_name}"
             )
         finally:
             volume.commit()

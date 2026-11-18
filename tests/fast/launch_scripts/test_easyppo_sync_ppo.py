@@ -102,7 +102,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
         assert value("--terminal-environment") == "docker"
         assert "--fcs-judge-url" not in argv
     assert submitted["train_script"] == "train.py"
-    assert submitted["megatron_model_type"] == "qwen3.5-27B"
+    assert submitted["megatron_model_type"] == ("qwen3.8-27B" if args.dataset == "frontiersmith" else "qwen3.5-27B")
     assert submitted["extra_env_vars"] == {"PYTHONPATH": args.megatron_path}
     expected = {
         "--advantage-estimator": "ppo",
@@ -227,7 +227,7 @@ def test_prepare_uses_the_fixed_training_and_evaluation_corpus(launcher, monkeyp
         assert preparation[preparation.index("--dataset") + 1] == "tmax"
         assert "--tokenizer" in preparation
         assert args.validation_data.endswith("tb21.eval.jsonl")
-    assert backend.conversions[0]["megatron_model_type"] == "qwen3.5-27B"
+    assert backend.conversions[0]["megatron_model_type"] == ("qwen3.8-27B" if args.dataset == "frontiersmith" else "qwen3.5-27B")
     assert backend.training == []
 
 
