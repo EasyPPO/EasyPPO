@@ -248,6 +248,7 @@ async def generate(input):
         task_path=task_path,
         trials_dir=Path(args.terminal_trials_dir),
         environment=args.terminal_environment,
+        judge_url=getattr(args, "fcs_judge_url", None),
         memory_mb=getattr(args, "terminal_memory_mb", None),
         docker_compose=tuple(getattr(args, "terminal_docker_compose", [])),
         tokenizer=input.state.tokenizer,
@@ -326,7 +327,10 @@ def _add_arguments(parser):
     parser.add_argument("--fcs-max-submissions", type=int, default=DEFAULT_MAX_SUBMISSIONS)
     parser.add_argument("--fcs-max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--terminal-trials-dir", default="terminal-trials")
-    parser.add_argument("--terminal-environment", choices=("docker", "daytona", "modal"), default="docker")
+    parser.add_argument(
+        "--terminal-environment", choices=("docker", "daytona", "modal", "shared-judge"), default="docker"
+    )
+    parser.add_argument("--fcs-judge-url", help="Shared judge HTTP(S) base URL for the submit-only protocol")
     parser.add_argument("--terminal-memory-mb", type=int, default=None)
     parser.add_argument("--terminal-docker-compose", action="append", default=[])
     parser.add_argument("--terminal-reward-key", default="reward")

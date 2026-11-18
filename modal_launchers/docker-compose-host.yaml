@@ -1,7 +1,5 @@
 services:
   main:
-    build:
-      network: host
     network_mode: host
     networks: !reset []
     extra_hosts: !reset []

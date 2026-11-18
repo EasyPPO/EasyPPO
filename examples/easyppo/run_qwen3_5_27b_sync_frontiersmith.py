@@ -21,7 +21,7 @@ Args:
     --model-dir / --data-dir / --output-dir: Model, task and run paths available in the job environment.
     --frontier-judge-url / --frontier-judge-timeout: Shared judge endpoint and queue-inclusive timeout baked into prepared tasks.
     --score-centering: Rejected; this entrypoint uses ordinary clipped PPO.
-    --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and five samples by default.
+    --eval-max-tasks / --eval-samples-per-prompt: Full benchmark and three samples by default.
 
 Example (configured four-node allocation; set path variables for the site):
     MILES_SCRIPT_EXTERNAL_RAY=1 python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \\
@@ -43,7 +43,7 @@ if sys.path[0] != _REPO_ROOT:
     sys.path.insert(0, _REPO_ROOT)
 
 from examples.easyppo import sync_ppo as _sync  # noqa: E402
-from examples.easyppo.frontiersmith import GenerationArgs  # noqa: E402
+from examples.easyppo.frontiersmith import SYNC_EVAL_SAMPLES_PER_PROMPT, GenerationArgs  # noqa: E402
 
 from miles.utils.external_utils import command_utils as U  # noqa: E402
 
@@ -51,6 +51,7 @@ from miles.utils.external_utils import command_utils as U  # noqa: E402
 @dataclass
 class ScriptArgs(GenerationArgs, _sync._SyncScriptArgs):
     dataset: Literal["frontiersmith"] = "frontiersmith"
+    eval_samples_per_prompt: int = SYNC_EVAL_SAMPLES_PER_PROMPT
 
     def __post_init__(self):
         super().__post_init__()

@@ -29,7 +29,7 @@ def _wait_ready(judge_url: str, *, timeout: float = 60) -> None:
     deadline = time.monotonic() + timeout
     while True:
         try:
-            _request(f"{judge_url}/problems")
+            _request(f"{judge_url}/health")
             return
         except (urllib.error.URLError, OSError):
             if time.monotonic() >= deadline:
@@ -99,12 +99,17 @@ def _verify_submissions(*, ledger: Path, logs: Path) -> None:
     for name in ("reward.txt", "reward.json"):
         (logs / name).unlink(missing_ok=True)
     submissions = json.loads(ledger.read_text(encoding="utf-8"))
+    write_submission_rewards(submissions, logs)
+
+
+def write_submission_rewards(submissions: list[dict], logs: Path) -> dict:
     if not isinstance(submissions, list):
         raise ValueError("FCS submissions must be a list")
     reward = max((_reward(result) for result in submissions), default=0.0)
     (logs / "judge-result.json").write_text(json.dumps(submissions))
     (logs / "reward.json").write_text(json.dumps({"reward": reward}))
     (logs / "reward.txt").write_text(str(reward))
+    return {"reward": reward}
 
 
 def main() -> None:

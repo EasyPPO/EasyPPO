@@ -2,6 +2,9 @@
 
 from dataclasses import dataclass
 
+DEFAULT_SGLANG_SERVER_CONCURRENCY = 128
+SYNC_EVAL_SAMPLES_PER_PROMPT = 3
+
 
 @dataclass
 class GenerationArgs:

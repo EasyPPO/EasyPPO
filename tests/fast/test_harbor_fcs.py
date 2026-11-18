@@ -372,3 +372,168 @@ async def test_exact_soft_threshold_does_not_request_an_extra_summary():
     assert actual == prompts and trace.n_compactions == 0
     assert agent._should_compact(len(prompts[1]) + 1, 1)
     assert agent._should_compact(agent.options.max_context_tokens - 100, 100)
+
+
+def _direct_trial(tmp_path, *, agent_timeout=60.0, submit_timeout=60.0):
+    task = make_task(tmp_path / "tasks")
+    with (task / "task.toml").open("a") as config:
+        config.write(
+            f'\n[agent]\ntimeout_sec={agent_timeout}\n[verifier.env]\nFCS_ITERATIVE_SUBMISSIONS="1"\nPROBLEM_ID="63"\nMAX_POLL_TIME="{submit_timeout}"\nJUDGE_URL="https://dataset.invalid"\n'
+        )
+    return dict(
+        task_path=task,
+        trials_dir=tmp_path / "trials",
+        environment="shared-judge",
+        judge_url="https://judge.example",
+        tokenizer=Tokenizer(),
+        config=TerminalConfig(
+            compaction="none",
+            max_context_tokens=200000,
+            compact_threshold=150000,
+            max_new_tokens=80000,
+            max_total_tokens=120000,
+        ),
+        agent_protocol="fcs-submit",
+        fcs_max_submissions=3,
+    )
+
+
+@pytest.mark.asyncio
+async def test_direct_trial_uses_launch_origin_and_persists_best_verdict(monkeypatch, tmp_path):
+    import httpx
+    from miles.utils.http_utils import GeneralHttpClientProvider
+
+    requests = []
+    verdicts = [{"status": "done", "score": 50}, {"status": "done", "score": 80}, {"status": "error"}]
+
+    def handle(req):
+        assert req.url.host == "judge.example" and req.headers["Authorization"] == "Bearer test-credential"
+        if req.method == "POST":
+            data = json.loads(req.content)
+            assert data["pid"] == "63" and data["lang"] == "cpp"
+            requests.append(data["code"])
+            return httpx.Response(200, json={"sid": len(requests)})
+        return httpx.Response(200, json=verdicts[int(req.url.path.rsplit("/", 1)[-1]) - 1])
+
+    replies = iter(["x" * 70000, "second", "third"])
+
+    async def decode(*_):
+        return completion(f"```cpp\n{next(replies)}\n```")
+
+    monkeypatch.setenv("FRONTIERCS_JUDGE_TOKEN", "test-credential")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: client)
+        trace, rewards, folder = await run_trial(decode=decode, **_direct_trial(tmp_path))
+    assert [len(code) for code in requests] == [70000, 6, 5]
+    assert trace.submission_scores == [50, 80, 0] and rewards == {"reward": 0.8}
+    directory = Path(folder)
+    assert json.loads((directory / "verifier/reward.json").read_text()) == rewards
+    assert json.loads((directory / "verifier/judge-result.json").read_text()) == verdicts
+    assert json.loads((directory / "timing.json").read_text())["judge_seconds"] >= 0
+    assert all("test-credential" not in p.read_text() for p in directory.rglob("*.json"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", ["cancel", "agent_timeout", "judge_timeout", "bad_score", "http_error"])
+async def test_direct_trial_preserves_partial_evidence_and_classifies_interruptions(monkeypatch, tmp_path, end):
+    import httpx
+    from miles.utils.http_utils import GeneralHttpClientProvider
+
+    started = asyncio.Event()
+    n_post = 0
+
+    async def handle(req):
+        nonlocal n_post
+        if req.method == "POST":
+            n_post += 1
+            return httpx.Response(200, json={"sid": n_post})
+        if req.url.path == "/result/1":
+            return httpx.Response(200, json={"status": "done", "score": 40})
+        started.set()
+        if end == "bad_score":
+            return httpx.Response(200, json={"status": "done", "score": -1})
+        if end == "http_error":
+            return httpx.Response(502)
+        await asyncio.Future()
+
+    async def decode(*_):
+        return completion("```cpp\nx\n```")
+
+    kwargs = _direct_trial(
+        tmp_path,
+        agent_timeout=0.1 if end == "agent_timeout" else 5,
+        submit_timeout=0.1 if end == "judge_timeout" else 5,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: client)
+        task = asyncio.create_task(run_trial(decode=decode, **kwargs))
+        await asyncio.wait_for(started.wait(), 3)
+        if end == "agent_timeout":
+            trace, reward, _ = await task
+            assert trace.truncated and trace.exit_status == "AgentTimeoutError" and reward == {"reward": 0.4}
+        else:
+            if end == "cancel":
+                task.cancel()
+            with pytest.raises(
+                {
+                    "cancel": asyncio.CancelledError,
+                    "judge_timeout": TimeoutError,
+                    "bad_score": ValueError,
+                    "http_error": httpx.HTTPStatusError,
+                }[end]
+            ):
+                await task
+    (directory,) = (tmp_path / "trials").iterdir()
+    assert json.loads((directory / "verifier/judge-result.json").read_text()) == [{"status": "done", "score": 40}]
+    assert (directory / "verifier/reward.json").exists() == (end == "agent_timeout")
+    assert n_post == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides, error",
+    [
+        ({"agent_protocol": "terminal"}, "requires the fcs-submit"),
+        ({"memory_mb": 512}, "terminal-memory-mb"),
+        ({"docker_compose": ("compose.yaml",)}, "terminal-docker-compose"),
+        ({"judge_url": None}, "fcs-judge-url"),
+    ],
+)
+async def test_shared_judge_validates_configuration_before_episode(tmp_path, overrides, error):
+    with pytest.raises(ValueError, match=error):
+        await run_trial(decode=None, **(_direct_trial(tmp_path) | overrides))
+    assert not (tmp_path / "trials").exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_trial_cancellation_drains_persistence(monkeypatch, tmp_path):
+    import threading
+
+    from agentic_critic import shared_fcs
+
+    writing = threading.Event()
+    release = threading.Event()
+    persist = shared_fcs._persist_episode
+
+    def slow_persist(*args, **kwargs):
+        writing.set()
+        assert release.wait(5)
+        return persist(*args, **kwargs)
+
+    async def decode(*_):
+        return completion("No submission")
+
+    monkeypatch.setattr(shared_fcs, "_persist_episode", slow_persist)
+    kwargs = _direct_trial(tmp_path) | {"fcs_max_turns": 1}
+    task = asyncio.create_task(run_trial(decode=decode, **kwargs))
+    assert await asyncio.to_thread(writing.wait, 3)
+    try:
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(list((tmp_path / "trials").glob("*/agent/easyppo-trajectory.json"))) == 1

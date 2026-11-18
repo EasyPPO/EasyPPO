@@ -36,6 +36,10 @@ _MANIFEST = Path("data/sample_lists/frontiersmith_train_200.json")
 _ADAPTER = Path("harbor/adapters/frontier-cs-algorithm")
 DEFAULT_JUDGE_URL = "http://host.docker.internal:8081"
 DEFAULT_JUDGE_TIMEOUT = 3600
+# The submit-only client and verifier use the Python standard library.
+SUBMISSION_IMAGE = (
+    "python:3.12-slim-bookworm" "@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df"
+)
 
 
 def _problem_ids(source: Path) -> list[str]:
@@ -90,7 +94,9 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
         FRONTIERCS_JUDGE_TOKEN="${FRONTIERCS_JUDGE_TOKEN:-}",
         FCS_ITERATIVE_SUBMISSIONS="1",
     )
-    config.get("environment", {}).get("env", {}).pop("FRONTIER_CS_ALGORITHMIC_PATH", None)
+    environment = config.setdefault("environment", {})
+    environment.get("env", {}).pop("FRONTIER_CS_ALGORITHMIC_PATH", None)
+    environment["docker_image"] = SUBMISSION_IMAGE
     config_path.write_text(toml.dumps(config))
     # The submit-only agent receives the statement directly, with no shell workspace instructions.
     (task / "instruction.md").write_text(
@@ -103,6 +109,7 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
     services.pop("judge", None)
     main = services["main"]
     main.pop("depends_on", None)
+    main["working_dir"] = "/app"
     # Only the local judge alias needs Docker's host gateway. Remote judges
     # (including Modal) must not require DinD to provide a host-gateway IP.
     hosts = main.get("extra_hosts", [])
@@ -119,11 +126,8 @@ def _install_verifier(task: Path, *, judge_url: str, judge_timeout: int) -> None
     else:
         main.pop("extra_hosts", None)
     compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
-    # Harbor runs the fixed submission client and final verifier in this image.
-    shutil.copy2(
-        Path(__file__).resolve().parents[1] / "agentic_critic/frontiersmith.Dockerfile",
-        task / "environment/Dockerfile",
-    )
+    # Drop the interactive agent build spec when preparing submit-only tasks.
+    (task / "environment/Dockerfile").unlink(missing_ok=True)
     shutil.copy2(Path(__file__).with_name("frontiersmith_verifier.py"), task / "tests/evaluate.py")
     entrypoint = task / "tests/test.sh"
     entrypoint.write_text(

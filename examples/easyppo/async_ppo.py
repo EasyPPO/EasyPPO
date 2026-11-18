@@ -15,6 +15,7 @@ from typing import Literal
 
 import agentic_critic
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
+from examples.easyppo.frontiersmith import DEFAULT_SGLANG_SERVER_CONCURRENCY
 from miles.utils.external_utils import command_utils as U
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.workers.types import ClusterBackend
@@ -53,7 +54,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     frontier_source_dir: str = ""
     frontier_judge_url: str = "http://host.docker.internal:8081"
     frontier_judge_timeout: int = 3600
-    terminal_environment: Literal["docker", "daytona", "modal"] = "docker"
+    terminal_environment: Literal["docker", "daytona", "modal", "shared-judge"] = "docker"
     terminal_memory_mb: int | None = None
     terminal_docker_compose: list[str] = field(default_factory=list)
     fcs_max_submissions: int = DEFAULT_MAX_SUBMISSIONS
@@ -109,7 +110,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tensor_model_parallel_size: int = 4
     rollout_gpus_per_engine: int = 4
     sglang_mem_fraction_static: float = 0.7
-    sglang_server_concurrency: int = 128
+    sglang_server_concurrency: int = DEFAULT_SGLANG_SERVER_CONCURRENCY
     eval_interval: int = 10
     eval_samples_per_prompt: int = 5
     eval_temperature: float = 1.0
@@ -212,6 +213,11 @@ def _validate(args: ScriptArgs) -> None:
         raise ValueError("Evaluation task limit and subset seed must be nonnegative")
     if args.eval_samples_per_prompt <= 0:
         raise ValueError("Evaluation samples per prompt must be positive")
+    if args.terminal_environment == "shared-judge":
+        if args.dataset != "frontiersmith":
+            raise ValueError("shared-judge requires the FrontierSmith submit-only protocol")
+        if args.terminal_memory_mb is not None or args.terminal_docker_compose:
+            raise ValueError("Docker Compose and sandbox memory options require a sandbox environment")
     if args.terminal_memory_mb is not None and args.terminal_memory_mb <= 0:
         raise ValueError("Terminal sandbox memory must be positive")
     if args.fcs_max_submissions < 1 or args.fcs_max_turns < 1:
@@ -442,6 +448,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         args.trial_root,
         "--terminal-environment",
         args.terminal_environment,
+        *(["--fcs-judge-url", args.frontier_judge_url] if args.terminal_environment == "shared-judge" else []),
         *(["--terminal-memory-mb", str(args.terminal_memory_mb)] if args.terminal_memory_mb is not None else []),
         *[value for path in args.terminal_docker_compose for value in ("--terminal-docker-compose", path)],
         "--terminal-compaction",

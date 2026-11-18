@@ -169,7 +169,7 @@ def test_sync_argv_preserves_tuning_without_sc_or_old_actor(launcher, monkeypatc
     assert evaluation["path"] == args.validation_data
     assert evaluation["name"] == ("fcs" if args.dataset == "frontiersmith" else "tb21")
     assert evaluation["max_samples"] is None and evaluation["sample_seed"] == 42
-    assert value("--n-samples-per-eval-prompt") == "5"
+    assert value("--n-samples-per-eval-prompt") == ("3" if args.dataset == "frontiersmith" else "5")
     assert value("--prompt-data") == args.train_data
 
     # All remaining flags must be identical to the existing async clipped-PPO
@@ -328,7 +328,10 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     async_args = asynchronous.ScriptArgs(run_id=args.run_id)
     sync_fields = {field.name for field in fields(args)} - {"max_keep", "checkpoint_commit_hook"}
     assert sync_fields == {field.name for field in fields(async_args)}
-    assert {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)} == {
+    differences = {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)}
+    if args.dataset == "frontiersmith":
+        differences.remove("eval_samples_per_prompt")
+    assert differences == {
         "score_centering",
         "score_centering_candidates",
         "score_centering_is",
@@ -349,7 +352,8 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
 
     assert options(launcher.main) - {"--max-keep", "--checkpoint-commit-hook"} == options(asynchronous.main)
     assert args.eval_max_tasks == async_args.eval_max_tasks == 0
-    assert args.eval_samples_per_prompt == async_args.eval_samples_per_prompt == 5
+    assert args.eval_samples_per_prompt == (3 if args.dataset == "frontiersmith" else 5)
+    assert async_args.eval_samples_per_prompt == 5
     assert (args.num_nodes, args.trainer_num_nodes, args.rollout_num_gpus) == (4, 4, 32)
     assert (async_args.num_nodes, async_args.trainer_num_nodes, async_args.rollout_num_gpus) == (8, 2, 48)
     assert args.colocate and not async_args.colocate
@@ -377,6 +381,21 @@ def test_sync_eval_controls_share_the_async_defaults_and_overrides(launcher, mon
     config = json.loads(base64.b64decode(argv[argv.index("--eval-config") + 1].removeprefix("base64:")))
     assert config["datasets"][0]["max_samples"] == (maximum or None)
     assert config["datasets"][0]["name"].endswith("_quick") == bool(maximum)
+
+
+def test_shared_judge_environment_reaches_submit_only_recipe(launcher, monkeypatch):
+    backend = _backend(monkeypatch, launcher)
+    args = launcher.ScriptArgs(terminal_environment="shared-judge", frontier_judge_url="https://shared-judge.example")
+    if args.dataset == "tmax":
+        with pytest.raises(ValueError, match="submit-only"):
+            launcher.execute(args)
+        assert not backend.training
+        return
+    launcher.execute(args)
+    argv = shlex.split(backend.training[0]["train_args"])
+    assert argv[argv.index("--terminal-environment") + 1] == "shared-judge"
+    assert argv[argv.index("--fcs-judge-url") + 1] == "https://shared-judge.example"
+    assert "--terminal-docker-compose" not in argv
 
 
 def test_terminal_memory_and_eval_controls_reach_training(launcher, monkeypatch):

@@ -150,7 +150,7 @@ rounds. Rounds 31–100 also perform one actor update. Checkpoints are saved eve
 five rounds. With `--max-keep 2`, only the two most recent complete checkpoint
 sets are kept. Older checkpoints are removed after the new actor, critic, and
 rollout state have all been saved. Evaluation runs initially, every ten rounds, and at the end,
-with 180 tasks × 5 trials per evaluation.
+with 180 tasks × 3 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
 and `trials/`. Use a new run ID for each new experiment. See [section 6](#6-resume-training)
@@ -219,7 +219,7 @@ A step here means one rollout round of 512 episodes. Each round has four critic
 optimizer updates, each on 128 episodes. The first 30 rounds therefore perform
 120 critic updates and zero actor updates. Rounds 31–100 also update the actor
 once per round. Eval runs before training and after rounds 10, 20, …, 100, using
-all 180 FCS tasks with five trials each (`--eval-max-tasks 0` selects all tasks).
+all 180 FCS tasks with three trials each (`--eval-max-tasks 0` selects all tasks).
 
 Keep the initial model, 200-task training set, resource allocation, and other
 hyperparameters identical. Start both runs from the same base checkpoint;

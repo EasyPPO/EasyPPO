@@ -74,7 +74,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-interval 10
   --no-eval-on-epoch
   --no-save-on-epoch
-  --n-samples-per-eval-prompt 5
+  --n-samples-per-eval-prompt 3
   --eval-temperature 1.0
   --eval-top-p 1.0
   --eval-top-k -1

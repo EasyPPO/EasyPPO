@@ -14,7 +14,28 @@ from agentic_critic.fcs_env import (
     extract_code,
     format_feedback,
 )
+from agentic_critic.fcs_judge import CaseResult, JudgeResult
 from agentic_critic.terminal_env import TerminalAgent
+from scripts.frontiersmith_verifier import _reward
+
+
+def judge_feedback(response: dict) -> JudgeResult:
+    score = 100 * _reward(response)
+    if response["status"] == "error":
+        message = str(response.get("error", ""))
+        if message.startswith("Error: compile failed: "):
+            return JudgeResult(score, "Compile Error", compile_msg=message)
+        return JudgeResult(score, "Judge Error")
+    cases = [
+        CaseResult(
+            name=str(i),
+            ratio=float(case.get("scoreRatio") or 0),
+            status="Accepted" if case.get("scoreRatio") == 1 else "Wrong Answer",
+            time_s=float(case.get("time") or 0) / 1e9,
+        )
+        for i, case in enumerate(response.get("cases") or [], 1)
+    ]
+    return JudgeResult(score, "done", cases=cases)
 
 
 class FcsSubmissionAgent(TerminalAgent):

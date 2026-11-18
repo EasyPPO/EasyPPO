@@ -42,8 +42,9 @@ JSONL files record the resulting task sets. See [data preparation](ASYNC_DATA.md
 Harbor runs task containers on the rollout executor. Frontier tasks use the
 [submit-only protocol](#rewards-validation-and-checkpoints) and a shared judge;
 TMAX/TB expose bash and use their supplied task verifiers. Model decoding is handled by Miles/SGLang.
-Frontier task containers provide C++, Python and the verifier HTTP client;
-the terminal agent runs in the rollout worker.
+For FrontierSmith, `--terminal-environment shared-judge` sends C++ from the rollout
+worker to that same judge over HTTP. Pass `--frontier-judge-url` at launch with an address
+reachable from the rollout worker. The Modal launcher selects this mode by default.
 
 ## Batch and update schedule
 
@@ -369,17 +370,16 @@ Re-run data preparation for existing FrontierSmith/FCS tasks to update their
 instructions and verifier for `fcs-submit`. Old final-file verifier tasks are
 rejected by this agent.
 
-Validation defaults to the full evaluation set (`eval_max_tasks=0`) with five
-episodes per task (`eval_samples_per_prompt=5`), sampled at `1/1/-1`. Each point
-runs **180 × 5 = 900 Frontier-CS trials** or **89 × 5 = 445 TB2.1 trials** and uses
-result names `fcs` / `tb21`.
+Validation defaults to the full evaluation set (`eval_max_tasks=0`) sampled at `1/1/-1`. Synchronous FrontierSmith averages three draws per task (180 × 3 = 540 trials).
+Async FrontierSmith uses five draws (900 trials), as do both TB2.1 recipes (445 trials).
+Result names are `fcs` and `tb21`.
 
 Use `--skip-eval-before-train` to enter training immediately, or
 `--eval-max-tasks 2 --eval-samples-per-prompt 1` for a small evaluation at every
 point.
 
 A fresh 200-round run evaluates initially and at rounds 10 through 200: 21
-points, **18,900 Frontier-CS trials** or **9,345 TB2.1 trials per experiment**.
+points, totaling 11,340 synchronous or 18,900 asynchronous Frontier-CS trials, or 9,345 TB2.1 trials.
 Checkpoints are saved at rounds 10 through 200, giving 20 points.
 Epoch-triggered extra eval/save is disabled.
 
@@ -390,8 +390,8 @@ Smoke runs use `--eval-max-tasks 1 --eval-samples-per-prompt 1`.
 
 Evaluation logs include `eval/<name>/episode_raw_reward`, the mean over numeric
 returned episodes, and `eval/<name>/num_training_samples`, the number of physical
-segments. The top-level `eval/<name>` is a row mean, and
-`eval/<name>-none_reward_ratio` records missing row rewards.
+segments. The top-level `eval/<name>` weights each Harbor episode equally, and
+`eval/<name>-none_reward_ratio` records missing episode rewards.
 
 Actor and critic use separate native Megatron checkpoint directories,
 `checkpoints` and `checkpoints_critic`, with model/head, optimizer, scheduler,

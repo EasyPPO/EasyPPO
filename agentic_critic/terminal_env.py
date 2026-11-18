@@ -7,8 +7,10 @@ The decoder returns the actual sampled token IDs and log probabilities.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from jinja2 import StrictUndefined, Template
@@ -271,6 +273,28 @@ class TerminalTrace:
             for sample, ids, logps in zip(samples, self.topk_token_ids, self.topk_log_probs, strict=True):
                 sample.update(rollout_topk_token_ids=ids, rollout_topk_log_probs=logps)
         return samples
+
+    def write_trajectory(self, messages: list[dict], logs_dir: Path) -> None:
+        # Avoid asdict() deep-copying potentially large top-k arrays. Persist them
+        # losslessly in a compact sidecar and keep only field references in JSON.
+        payload = asdict(replace(self, topk_token_ids=None, topk_log_probs=None))
+        payload.pop("topk_token_ids")
+        payload.pop("topk_log_probs")
+        if self.topk_token_ids is not None:
+            # NumPy is only needed when the optional candidate feature is active.
+            import numpy as np
+
+            archive, segments = {}, []
+            for i, (ids, logps) in enumerate(zip(self.topk_token_ids, self.topk_log_probs, strict=True)):
+                ids_key, logps_key = f"segment_{i}_token_ids", f"segment_{i}_log_probs"
+                archive[ids_key], archive[logps_key] = ids, logps
+                segments.append({"token_ids": ids_key, "log_probs": logps_key, "shape": list(ids.shape)})
+            path = logs_dir / "easyppo-topk.npz"
+            np.savez_compressed(path, **archive)
+            payload["topk_candidates"] = {"path": path.name, "segments": segments}
+        (logs_dir / "easyppo-trajectory.json").write_text(
+            json.dumps({"trace": payload, "messages": messages}, ensure_ascii=False)
+        )
 
     def segment_metadata(self, index: int) -> dict:
         calls = [call for call in self.calls if call["segment"] == index]

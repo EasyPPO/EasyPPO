@@ -68,17 +68,17 @@ def test_missing_solution_is_task_failure_without_contacting_judge(monkeypatch, 
 
 def test_judge_uses_upstream_json_contract_and_polls_until_done(monkeypatch):
     calls = []
-    results = iter([{"sid": "123"}, {"status": "queued"}, {"status": "done", "score": 55}])
+    results = iter([{"ok": True}, {"sid": "123"}, {"status": "queued"}, {"status": "done", "score": 55}])
 
     def request(url, payload=None):
         calls.append((url, payload))
         return next(results)
 
-    monkeypatch.setattr(verifier, "_wait_ready", lambda url: None)
     monkeypatch.setattr(verifier, "_request", request)
     monkeypatch.setattr(verifier.time, "sleep", lambda seconds: None)
     assert verifier._judge("http://judge", "frontiersmith_3", "code", timeout=30)["score"] == 55
     assert calls == [
+        ("http://judge/health", None),
         ("http://judge/submit", {"pid": "frontiersmith_3", "lang": "cpp", "code": "code"}),
         ("http://judge/result/123", None),
         ("http://judge/result/123", None),

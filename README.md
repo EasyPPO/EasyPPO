@@ -153,9 +153,13 @@ The upstream API has no authentication; expose port 8081 on a trusted network.
 The merged bank contains 200 Smith and 180 FCS problems; the training and evaluation
 JSONL files include all 200 and 180 respectively. Each corpus retains its pinned checkers
 and test data. Checker/interactor scores are scaled from `[0,100]` to `[0,1]`.
-Harbor starts only each trial's `main` sandbox. Its verifier submits
-`/app/solution.cpp` to the shared judge, then writes `reward.json` and
-`judge-result.json`. Trial teardown does not stop the judge.
+The Frontier agent submits each C++ solution to the shared judge and records the
+best score across submissions as the episode reward. The standalone launchers
+default to Harbor Docker. Set `--terminal-environment shared-judge` to send
+submissions directly from the rollout worker using the same agent and judge.
+This is the default for the Modal launcher, which supplies the endpoint. When using
+shared-judge from a standalone launcher, pass `--frontier-judge-url` at launch with
+an address reachable from the rollout worker.
 
 `--frontier-judge-timeout` defaults to 3600 seconds including queue wait; the
 Harbor verifier deadline adds 90 seconds. Rerun preparation when changing the
@@ -242,20 +246,20 @@ the launcher's W&B configuration.
 
 Training performs initial validation, then validation and checkpointing every
 ten rounds, including the final round. By default, `--eval-max-tasks 0` selects
-the **full validation set** and `--eval-samples-per-prompt 5` runs five independent
+the **full validation set** and each launcher samples independent
 episodes per task at temperature/top-p/top-k `1/1/-1`.
 
 | Dataset | Trials per validation point | Trials over 21 points in a fresh 200-round run |
 |---|---:|---:|
-| Frontier-CS | 180 × 5 = **900** | **18,900** |
+| Frontier-CS, synchronous | 180 × 3 = **540** | **11,340** |
+| Frontier-CS, asynchronous | 180 × 5 = **900** | **18,900** |
 | Terminal-Bench 2.1 | 89 × 5 = **445** | **9,345** |
 
 Full-set results use `fcs` or `tb21`. For an explicit quick subset, add
 `--eval-max-tasks 16`; selection and order are fixed with seed 42, and result
 names become `fcs_quick` or `tb21_quick`. Use `--eval-samples-per-prompt 1` when
 one trial per task is sufficient, including smoke runs. Evaluation reward
-summaries average numeric returned episodes; five trials per task do not
-change training's 16-sample prompt groups.
+summaries average numeric returned episodes; training uses 16-sample prompt groups.
 
 Outputs for a run are organized as:
 

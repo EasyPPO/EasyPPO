@@ -5,15 +5,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import toml
 import yaml
 
 pytest.importorskip("harbor")
 
+from harbor.environments.definition import should_use_prebuilt_docker_image
 from harbor.trial.trial import Trial
 
 from agentic_critic.harbor_terminal import run_trial
 from agentic_critic.terminal_env import TerminalConfig, TerminalTrace
-from scripts.make_miles_frontiersmith_data import _install_verifier
+from scripts.make_miles_frontiersmith_data import SUBMISSION_IMAGE, _install_verifier
 
 
 @pytest.mark.parametrize("hosts", [["other:1.2.3.4"], {"other": "1.2.3.4"}])
@@ -24,9 +26,15 @@ def test_remote_judge_removes_only_local_gateway_and_reprepare_is_reversible(tmp
     (tmp_path / "environment/statement.txt").write_text("Solve the problem.")
     compose = tmp_path / "environment/docker-compose.yaml"
     compose.write_text(yaml.safe_dump({"services": {"main": {"extra_hosts": hosts}}}))
+    (tmp_path / "environment/Dockerfile").write_text("FROM ubuntu:24.04")
     for url, local in [("http://host.docker.internal:8081", True), ("https://judge.modal.host", False)] * 2:
         _install_verifier(tmp_path, judge_url=url, judge_timeout=10)
-        actual = yaml.safe_load(compose.read_text())["services"]["main"]["extra_hosts"]
+        main = yaml.safe_load(compose.read_text())["services"]["main"]
+        image = toml.load(tmp_path / "task.toml")["environment"]["docker_image"]
+        assert image == SUBMISSION_IMAGE
+        assert should_use_prebuilt_docker_image(tmp_path / "environment", docker_image=image, force_build=True)
+        assert main["working_dir"] == "/app"
+        actual = main["extra_hosts"]
         assert ("host.docker.internal" in str(actual)) == local
         assert "other" in str(actual)
 

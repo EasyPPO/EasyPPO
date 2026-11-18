@@ -10,6 +10,7 @@ import os
 import subprocess
 import time
 import urllib.request
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,7 +38,7 @@ def _training_image(modal, config):
     sglang_commit = lock["sglang_commit"]
     megatron_commit = lock["megatron_commit"]
     memory_saver_commit = lock["torch_memory_saver_commit"]
-    return (
+    image = (
         modal.Image.from_registry(config.image)
         .entrypoint([])
         .apt_install("libibverbs1", "ibverbs-providers")
@@ -55,8 +56,11 @@ def _training_image(modal, config):
             f"TMS_CUDA_MAJOR=13 python3 -m pip install --no-deps --force-reinstall git+https://github.com/fzyzcjy/torch_memory_saver.git@{memory_saver_commit}",
         )
         .pip_install("harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.19.0", "modal==1.6.2")
-        .apt_install("docker.io", "docker-compose-v2")
-        .add_local_dir(ROOT, config.source, ignore=IGNORE, copy=True)
+    )
+    if config.terminal_environment == "docker":
+        image = image.apt_install("docker.io", "docker-compose-v2")
+    return (
+        image.add_local_dir(ROOT, config.source, ignore=IGNORE, copy=True)
         .run_commands(f"python3 -m pip install --no-deps -e {config.source}")
         .env(
             {
@@ -111,14 +115,24 @@ def _build_training(modal, config):
         from modal_launchers.docker_runtime import docker_daemon
         from modal_launchers.runtime import train
 
-        with docker_daemon(Path("/tmp/easyppo-dockerd.log")):
-            if config.nodes > 1:
-                from modal_launchers.multinode import run_node
+        daemon = (
+            docker_daemon(Path("/tmp/easyppo-dockerd.log"))
+            if config.terminal_environment == "docker"
+            else nullcontext()
+        )
+        try:
+            with daemon:
+                if config.nodes > 1:
+                    from modal_launchers.multinode import run_node
 
-                run_node(modal.Cluster.from_context(), config, volume, judge_url, judge_token)
-            else:
-                volume.reload()
-                train(config, judge_url, judge_token)
+                    run_node(modal.Cluster.from_context(), config, volume, judge_url, judge_token)
+                else:
+                    volume.reload()
+                    train(config, judge_url, judge_token)
+        except TimeoutError as exc:
+            # FunctionCall.get uses built-in TimeoutError for an expired local poll.
+            # Keep application timeouts distinct when Modal forwards the remote exception.
+            raise RuntimeError(f"Training operation timed out: {exc}") from exc
 
     if config.nodes > 1:
         training = modal.clustered(size=config.nodes, rdma=True)(training)
@@ -127,7 +141,7 @@ def _build_training(modal, config):
         cpu=32,
         memory=config.memory_gib * 1024,
         timeout=86400,
-        experimental_options={"enable_docker": True},
+        **({"experimental_options": {"enable_docker": True}} if config.terminal_environment == "docker" else {}),
         **(common | {"max_containers": config.nodes}),
     )(training)
 
@@ -189,8 +203,6 @@ class JudgeLifetimeTimeout(TimeoutError):
 
 
 def _train(modal, config):
-    from modal.exception import FunctionTimeoutError
-
     app, _, preflight, training = _build_training(modal, config)
     judge_image = _judge_image(modal)
     with modal.enable_output(), app.run():
@@ -198,7 +210,7 @@ def _train(modal, config):
             try:
                 _attempt(modal, app, config, judge_image, preflight, training)
                 return
-            except (FunctionTimeoutError, JudgeLifetimeTimeout):
+            except JudgeLifetimeTimeout:
                 if attempt == config.max_restarts:
                     raise
                 print(f"Timeout; resuming {config.run_id}, restart {attempt + 1}/{config.max_restarts}", flush=True)
