@@ -45,7 +45,9 @@ TASK_PROMPT = (
     "best score so far, and remaining submissions. For interactive problems your program communicates "
     "with the judge using the protocol in the statement. Feedback reports case counts by status. "
     "Compilation errors include a compiler diagnostic excerpt.\n\n"
-    "Output ONLY the C++ code wrapped in ```cpp and ```. No explanation.\n\n"
+    "To submit a solution, output your complete program in a ```cpp code block and end your turn "
+    "immediately after the closing ```. The harness then automatically submits the program to the judge "
+    "and returns the judge's feedback.\n\n"
     "{statement}\n\nGenerate solution code:"
 )
 
@@ -59,8 +61,9 @@ NO_CODE_PROMPT = "No ```cpp code block was found in your reply."
 NEXT_PROMPT = "Submit an improved solution. Output ONLY the C++ code wrapped in ```cpp and ```."
 
 COMPACT_PROMPT = (
-    "Summarize the conversation so far. You will receive the full original problem statement "
-    "alongside this summary on your next turn."
+    "Write a summary for yourself to use on the next turn. Your summary replaces the conversation history. "
+    "You will receive the original task and your summary, then continue the same episode with your "
+    "remaining submissions. Writing the summary does not submit anything to the judge or use a submission."
 )
 
 # After a compaction the actor restarts from the task and its own summary, and nothing else: the environment does

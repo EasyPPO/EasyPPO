@@ -11,9 +11,12 @@ from modal_launchers.config import Config, check_manifest, parse_args
 
 
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
-def test_recipe_matches_claude(mode):
-    config = Config(mode=mode, run_id="test")
+@pytest.mark.parametrize(("size", "summary", "concurrency"), [("9b", "8192", "4"), ("27b", "6144", "128")])
+def test_sync_recipe(mode, size, summary, concurrency):
+    _, config = parse_args(["--mode", mode, "--model-size", size, "--run-id", "test"])
     args = config.command()
+    assert args[1].endswith(f"/run_qwen3_5_{size}_sync_frontiersmith.py")
+    assert config.wandb_project == f"miles-run_qwen3_5_{size}_sync_frontiersmith"
     for flag, value in {
         "--num-rollout": "100",
         "--save-interval": "5",
@@ -26,7 +29,8 @@ def test_recipe_matches_claude(mode):
         "--eval-samples-per-prompt": "3",
         "--max-context-tokens": "131072",
         "--terminal-environment": "shared-judge",
-        "--sglang-server-concurrency": "128",
+        "--sglang-server-concurrency": concurrency,
+        "--summary-tokens": summary,
         "--critic-context-mode": mode,
     }.items():
         assert args[args.index(flag) + 1] == value

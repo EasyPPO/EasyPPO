@@ -103,7 +103,7 @@ def _build_training(modal, config):
 
             check_manifest(
                 config,
-                wandb_project="miles-run_qwen3_5_27b_sync_frontiersmith",
+                wandb_project=config.wandb_project,
                 wandb_entity=os.environ.get("WANDB_ENTITY"),
             )
             return True
@@ -232,19 +232,20 @@ def _prepare(modal, config):
         serialized=True,
     )
     def download():
-        from examples.easyppo.run_qwen3_5_27b_sync_frontiersmith import ScriptArgs
         from huggingface_hub import snapshot_download
         from modal_launchers.config import check_manifest
 
         volume.reload()
         check_manifest(
             config,
-            wandb_project="miles-run_qwen3_5_27b_sync_frontiersmith",
+            wandb_project=config.wandb_project,
             wandb_entity=os.environ.get("WANDB_ENTITY"),
         )
         try:
             snapshot_download(
-                ScriptArgs.hf_repo, revision=ScriptArgs.hf_revision, local_dir=f"{config.models}/{ScriptArgs.model_name}"
+                config.generation.hf_repo,
+                revision=config.generation.hf_revision,
+                local_dir=f"{config.models}/{config.generation.model_name}",
             )
         finally:
             volume.commit()
@@ -268,7 +269,7 @@ def _prepare(modal, config):
         volume.reload()
         check_manifest(
             config,
-            wandb_project="miles-run_qwen3_5_27b_sync_frontiersmith",
+            wandb_project=config.wandb_project,
             wandb_entity=os.environ.get("WANDB_ENTITY"),
         )
         volume.commit()

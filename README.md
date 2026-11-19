@@ -9,7 +9,7 @@
   <a href="https://arxiv.org/abs/2609.36802">EasyPPO paper</a>
 </p>
 
-This branch trains **Qwen3.8-27B** on FrontierSmith and **Qwen3.5-27B** on TMAX with an independent memory
+This branch trains **Qwen3.5-9B** and **Qwen3.8-27B** on FrontierSmith and **Qwen3.5-27B** on TMAX with an independent memory
 critic. It includes one-step asynchronous Score Centering/TIS training and
 synchronous clipped PPO. Each recipe supports `full_detach` and `actor-summary`
 critic contexts.
@@ -18,6 +18,7 @@ critic contexts.
 |---|---|---|
 | [`run_qwen3_5_27b_async_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_async_frontiersmith.py) | FrontierSmith → Frontier-CS | Official Miles Score Centering + TIS |
 | [`run_qwen3_5_27b_async_tmax.py`](examples/easyppo/run_qwen3_5_27b_async_tmax.py) | TMAX → Terminal-Bench 2.1 | Official Miles Score Centering + TIS |
+| [`run_qwen3_5_9b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py) | FrontierSmith → Frontier-CS | Synchronous clipped PPO ([9B guide](Claude.md)) |
 | [`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py) | FrontierSmith → Frontier-CS | Synchronous clipped PPO |
 | [`run_qwen3_5_27b_sync_tmax.py`](examples/easyppo/run_qwen3_5_27b_sync_tmax.py) | TMAX → Terminal-Bench 2.1 | Synchronous clipped PPO |
 

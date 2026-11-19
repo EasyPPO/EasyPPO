@@ -3,7 +3,7 @@
 Run from the repository root. Install `modal_launchers/requirements.txt` and
 configure the Modal CLI (`modal setup`). Set
 `WANDB_API_KEY` and optionally `WANDB_ENTITY` to enable W&B; its project is
-`miles-run_qwen3_5_27b_sync_frontiersmith` and its run ID is `--run-id`.
+`miles-run_qwen3_5_<model-size>_sync_frontiersmith` and its run ID is `--run-id`.
 
 FrontierSmith/FCS use the [submit-only interaction and reward rules](../examples/easyppo/RECIPES.md#rewards-validation-and-checkpoints).
 The rollout worker sends each C++ submission to an isolated CPU judge for compilation and execution.
@@ -16,6 +16,8 @@ PyTorch 2.14.1. Its build installs the locked SGLang 0.5.22 source and
 `/sgl-workspace/sglang` and `/root/Megatron-LM` source trees.
 
 ## Preview and launch
+
+Use `--model-size 9b` for the Qwen3.5-9B recipe in [Claude.md](../Claude.md), including preparation. The default is `27b` for Qwen3.8-27B.
 
 Every command defaults to a local plan. Add `--launch` to allocate resources.
 Select `--nodes 2` or `--nodes 4` and `--gpu H200` or `--gpu B200`.

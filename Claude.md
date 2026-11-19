@@ -1,4 +1,4 @@
-# Qwen3.8-27B Synchronous PPO on FrontierSmith
+# Qwen3.5-9B Synchronous PPO on FrontierSmith
 
 The main objective is to test whether, in synchronous agentic PPO, giving the
 critic access to the full episode history improves value estimation compared
@@ -7,7 +7,7 @@ summaries. We then evaluate whether any improvement in critic estimates
 translates into more effective end-to-end PPO training and stronger final
 policy performance.
 
-Entry point: [`run_qwen3_5_27b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py).
+Entry point: [`run_qwen3_5_9b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py).
 Adapt the commands below to the cluster's image, scheduler, storage, and service configuration.
 
 ## 1. Environment
@@ -90,16 +90,16 @@ Keep the unauthenticated API behind the platform's internal network or access co
 Run from the repository root in an allocated GPU job environment:
 
 ```bash
-python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --action prepare \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --frontier-judge-url "$JUDGE_URL" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-This prepares the pinned `Qwen/Qwen3.8-27B` model, Harbor tasks, and JSONL datasets,
+This prepares the pinned `Qwen/Qwen3.5-9B` model, Harbor tasks, and JSONL datasets,
 then converts the Megatron checkpoint. Reuse compatible existing artifacts:
-`$MODEL_DIR/Qwen3.8-27B` and `$MODEL_DIR/Qwen3.8-27B_torch_dist`.
+`$MODEL_DIR/Qwen3.5-9B` and `$MODEL_DIR/Qwen3.5-9B_torch_dist`.
 Checkpoint conversion requires GPUs. Regenerate task data after changing
 `--frontier-judge-timeout`. Supply the shared judge URL when launching training.
 
@@ -119,17 +119,20 @@ For SSH-based bootstrap or another deployment backend, follow the
 [cluster integration guide](README.md#2-cluster-integration).
 
 To enable W&B, set `WANDB_API_KEY` in the job environment before running the
-launcher. When resuming a run, append
+launcher. In the W&B project `miles-run_qwen3_5_9b_sync_frontiersmith`, plot
+`rollout/episode_raw_reward` against `rollout/step` for the training reward.
+Each episode contributes its best judge score divided by 100. The rollout mean
+weights each episode equally across different numbers of compaction segments. When resuming a run, append
 `--extra-env-vars 'WANDB_RUN_ID=<wandb-run-id> WANDB_RESUME=must'` to the training
 command below. Use the ID after `/runs/` in the original W&B run URL and keep the
 same W&B entity and project. The launcher uses `--run-id` as the display name;
 the W&B run ID is what attaches new metrics to the existing run.
 
 ```bash
-python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
-  --run-id sync-fs-full-detach-001 \
+  --run-id sync-fs-9b-full-detach-001 \
   --critic-context-mode full_detach \
   --num-rollout 100 \
   --save-interval 5 --max-keep 2 \
@@ -137,10 +140,10 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 ```
 
 Set `--sglang-server-concurrency` to fit the rollout workers and judge capacity.
-The default is 128 per engine; a value of 1 allows one concurrent trial per engine.
+The default is 4 per engine; a value of 1 allows one concurrent trial per engine.
 
 Actor generation uses a 131072-token context window, up to 24576 tokens per
-action (including thinking) and 6144 per summary (low reasoning effort), with
+action (including thinking) and 8192 per summary (action thinking enabled, summary thinking disabled), with
 compaction above 12000 context tokens. Length-limited turns increment `truncated_turns`
 and continue; the cumulative episode generation budget is 120000 tokens.
 
@@ -163,8 +166,8 @@ to measure how critic access to episode history affects synchronous PPO training
 
 | Critic mode | Context | Example run ID |
 |---|---|---|
-| `full_detach` | Full chronological episode history, with gradients detached across segment boundaries | `sync-fs-full-detach-001` |
-| `actor-summary` | The actor's context for each segment: task, current summary, and local conversation | `sync-fs-actor-summary-001` |
+| `full_detach` | Full chronological episode history, with gradients detached across segment boundaries | `sync-fs-9b-full-detach-001` |
+| `actor-summary` | The actor's context for each segment: task, current summary, and local conversation | `sync-fs-9b-actor-summary-001` |
 
 Complete model/data preparation in sections 1–3 and configure the job/Ray
 environment in section 4. Use the same `NUM_NODES`, `GPUS_PER_NODE`, `MODEL_DIR`,
@@ -174,20 +177,20 @@ environment with a fresh run ID.
 **Full-detach critic:**
 
 ```bash
-python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
-  --run-id sync-fs-full-detach-001 \
+  --run-id sync-fs-9b-full-detach-001 \
   --critic-context-mode full_detach \
   --num-rollout 100 \
   --num-critic-only-steps 30 \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
-  --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
+  --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 3 \
   --save-interval 5 --max-keep 2 \
   --max-context-tokens 131072 \
-  --max-new-tokens 24576 --summary-tokens 6144 \
+  --max-new-tokens 24576 --summary-tokens 8192 --no-fcs-summary-thinking \
   --compact-threshold 12000 --max-total-tokens 120000 \
   --continue-on-length \
   --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
@@ -196,20 +199,20 @@ python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
 **Actor-summary critic:**
 
 ```bash
-python examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py \
+python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --action train --frontier-judge-url "$JUDGE_URL" \
   --num-nodes "$NUM_NODES" --num-gpus-per-node "$GPUS_PER_NODE" \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR" \
-  --run-id sync-fs-actor-summary-001 \
+  --run-id sync-fs-9b-actor-summary-001 \
   --critic-context-mode actor-summary \
   --num-rollout 100 \
   --num-critic-only-steps 30 \
   --critic-steps-per-rollout 4 \
   --rollout-batch-size 32 --samples-per-prompt 16 \
-  --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 5 \
+  --eval-interval 10 --eval-max-tasks 0 --eval-samples-per-prompt 3 \
   --save-interval 5 --max-keep 2 \
   --max-context-tokens 131072 \
-  --max-new-tokens 24576 --summary-tokens 6144 \
+  --max-new-tokens 24576 --summary-tokens 8192 --no-fcs-summary-thinking \
   --compact-threshold 12000 --max-total-tokens 120000 \
   --continue-on-length \
   --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
@@ -238,13 +241,13 @@ See [Modal setup and resume](modal_launchers/README.md). Select two or four node
 and either H200 or B200; each node has eight GPUs:
 
 ```bash
-python -m modal_launchers.frontiersmith --nodes 2 --gpu H200 --mode full_detach --run-id sync-fs-full-detach-2n-h200-001
-python -m modal_launchers.frontiersmith --nodes 4 --gpu B200 --mode actor-summary --run-id sync-fs-actor-summary-4n-b200-001
+python -m modal_launchers.frontiersmith --model-size 9b --nodes 2 --gpu H200 --mode full_detach --run-id sync-fs-9b-full-detach-2n-h200-001
+python -m modal_launchers.frontiersmith --model-size 9b --nodes 4 --gpu B200 --mode actor-summary --run-id sync-fs-9b-actor-summary-4n-b200-001
 ```
 
 Both critic modes support both topologies and GPU types. Keep allocation and
 GPU type identical when comparing modes. Prepare the shared model with
-`--action prepare` (single-node conversion). Add `--launch` after reviewing the
+`--model-size 9b --action prepare` (single-node conversion). Add `--launch` after reviewing the
 resource plan. CPU and host-memory settings are per node; defaults are 32 CPUs
 and 1024 GiB RAM. Omitting `--nodes` retains the single-node default.
 

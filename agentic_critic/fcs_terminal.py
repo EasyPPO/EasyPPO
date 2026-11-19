@@ -17,7 +17,7 @@ from agentic_critic.fcs_env import (
     format_feedback,
     summary_text,
 )
-from agentic_critic.terminal_env import TerminalAgent
+from agentic_critic.terminal_env import Completion, TerminalAgent
 
 
 class FcsSubmissionAgent(TerminalAgent):
@@ -31,7 +31,7 @@ class FcsSubmissionAgent(TerminalAgent):
 
     def _template_options(self, kind: str) -> dict:
         return {
-            "enable_thinking": kind == "summary" or self.options.enable_thinking,
+            "enable_thinking": self.options.fcs_summary_thinking if kind == "summary" else self.options.enable_thinking,
             "reasoning_effort": FCS_SUMMARY_EFFORT if kind == "summary" else FCS_REASONING_EFFORT,
         }
 
@@ -45,6 +45,20 @@ class FcsSubmissionAgent(TerminalAgent):
                 raise ValueError("Cannot locate the FCS summary turn in the chat template")
             return prompt[:-len(turn)] + self._encode(messages[-1:], kind="summary")
         return prompt
+
+    def _record_completion(self, messages: list[dict], prompt: list[int], result: Completion, *, kind: str):
+        previous = self._completed_prefix
+        if previous is not None and prompt[: len(previous.sampled)] != previous.sampled:
+            # The native 9B template rewrites earlier assistant thinking after
+            # new feedback. Only that feedback and its generation glue are new
+            # to the full-history critic. Verify both ends against the actor IDs.
+            turn = self._encode(messages[-1:], kind=kind)
+            start = len(prompt) - len(turn)
+            if start > 0 and prompt[start:] == turn and messages[-1]["role"] == "user":
+                end = next((i for i in range(start - 1, -1, -1) if prompt[i] in self._eos_token_ids), None)
+                if end is not None and not self.tokenizer.decode(prompt[end + 1 : start]).strip():
+                    self.trace.next_critic_prompt = prompt[end + 1 :]
+        super()._record_completion(messages, prompt, result, kind=kind)
 
     def _initial_messages(self, task: str) -> list[dict]:
         self.task_prompt = TASK_PROMPT.format(statement=task, max_submissions=self.max_submissions)
@@ -63,7 +77,9 @@ class FcsSubmissionAgent(TerminalAgent):
         )
 
     def _summary_resume(self, summary: str) -> list[dict]:
-        summary = summary_text(summary)
+        # With thinking disabled the template already closed the block in the prompt.
+        if self.options.fcs_summary_thinking:
+            summary = summary_text(summary)
         if eos := getattr(self.tokenizer, "eos_token", None):
             summary = summary.replace(eos, "")
         return [{"role": "user", "content": RESUME_PROMPT.format(task=self.task_prompt, summary=summary.strip())}]

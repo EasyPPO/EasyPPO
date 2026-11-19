@@ -5,7 +5,6 @@ import os
 import subprocess
 from pathlib import Path
 
-from examples.easyppo.frontiersmith import GenerationArgs
 from miles.utils.file_utils import atomic_write_text
 from modal_launchers.config import check_manifest
 
@@ -27,7 +26,7 @@ def commit_volume():
 def prepare_run(config, judge_url):
     check_manifest(
         config,
-        wandb_project="miles-run_qwen3_5_27b_sync_frontiersmith",
+        wandb_project=config.wandb_project,
         wandb_entity=os.environ.get("WANDB_ENTITY"),
     )
     subprocess.run(
@@ -49,8 +48,8 @@ def prepare_run(config, judge_url):
 
 
 def check_models(config):
-    model = Path(config.models) / GenerationArgs.model_name
-    converted = Path(config.models) / f"{GenerationArgs.model_name}_torch_dist"
+    model = Path(config.models) / config.generation.model_name
+    converted = Path(config.models) / f"{config.generation.model_name}_torch_dist"
     for path in (
         model / "config.json",
         model / "tokenizer_config.json",

@@ -7,9 +7,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from examples.easyppo.frontiersmith import (
-    DEFAULT_SGLANG_SERVER_CONCURRENCY,
     SYNC_EVAL_SAMPLES_PER_PROMPT,
     SYNC_TERMINAL_ENVIRONMENT,
+    Generation9BArgs,
     GenerationArgs,
 )
 
@@ -47,8 +47,11 @@ class Config:
     rollout_batch_size: int = 32
     samples_per_prompt: int = 16
     critic_steps_per_rollout: int = 4
+    model_size: str = "27b"
 
     def __post_init__(self):
+        if self.model_size not in ("9b", "27b"):
+            raise ValueError("Choose model size 9b or 27b")
         if self.mode not in MODES or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.run_id):
             raise ValueError("Choose a critic mode and a run ID containing only letters, digits, _ or -")
         if self.gpu not in ("H200", "B200") or self.gpus not in (4, 8):
@@ -60,7 +63,7 @@ class Config:
         if self.terminal_environment not in TERMINAL_ENVIRONMENTS:
             raise ValueError("Choose shared-judge or docker as the terminal environment")
         if self.concurrency is None:
-            concurrency = 8 if self.terminal_environment == "docker" else DEFAULT_SGLANG_SERVER_CONCURRENCY
+            concurrency = 8 if self.terminal_environment == "docker" else self.generation.sglang_server_concurrency
             object.__setattr__(self, "concurrency", concurrency)
         if self.terminal_environment == "docker":
             if self.terminal_memory_mb is None:
@@ -102,6 +105,18 @@ class Config:
     def data(self):
         return f"{self.output}/data"
 
+    @property
+    def generation(self):
+        return Generation9BArgs if self.model_size == "9b" else GenerationArgs
+
+    @property
+    def launcher_name(self):
+        return f"run_qwen3_5_{self.model_size}_sync_frontiersmith"
+
+    @property
+    def wandb_project(self):
+        return f"miles-{self.launcher_name}"
+
     def command(self, action="train"):
         terminal_flags = ["--terminal-environment", self.terminal_environment]
         if self.terminal_environment == "docker":
@@ -115,7 +130,7 @@ class Config:
             )
         return [
             "python3",
-            f"{self.source}/examples/easyppo/run_qwen3_5_27b_sync_frontiersmith.py",
+            f"{self.source}/examples/easyppo/{self.launcher_name}.py",
             "--action",
             action,
             "--num-nodes",
@@ -160,7 +175,7 @@ class Config:
             "--max-new-tokens",
             "24576",
             "--summary-tokens",
-            str(GenerationArgs.summary_tokens),
+            str(self.generation.summary_tokens),
             "--compact-threshold",
             "12000",
             "--max-total-tokens",
@@ -178,8 +193,8 @@ class Config:
         # Retry limits and judge endpoint change across attempts; training identity does not.
         return {
             **{key: value for key, value in asdict(self).items() if key != "max_restarts"},
-            "hf_repo": GenerationArgs.hf_repo,
-            "hf_revision": GenerationArgs.hf_revision,
+            "hf_repo": self.generation.hf_repo,
+            "hf_revision": self.generation.hf_revision,
             "agent_protocol": "fcs-submit-v1",
         }
 
@@ -187,6 +202,7 @@ class Config:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Preview or launch one synchronous PPO experiment on Modal")
     parser.add_argument("--terminal-environment", choices=TERMINAL_ENVIRONMENTS, default=Config.terminal_environment)
+    parser.add_argument("--model-size", choices=("9b", "27b"), default=Config.model_size)
     parser.add_argument("--mode", choices=MODES, default=MODES[0])
     parser.add_argument("--run-id", default="sync-fs-full-detach-001")
     parser.add_argument("--action", choices=("train", "prepare", "cpu-smoke"), default="train")
@@ -231,6 +247,7 @@ def check_manifest(config, *, wandb_project, wandb_entity):
     if path.exists():
         original = json.loads(path.read_text())
         actual = dict(original)
+        actual.setdefault("model_size", "27b")
         actual.setdefault("nodes", 1)  # Existing single-node manifests predate this field.
         # Manifests predating this field used five evaluation draws.
         actual.setdefault("eval_samples_per_prompt", 5)

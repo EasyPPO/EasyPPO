@@ -81,9 +81,10 @@ class TerminalConfig:
     keep_last_turns: int = 2
     command_timeout: int = 120
     max_output_chars: int = 16000
+    fcs_summary_thinking: bool = True
 
     def __post_init__(self):
-        for name in ("enable_thinking", "continue_on_length"):
+        for name in ("enable_thinking", "continue_on_length", "fcs_summary_thinking"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"terminal {name} must be a boolean")
         for name in (
@@ -388,6 +389,9 @@ class TerminalAgent(DefaultAgent):
         # our async adapters deliberately expose only decoding and execution.
         return Template(template, undefined=StrictUndefined).render(**kwargs)
 
+    def _record_completion(self, messages: list[dict], prompt: list[int], result: Completion, *, kind: str):
+        self.trace.record(prompt, result, kind=kind)
+
     async def _complete(self, messages: list[dict], *, limit: int, kind: str) -> Completion:
         prompt = self._prompt(messages, kind=kind)
         limit = min(
@@ -402,7 +406,7 @@ class TerminalAgent(DefaultAgent):
             raise ValueError("Decoder exceeded the requested token limit")
         if result.finish_reason not in ("stop", "length"):
             raise RuntimeError(f"Decoder stopped unexpectedly: {result.finish_reason}")
-        self.trace.record(prompt, result, kind=kind)
+        self._record_completion(messages, prompt, result, kind=kind)
         if result.finish_reason == "length":
             self.trace.truncated_turns += 1
             if not self.options.continue_on_length:

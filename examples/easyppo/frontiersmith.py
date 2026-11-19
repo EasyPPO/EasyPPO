@@ -20,3 +20,15 @@ class GenerationArgs:
     max_new_tokens: int = 24576
     summary_tokens: int = 6144
     continue_on_length: bool = True
+    sglang_server_concurrency: int = DEFAULT_SGLANG_SERVER_CONCURRENCY
+
+
+@dataclass
+class Generation9BArgs(GenerationArgs):
+    model_name: str = "Qwen3.5-9B"
+    megatron_model_type: str = "qwen3.5-9B"
+    hf_repo: str = "Qwen/Qwen3.5-9B"
+    hf_revision: str = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    summary_tokens: int = 8192
+    fcs_summary_thinking: bool = False
+    sglang_server_concurrency: int = 4

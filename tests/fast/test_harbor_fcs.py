@@ -17,7 +17,7 @@ from agentic_critic.fcs_judge import JudgeResult
 from agentic_critic.fcs_terminal import FcsSubmissionAgent
 from agentic_critic.harbor_fcs import HarborFcsAgent
 from agentic_critic.harbor_terminal import run_trial
-from agentic_critic.terminal_env import TerminalConfig
+from agentic_critic.terminal_env import Completion, TerminalConfig
 from scripts import frontiersmith_verifier as verifier
 from tests.agentic_critic.test_terminal_data import make_task
 from tests.agentic_critic.test_terminal_env import Tokenizer, completion
@@ -548,3 +548,40 @@ async def test_direct_trial_cancellation_drains_persistence(monkeypatch, tmp_pat
     with pytest.raises(asyncio.CancelledError):
         await task
     assert len(list((tmp_path / "trials").glob("*/agent/easyppo-trajectory.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_template_rewrite_preserves_only_new_feedback_for_memory_critic(tokenizer):
+    # Model the 9B template dropping historical reasoning when a user turn follows.
+    tokenizer.chat_template = (
+        "{% for m in messages %}{{ '<|im_start|>' + m.role + '\\n' }}"
+        "{{ m.content.split('</think>')[-1] if m.role == 'assistant' and not loop.last else m.content }}"
+        "{{ '<|im_end|>\\n' }}{% endfor %}"
+        "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}"
+        "{{ '<think>\\n' if enable_thinking else '<think>\\n\\n</think>\\n\\n' }}{% endif %}"
+    )
+    replies = iter(["PRIVATE_REASONING</think>" + "x" * 2000, "RETAINED_SUMMARY", "done"])
+    prompts = []
+
+    async def decode(ids, limit):
+        prompts.append(tokenizer.decode(ids))
+        text = next(replies)
+        sampled = tokenizer.encode(text, add_special_tokens=False) + [tokenizer.eos_token_id]
+        return Completion(sampled, [-0.5] * len(sampled), text)
+
+    agent = FcsSubmissionAgent(
+        tokenizer=tokenizer,
+        decode=decode,
+        submit=None,
+        config=TerminalConfig(compact_threshold=1000, fcs_summary_thinking=False),
+        max_submissions=6,
+        max_turns=2,
+    )
+    trace = await agent.run_async("TASK_SENTINEL")
+    assert [call["kind"] for call in trace.calls] == ["action", "summary", "action"]
+    assert "PRIVATE_REASONING" not in prompts[1] and prompts[1].endswith("<think>\n\n</think>\n\n")
+    assert "RETAINED_SUMMARY" in prompts[2] and prompts[2].endswith("<think>\n")
+    history = "".join(tokenizer.decode(seg.tokens) for seg in trace.critic_segments)
+    assert trace.critic_memory_exact and len(trace.critic_segments) == 3
+    for content in ("TASK_SENTINEL", "PRIVATE_REASONING", COMPACT_PROMPT, "RETAINED_SUMMARY"):
+        assert history.count(content) == 1
