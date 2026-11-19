@@ -60,11 +60,7 @@ NO_CODE_PROMPT = "No ```cpp code block was found in your reply."
 
 NEXT_PROMPT = "Submit an improved solution. Output ONLY the C++ code wrapped in ```cpp and ```."
 
-COMPACT_PROMPT = (
-    "Write a summary for yourself to use on the next turn. Your summary replaces the conversation history. "
-    "You will receive the original task and your summary, then continue the same episode with your "
-    "remaining submissions. Writing the summary does not submit anything to the judge or use a submission."
-)
+COMPACT_PROMPT = "Summarize the text above:"
 
 # After a compaction the actor restarts from the task and its own summary, and nothing else: the environment does
 # not repeat the best score or the number of submissions left. What the actor knows about its
