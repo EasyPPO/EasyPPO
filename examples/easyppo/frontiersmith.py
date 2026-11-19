@@ -18,6 +18,7 @@ class GenerationArgs:
     max_context_tokens: int = 131072
     compact_threshold: int = 12000
     max_new_tokens: int = 24576
+    tensor_model_parallel_size: int = 4
     max_total_tokens: int = 120000
     summary_tokens: int = 6144
     continue_on_length: bool = True
@@ -30,6 +31,7 @@ class Generation9BArgs(GenerationArgs):
     megatron_model_type: str = "qwen3.5-9B"
     hf_repo: str = "Qwen/Qwen3.5-9B"
     hf_revision: str = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    tensor_model_parallel_size: int = 2
     max_total_tokens: int = 150000
     summary_tokens: int = 8192
     fcs_summary_thinking: bool = False

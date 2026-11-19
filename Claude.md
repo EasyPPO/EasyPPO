@@ -40,8 +40,8 @@ Set `--num-nodes` and `--num-gpus-per-node` to match the cluster allocation.
 Rollout, critic training, and actor training alternate on all allocated GPUs
 with offload enabled. Provision host memory for offload.
 
-Training uses TP4 and rollout uses one GPU per engine by default. With `N`
-total GPUs, this gives training DP `N / 4` and `N` rollout engines. Adjust `--tensor-model-parallel-size`
+Training uses TP2 and rollout uses one GPU per engine by default. With `N`
+total GPUs, this gives training DP `N / 2` and `N` rollout engines. Adjust `--tensor-model-parallel-size`
 and `--rollout-gpus-per-engine` for the hardware, keeping the GPU count divisible
 by each parallel group size and the training batches divisible by training DP.
 
@@ -193,7 +193,7 @@ python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --max-new-tokens 24576 --summary-tokens 8192 --no-fcs-summary-thinking \
   --compact-threshold 12000 --max-total-tokens 150000 \
   --continue-on-length \
-  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
+  --tensor-model-parallel-size 2 --rollout-gpus-per-engine 1
 ```
 
 **Actor-summary critic:**
@@ -215,7 +215,7 @@ python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --max-new-tokens 24576 --summary-tokens 8192 --no-fcs-summary-thinking \
   --compact-threshold 12000 --max-total-tokens 150000 \
   --continue-on-length \
-  --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
+  --tensor-model-parallel-size 2 --rollout-gpus-per-engine 1
 ```
 
 A step here means one rollout round of 512 episodes. Each round has four critic

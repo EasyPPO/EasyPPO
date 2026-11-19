@@ -48,14 +48,19 @@ class Config:
     samples_per_prompt: int = 16
     critic_steps_per_rollout: int = 4
     model_size: str = "27b"
+    tensor_model_parallel_size: int | None = None
 
     def __post_init__(self):
         if self.model_size not in ("9b", "27b"):
             raise ValueError("Choose model size 9b or 27b")
         if self.mode not in MODES or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.run_id):
             raise ValueError("Choose a critic mode and a run ID containing only letters, digits, _ or -")
-        if self.gpu not in ("H200", "B200") or self.gpus not in (4, 8):
-            raise ValueError("Use H200 or B200 with 4 or 8 GPUs per node")
+        if self.tensor_model_parallel_size is None:
+            object.__setattr__(self, "tensor_model_parallel_size", self.generation.tensor_model_parallel_size)
+        if self.gpu not in ("H200", "B200") or self.gpus not in (2, 4, 8):
+            raise ValueError("Use H200 or B200 with 2, 4 or 8 GPUs per node")
+        if self.tensor_model_parallel_size not in (1, 2, 4) or self.gpus % self.tensor_model_parallel_size:
+            raise ValueError("Training TP must be 1, 2 or 4 and divide the GPUs per node")
         if self.nodes not in (1, 2, 4):
             raise ValueError("nodes must be 1, 2 or 4")
         if self.nodes > 1 and self.gpus != 8:
@@ -89,7 +94,7 @@ class Config:
         if self.rollout_batch_size % self.critic_steps_per_rollout:
             raise ValueError("Critic mini-batches must contain complete prompt groups")
         if (self.rollout_batch_size * self.samples_per_prompt // self.critic_steps_per_rollout) % (
-            self.nodes * self.gpus // 4
+            self.nodes * self.gpus // self.tensor_model_parallel_size
         ):
             raise ValueError("Critic mini-batches must divide evenly across training data-parallel ranks")
 
@@ -182,7 +187,7 @@ class Config:
             str(self.generation.max_total_tokens),
             "--continue-on-length",
             "--tensor-model-parallel-size",
-            "4",
+            str(self.tensor_model_parallel_size),
             "--sglang-server-concurrency",
             str(self.concurrency),
             "--checkpoint-commit-hook",
@@ -211,6 +216,7 @@ def parse_args(argv=None):
         parser.add_argument(f"--{name}", default=getattr(Config, name))
     for name in (
         "gpus",
+        "tensor_model_parallel_size",
         "nodes",
         "memory_gib",
         "concurrency",
@@ -248,6 +254,7 @@ def check_manifest(config, *, wandb_project, wandb_entity):
         original = json.loads(path.read_text())
         actual = dict(original)
         actual.setdefault("model_size", "27b")
+        actual.setdefault("tensor_model_parallel_size", 4)  # Earlier runs always used TP4.
         actual.setdefault("nodes", 1)  # Existing single-node manifests predate this field.
         # Manifests predating this field used five evaluation draws.
         actual.setdefault("eval_samples_per_prompt", 5)

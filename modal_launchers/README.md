@@ -71,7 +71,7 @@ match `Claude.md`. Use identical resource options for both experiments.
 
 The default `--terminal-environment shared-judge` sends requests directly to
 the CPU judge. `--concurrency` limits active episodes per inference engine.
-With two 8-GPU nodes, TP4 and the default of 128, Miles admits up to 512 episodes.
+With two 8-GPU nodes, the 9B recipe uses training TP2 and 16 single-GPU rollout engines. At four concurrent episodes per engine, it admits up to 64 episodes at once.
 The judge queues submissions separately with 32 workers, 32 CPUs and 64 GiB of memory.
 Tune its capacity with `--judge-workers`, `--judge-cpus` and `--judge-memory-gib`.
 A judge error verdict scores that submission zero. Transport failures stop the run.

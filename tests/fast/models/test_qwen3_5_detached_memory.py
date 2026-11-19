@@ -67,6 +67,7 @@ class _NativeTE(nn.Module):
     def __init__(self):
         super().__init__()
         self.config = SimpleNamespace(context_parallel_size=1)
+        self.flash_attention = nn.Identity()
         self.calls = []
 
     def forward(
@@ -138,6 +139,29 @@ def test_attention_without_metadata_delegates_native_arguments_unchanged():
     assert len(layer.calls) == 1
     assert layer.calls[0][2:] == (_Mask.causal, packed, {"num_splits": 1})
     assert output.shape == (9, 6)
+
+
+@pytest.mark.parametrize(
+    "mask,window,version,head_dim,arch,expected",
+    [
+        ("causal_bottom_right", (-1, 0), 4, 256, (10, 0), (None, None)),
+        ("padding_causal", (-1, 0), 4, 256, (10, 0), (-1, 0)),
+        ("causal_bottom_right", (128, 0), 4, 256, (10, 0), (128, 0)),
+        ("causal_bottom_right", (-1, 0), 3, 256, (10, 0), (-1, 0)),
+        ("causal_bottom_right", (-1, 0), 4, 128, (10, 0), (-1, 0)),
+        ("causal_bottom_right", (-1, 0), 4, 256, (9, 0), (-1, 0)),
+    ],
+)
+def test_fa4_window_at_flash_dispatch(monkeypatch, mask, window, version, head_dim, arch, expected):
+    layer = _memory_attention()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: arch)
+    monkeypatch.setattr(layer.flash_attention, "forward", lambda q, **kwargs: kwargs["window_size"])
+    assert layer.flash_attention(
+        torch.empty(8, 1, 2, head_dim),
+        attn_mask_type=mask,
+        window_size=window,
+        flash_attention_backend=SimpleNamespace(major=version),
+    ) == expected
 
 
 @pytest.mark.parametrize("reentrant", [False, True])

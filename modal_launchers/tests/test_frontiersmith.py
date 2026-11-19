@@ -31,6 +31,7 @@ def test_sync_recipe(mode, size, summary, concurrency):
         "--terminal-environment": "shared-judge",
         "--sglang-server-concurrency": concurrency,
         "--summary-tokens": summary,
+        "--tensor-model-parallel-size": "2" if size == "9b" else "4",
         "--max-total-tokens": "150000" if size == "9b" else "120000",
         "--max-new-tokens": "24576",
         "--critic-context-mode": mode,
@@ -144,6 +145,7 @@ def test_legacy_run_accepts_original_controls_and_pins_them(tmp_path):
     with pytest.raises(ValueError, match="configuration differs"):
         check_manifest(config, wandb_project="test", wandb_entity=None)
     legacy = dict(current)
+    legacy.pop("tensor_model_parallel_size")
     for name in (
         "terminal_environment",
         "terminal_memory_mb",
