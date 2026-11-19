@@ -2,9 +2,9 @@
 mkdir -p /root/models /root/datasets
 
 ### 1
-hf download Qwen/Qwen3.5-9B
-  --revision c202236235762e1c871ad0ccb60c8ee5ba337b9a
-  --local-dir /root/models/Qwen3.5-9B
+hf download HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1
+  --revision 016efe4f9b8d1f472b412a26bd43e9b3f690a223
+  --local-dir /root/models/Qwen3.5-9B-FrontierCS-SFT-DSv3.1
 
 ### 2
 python <REPO_ROOT>/scripts/make_miles_frontiersmith_data.py
@@ -37,5 +37,5 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --vocab-size 248320
   --rotary-base 10000000
   --attention-output-gate
-  --hf-checkpoint /root/models/Qwen3.5-9B
-  --save /root/models/Qwen3.5-9B_torch_dist 
+  --hf-checkpoint /root/models/Qwen3.5-9B-FrontierCS-SFT-DSv3.1
+  --save /root/models/Qwen3.5-9B-FrontierCS-SFT-DSv3.1_torch_dist 

@@ -27,10 +27,10 @@ class GenerationArgs:
 
 @dataclass
 class Generation9BArgs(GenerationArgs):
-    model_name: str = "Qwen3.5-9B"
+    model_name: str = "Qwen3.5-9B-FrontierCS-SFT-DSv3.1"
     megatron_model_type: str = "qwen3.5-9B"
-    hf_repo: str = "Qwen/Qwen3.5-9B"
-    hf_revision: str = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    hf_repo: str = "HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1"
+    hf_revision: str = "016efe4f9b8d1f472b412a26bd43e9b3f690a223"
     tensor_model_parallel_size: int = 2
     max_total_tokens: int = 150000
     summary_tokens: int = 8192

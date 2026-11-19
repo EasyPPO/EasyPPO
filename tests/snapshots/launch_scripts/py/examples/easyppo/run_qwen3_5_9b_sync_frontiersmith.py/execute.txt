@@ -45,8 +45,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --vocab-size 248320
   --rotary-base 10000000
   --attention-output-gate
-  --hf-checkpoint /root/models/Qwen3.5-9B
-  --ref-load /root/models/Qwen3.5-9B_torch_dist
+  --hf-checkpoint /root/models/Qwen3.5-9B-FrontierCS-SFT-DSv3.1
+  --ref-load /root/models/Qwen3.5-9B-FrontierCS-SFT-DSv3.1_torch_dist
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
   --critic-save /root/shared_data/260101-000000-000/checkpoints_critic

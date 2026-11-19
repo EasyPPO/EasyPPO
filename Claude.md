@@ -97,9 +97,9 @@ python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --output-dir "$RUN_DIR"
 ```
 
-This prepares the pinned `Qwen/Qwen3.5-9B` model, Harbor tasks, and JSONL datasets,
+This prepares the pinned `HuanzhiMao/Qwen3.5-9B-FrontierCS-SFT-DSv3.1` model, Harbor tasks, and JSONL datasets,
 then converts the Megatron checkpoint. Reuse compatible existing artifacts:
-`$MODEL_DIR/Qwen3.5-9B` and `$MODEL_DIR/Qwen3.5-9B_torch_dist`.
+`$MODEL_DIR/Qwen3.5-9B-FrontierCS-SFT-DSv3.1` and `$MODEL_DIR/Qwen3.5-9B-FrontierCS-SFT-DSv3.1_torch_dist`.
 Checkpoint conversion requires GPUs. Regenerate task data after changing
 `--frontier-judge-timeout`. Supply the shared judge URL when launching training.
 
