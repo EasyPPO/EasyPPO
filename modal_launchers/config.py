@@ -179,7 +179,7 @@ class Config:
             "--compact-threshold",
             "12000",
             "--max-total-tokens",
-            "120000",
+            str(self.generation.max_total_tokens),
             "--continue-on-length",
             "--tensor-model-parallel-size",
             "4",

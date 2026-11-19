@@ -18,6 +18,7 @@ class GenerationArgs:
     max_context_tokens: int = 131072
     compact_threshold: int = 12000
     max_new_tokens: int = 24576
+    max_total_tokens: int = 120000
     summary_tokens: int = 6144
     continue_on_length: bool = True
     sglang_server_concurrency: int = DEFAULT_SGLANG_SERVER_CONCURRENCY
@@ -29,6 +30,7 @@ class Generation9BArgs(GenerationArgs):
     megatron_model_type: str = "qwen3.5-9B"
     hf_repo: str = "Qwen/Qwen3.5-9B"
     hf_revision: str = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    max_total_tokens: int = 150000
     summary_tokens: int = 8192
     fcs_summary_thinking: bool = False
     sglang_server_concurrency: int = 4

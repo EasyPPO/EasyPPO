@@ -93,7 +93,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --terminal-compact-threshold 12000
   --terminal-max-context-tokens 131072
   --terminal-max-new-tokens 24576
-  --terminal-max-total-tokens 120000
+  --terminal-max-total-tokens 150000
   --no-terminal-fcs-summary-thinking
   --terminal-summary-tokens 8192
   --terminal-max-steps 300

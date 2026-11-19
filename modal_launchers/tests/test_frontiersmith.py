@@ -31,6 +31,8 @@ def test_sync_recipe(mode, size, summary, concurrency):
         "--terminal-environment": "shared-judge",
         "--sglang-server-concurrency": concurrency,
         "--summary-tokens": summary,
+        "--max-total-tokens": "150000" if size == "9b" else "120000",
+        "--max-new-tokens": "24576",
         "--critic-context-mode": mode,
     }.items():
         assert args[args.index(flag) + 1] == value

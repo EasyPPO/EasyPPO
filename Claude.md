@@ -145,7 +145,7 @@ The default is 4 per engine; a value of 1 allows one concurrent trial per engine
 Actor generation uses a 131072-token context window, up to 24576 tokens per
 action (including thinking) and 8192 per summary (action thinking enabled, summary thinking disabled), with
 compaction above 12000 context tokens. Length-limited turns increment `truncated_turns`
-and continue; the cumulative episode generation budget is 120000 tokens.
+and continue; the cumulative episode generation budget is 150000 tokens.
 
 Training runs for 100 rounds, each with 32 prompt groups × 16 episodes.
 Every round performs four critic updates, including the first 30 critic-only
@@ -191,7 +191,7 @@ python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --save-interval 5 --max-keep 2 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 8192 --no-fcs-summary-thinking \
-  --compact-threshold 12000 --max-total-tokens 120000 \
+  --compact-threshold 12000 --max-total-tokens 150000 \
   --continue-on-length \
   --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
 ```
@@ -213,7 +213,7 @@ python examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py \
   --save-interval 5 --max-keep 2 \
   --max-context-tokens 131072 \
   --max-new-tokens 24576 --summary-tokens 8192 --no-fcs-summary-thinking \
-  --compact-threshold 12000 --max-total-tokens 120000 \
+  --compact-threshold 12000 --max-total-tokens 150000 \
   --continue-on-length \
   --tensor-model-parallel-size 4 --rollout-gpus-per-engine 1
 ```
