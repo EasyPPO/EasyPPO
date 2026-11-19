@@ -13,9 +13,10 @@ class CharTokenizer:
     ):
         assert reasoning_effort in ("low", "medium") and enable_thinking
         control = "<system>low</system>" if reasoning_effort == "low" else ""
-        assert not tokenize and add_generation_prompt and len(messages) == 1
+        assert not tokenize and add_generation_prompt
         opening = "<think>\n" if enable_thinking else "<think>\n\n</think>\n\n"
-        return f"{control}<|im_start|>user\n{messages[0]['content']}{EOS}\n<|im_start|>assistant\n{opening}"
+        users = "".join(f"<|im_start|>user\n{m['content']}{EOS}\n" for m in messages)
+        return f"{control}{users}<|im_start|>assistant\n{opening}"
 
     def encode(self, text, add_special_tokens=False):
         return [ord(c) for c in text]
@@ -113,6 +114,7 @@ def test_compaction_starts_a_new_segment_from_task_and_summary():
     assert [e.kind for e in ep.events if e.segment == 1][:2] == ["resume", "action"]
 
     # The summary is written with the whole segment in view, and the request carries the judge result.
+    assert f"your submissions.{EOS}\n<|im_start|>user\n{COMPACT_PROMPT}{EOS}" in prompts[1]
     assert "// a" in prompts[1] and COMPACT_PROMPT in prompts[1] and "score=10.00/100" in prompts[1]
     assert prompts[1].endswith("<think>\n") and "<system>low</system>" in prompts[1]
     assert "<system>low</system>" not in prompts[0] + prompts[2]

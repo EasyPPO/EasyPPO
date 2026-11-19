@@ -5,7 +5,6 @@ from dataclasses import replace
 from minisweagent.agents.default import Submitted
 
 from agentic_critic.fcs_env import (
-    COMPACT_PROMPT,
     FCS_REASONING_EFFORT,
     FCS_SUMMARY_EFFORT,
     NEXT_PROMPT,
@@ -13,6 +12,7 @@ from agentic_critic.fcs_env import (
     RESUME_PROMPT,
     TASK_PROMPT,
     TRUNCATED_NO_SUBMISSION_PROMPT,
+    compact_messages,
     extract_code,
     format_feedback,
     summary_text,
@@ -39,11 +39,11 @@ class FcsSubmissionAgent(TerminalAgent):
         prompt = super()._prompt(messages)
         if kind == "summary":
             # Qwen encodes low effort as a system instruction. Apply it to the
-            # new turn so that previously sampled IDs remain an exact prefix.
-            turn = self._encode(messages[-1:])
+            # two new user messages so that previously sampled IDs remain an exact prefix.
+            turn = self._encode(messages[-2:])
             if prompt[-len(turn):] != turn:
                 raise ValueError("Cannot locate the FCS summary turn in the chat template")
-            return prompt[:-len(turn)] + self._encode(messages[-1:], kind="summary")
+            return prompt[:-len(turn)] + self._encode(messages[-2:], kind="summary")
         return prompt
 
     def _record_completion(self, messages: list[dict], prompt: list[int], result: Completion, *, kind: str):
@@ -52,7 +52,7 @@ class FcsSubmissionAgent(TerminalAgent):
             # The native 9B template rewrites earlier assistant thinking after
             # new feedback. Only that feedback and its generation glue are new
             # to the full-history critic. Verify both ends against the actor IDs.
-            turn = self._encode(messages[-1:], kind=kind)
+            turn = self._encode(messages[-2:] if kind == "summary" else messages[-1:], kind=kind)
             start = len(prompt) - len(turn)
             if start > 0 and prompt[start:] == turn and messages[-1]["role"] == "user":
                 end = next((i for i in range(start - 1, -1, -1) if prompt[i] in self._eos_token_ids), None)
@@ -67,7 +67,7 @@ class FcsSubmissionAgent(TerminalAgent):
     def _summary_request(self) -> list[dict]:
         # Replace the next-solution instruction with the reference summary prompt.
         feedback = self.messages[-1]["content"].removesuffix("\n" + NEXT_PROMPT)
-        return self.messages[:-1] + [{"role": "user", "content": feedback + "\n\n" + COMPACT_PROMPT}]
+        return self.messages[:-1] + compact_messages(feedback)
 
     def _should_compact(self, current_size: int, reserve: int) -> bool:
         # The reference triggers strictly above the soft threshold. Preserve

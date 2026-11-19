@@ -80,7 +80,7 @@ async def test_summary_uses_reference_prompts_and_keeps_trainable_tokens():
     )
     trace = await agent.run_async("statement")
     assert len(codes) == 2 and trace.n_compactions == 1
-    assert COMPACT_PROMPT in prompts[1]
+    assert prompts[1].endswith(f"your submissions.</user><user>{COMPACT_PROMPT}</user><assistant>")
     assert "keep this plan" in prompts[2] and "hidden" not in prompts[2]
     assert "x" * 1100 not in prompts[2] and "Best score so far" not in prompts[2]
     assert [call["kind"] for call in trace.calls] == ["action", "summary", "action"]
@@ -583,5 +583,5 @@ async def test_native_template_rewrite_preserves_only_new_feedback_for_memory_cr
     assert "RETAINED_SUMMARY" in prompts[2] and prompts[2].endswith("<think>\n")
     history = "".join(tokenizer.decode(seg.tokens) for seg in trace.critic_segments)
     assert trace.critic_memory_exact and len(trace.critic_segments) == 3
-    for content in ("TASK_SENTINEL", "PRIVATE_REASONING", COMPACT_PROMPT, "RETAINED_SUMMARY"):
+    for content in ("TASK_SENTINEL", "PRIVATE_REASONING", "No ```cpp code block", COMPACT_PROMPT, "RETAINED_SUMMARY"):
         assert history.count(content) == 1
