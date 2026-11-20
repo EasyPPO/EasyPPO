@@ -74,13 +74,19 @@ verifiers and rewards.
 
 ## csk4gby2 terminal training subset
 
-Prepare the AgentPick subset from the 543-task csk4gby2 run index on a filesystem
-shared by the rollout workers. The task list preserves the original zero-based
-indices and order. It contains 424 tasks (210 CalibForge, 139 TMAX, 58
-SWE-Rebench and 17 RST). The selection omits 49 TerminalWorld benchmark tasks,
-10 tasks with additional verifier requirements, and 60 tasks excluded during
-content review. The upstream candidate selection used TB2.1 for retrieval,
-which matters when interpreting TB2.1 evaluation scores.
+List the 543 historical task IDs, corpora and splits in shuffled order:
+
+```bash
+python scripts/make_miles_agentpick_data.py --list-tasks
+```
+
+Both listing and preparation select tasks from the pinned upstream
+[split_assignment.tsv](https://huggingface.co/datasets/Fzz1/tb-training-mix-agentpick/blob/6e3e6c8a01d84f06b9f18f61782170f4801d5330/metadata/split_assignment.tsv).
+They use the `clean` and `calibforge_clean` splits, excluding corpus `SMITH`
+and task `tw_14495`. Preparation writes all 543 tasks in filtered TSV order.
+`source_index` is the zero-based position in that order. Pass `--seed N`
+to reproduce a shuffled listing. The selection includes TerminalWorld
+benchmark tasks, and upstream used TB2.1 for retrieval.
 
 From the repository root, with the terminal extra installed:
 
@@ -89,7 +95,8 @@ python scripts/make_miles_agentpick_data.py --tasks-dir /data/harbor
 ```
 
 Preparation downloads two checksum-verified archives from the pinned release.
-For offline preparation, pass `--archive-dir` pointing to a directory containing
+TMAX resource limits come from the same release’s `data/clean.parquet`.
+To reuse local archives, pass `--archive-dir` pointing to a directory containing
 `tasks-clean.tar` and `tasks-calibforge_clean.tar`. The command creates
 `agentpick-csk4gby2/` under the tasks directory and requires that output
 subdirectory to be new. The TMAX environments use their prebuilt images.
