@@ -71,3 +71,35 @@ judge URL embedded during preparation. Direct submissions use the launch-time
 `--frontier-judge-url`. See the [judge deployment instructions](../../README.md#4-run-the-task-environments-and-judges)
 for endpoint and reachability settings. TMAX and Terminal-Bench use their task
 verifiers and rewards.
+
+## csk4gby2 terminal training subset
+
+Prepare the AgentPick subset from the 543-task csk4gby2 run index on a filesystem
+shared by the rollout workers. The task list preserves the original zero-based
+indices and order. It contains 424 tasks (210 CalibForge, 139 TMAX, 58
+SWE-Rebench and 17 RST). The selection omits 49 TerminalWorld benchmark tasks,
+10 tasks with additional verifier requirements, and 60 tasks excluded during
+content review. The upstream candidate selection used TB2.1 for retrieval,
+which matters when interpreting TB2.1 evaluation scores.
+
+From the repository root, with the terminal extra installed:
+
+```bash
+python scripts/make_miles_agentpick_data.py --tasks-dir /data/harbor
+```
+
+Preparation downloads two checksum-verified archives from the pinned release.
+For offline preparation, pass `--archive-dir` pointing to a directory containing
+`tasks-clean.tar` and `tasks-calibforge_clean.tar`. The command creates
+`agentpick-csk4gby2/` under the tasks directory and requires that output
+subdirectory to be new. The TMAX environments use their prebuilt images.
+Workers need Docker access to the source images.
+
+Pass these arguments to the existing 9B terminal launcher:
+
+```text
+--tasks-dir /data/harbor --prompt-data /data/harbor/agentpick-csk4gby2/train.jsonl
+```
+
+The launcher's preparation step supplies TB2.1 evaluation data.
+[Source release](https://huggingface.co/datasets/Fzz1/tb-training-mix-agentpick/tree/6e3e6c8a01d84f06b9f18f61782170f4801d5330)
