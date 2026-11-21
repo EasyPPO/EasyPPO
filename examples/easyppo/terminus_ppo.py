@@ -134,7 +134,7 @@ def main(default_mode=None):
             "--ppo-head-chunk-size",
             "8192",
             "--pause-generation-mode",
-            "retract",
+            "in_place",
             "--async-max-concurrent-samples",
             str(args.async_max_concurrent_samples),
             "--max-weight-staleness",
