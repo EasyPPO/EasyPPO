@@ -28,6 +28,29 @@ class _TerminusSession(TerminalAgent):
                 raise ContextLengthExceededError("No context left for a completion") from exc
             raise
 
+    def _summary_request(self):
+        request = super()._summary_request()
+        request[-1]["content"] += (
+            " This turn is a handoff to another agent. Describe the current terminal state "
+            "and distinguish completed work from proposed next steps. Pause the terminal XML protocol "
+            "for this reply and write the handoff in plain text."
+        )
+        return request
+
+    def _summary_resume(self, summary: str):
+        # SGLang can include Qwen's reasoning and EOS in its text response.
+        visible = summary.partition("<|im_end|>")[0].partition("<|endoftext|>")[0]
+        if self.options.enable_thinking and self.trace.calls[-1]["finish_reason"] == "length" and "</think>" not in visible:
+            return None
+        visible = visible.rsplit("</think>", 1)[-1].strip()
+        if not visible or visible.startswith("<think>"):
+            return None
+        if visible.startswith("<response>"):
+            parsed = _TerminusXMLParser().parse_response(visible)
+            if not parsed.error and (parsed.analysis or parsed.plan):
+                visible = "\n".join(filter(None, (parsed.analysis, parsed.plan)))
+        return super()._summary_resume(visible)
+
     def _record_completion(self, messages, prompt, result, *, kind):
         if result.finish_reason == "length" and not result.tokens:
             raise ContextLengthExceededError("Empty completion at the context limit")
@@ -52,6 +75,7 @@ class MilesTerminalLLM(BaseLLM):
         self._prepared_request = None
         self._context_tokens = 0
         self._warned = False
+        self._episode_budget_notified = False
 
     def context_notice(self):
         used, capacity = self._context_tokens, self.get_model_context_limit()
@@ -116,6 +140,20 @@ class MilesTerminalLLM(BaseLLM):
                 session.original_messages = messages.copy()
             session.messages = messages
             await session._compact()
+            used = session.trace.generated_tokens
+            budget = session.options.max_total_tokens
+            if not self._episode_budget_notified and 2 * used >= budget:
+                notice = (
+                    f"[Episode budget: {used:,} of {budget:,} generated tokens used; "
+                    f"{max(0, budget - used):,} remain across all future actions and summaries. "
+                    "Prioritize verification and submission.]"
+                )
+                last = session.messages[-1]
+                session.messages[-1] = {**last, "content": last["content"] + "\n\n" + notice}
+                if session.options.compaction == "summary" and session.trace.next_critic_prompt is not None:
+                    # The full-history critic replaces the actor resume prompt at this boundary.
+                    session.trace.next_critic_prompt = session._encode([{"role": "user", "content": notice}])
+                self._episode_budget_notified = True
             self._prepared_request = request
 
         result = await session._complete(session.messages, limit=self.get_model_output_limit(), kind="action")

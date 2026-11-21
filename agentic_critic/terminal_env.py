@@ -429,6 +429,13 @@ class TerminalAgent(DefaultAgent):
         if self.options.compaction == "summary":
             summary = await self._complete(request, limit=self.options.summary_tokens, kind="summary")
             replacement = self._summary_resume(summary.text)
+            if replacement is None:
+                # Keep the sampled turn and the current task state when the summary has no visible text.
+                self.messages = request + [
+                    {"role": "assistant", "content": summary.text},
+                    {"role": "user", "content": "Resume the terminal task from the preceding history."},
+                ]
+                return
         else:
             # Retain whole assistant/observation turns, never a dangling tool result.
             start = len(self.original_messages)
@@ -491,7 +498,7 @@ class TerminalAgent(DefaultAgent):
     def _should_compact(self, current_size: int, reserve: int) -> bool:
         return current_size >= min(self.options.compact_threshold, self.options.max_context_tokens - reserve)
 
-    def _summary_resume(self, summary: str) -> list[dict]:
+    def _summary_resume(self, summary: str) -> list[dict] | None:
         return self.original_messages + [{"role": "user", "content": "Progress summary:\n" + summary}]
 
     async def run_async(self, task: str) -> TerminalTrace:

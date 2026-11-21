@@ -83,13 +83,20 @@ async def test_cumulative_budget_and_training_pack_include_different_tokens(monk
 async def test_terminus_summary_keeps_exact_critic_memory_at_12k(tmp_path):
     from agentic_critic.harbor_terminus import MilesTerminus2
 
-    config = TerminalConfig(max_context_tokens=63488, compact_threshold=12000, max_new_tokens=16384, max_total_tokens=120000)
+    action_text = "<response><commands></commands></response>"
+    summary_text = ("private reasoning</think><response><analysis>ETL progress</analysis>"
+                    "<plan>Verify the files</plan><commands></commands></response><|im_end|>")
+    halfway = sum(len(completion(text).tokens) for text in (action_text, summary_text))
+    config = TerminalConfig(max_context_tokens=63488, compact_threshold=12000, max_new_tokens=16384, max_total_tokens=2 * halfway)
     agent = MilesTerminus2(logs_dir=tmp_path, model_name="Qwen/Qwen3.5-9B", parser_name="xml", enable_summarize=False, record_terminal_session=False)
     tokenizer = Tokenizer()
 
+    prompts = []
+
     async def decode(prompt, limit):
+        prompts.append(tokenizer.decode(prompt))
         summary = "Summarize progress for a fresh context" in tokenizer.decode(prompt[-1000:])
-        return completion("ETL progress" if summary else "<response><commands></commands></response>")
+        return completion(summary_text if summary else action_text)
 
     agent.bind(tokenizer=tokenizer, decode=decode, config=config)
     from harbor.llms.chat import Chat
@@ -104,6 +111,24 @@ async def test_terminus_summary_keeps_exact_critic_memory_at_12k(tmp_path):
     actor_spans = [s["rollout_log_probs"] for s in agent.trace.sample_fields()]
     assert all(actor_spans)
     assert sum(map(sum, [s.loss_mask for s in agent.trace.segments])) == agent.trace.generated_tokens
+
+
+    assert all("[Episode budget:" not in prompt for prompt in prompts[:2])
+    assert f"[Episode budget: {halfway:,} of {2 * halfway:,}" in prompts[2]
+    assert "ETL progress" in prompts[2] and "Verify the files" in prompts[2]
+    assert "private reasoning" not in prompts[2] and "<|im_end|>" not in prompts[2]
+    assert "<commands>" not in prompts[2]
+    assert "[Episode budget:" in tokenizer.decode(agent.trace.critic_segments[-1].tokens)
+    await chat.chat("next observation")
+    assert prompts[3].count("[Episode budget:") == 1
+
+    agent._llm.session.messages.append({"role": "user", "content": "keep this observation" * 800})
+    async def empty_summary(prompt, limit):
+        return completion("internal note</think><|im_end|>")
+    agent._llm.session.decode = empty_summary
+    await agent._llm.session._compact()
+    assert agent.trace.n_compactions == 1
+    assert any("keep this observation" in msg["content"] for msg in agent._llm.session.messages)
 
 
 @pytest.mark.parametrize("salvage", [True, False])
