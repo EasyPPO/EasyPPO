@@ -219,3 +219,26 @@ def test_token_budget_and_dp_alignment(rank_episode_lengths, expected_counts):
         bins = shard["micro_batch_indices"]
         assert sorted(i for group in bins for i in group) == list(range(len(shard["tokens"])))
         assert all(0 < sum(len(shard["tokens"][i]) for i in group) <= 10 for group in bins)
+
+
+@pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+def test_actor_and_critic_pack_at_independent_recipe_limits(mode):
+    segment_length = 75 * 1024
+    actor = {"tokens": [range(segment_length)] * 2, "response_lengths": [1, 1], "rollout_ids": [0, 0]}
+    if mode == "full_detach":
+        critic = {"tokens": [range(2 * segment_length)], "response_lengths": [segment_length + 1], "rollout_ids": [0]}
+        spans = [(0, 0, 1), (0, segment_length, 1)]
+    else:
+        critic = actor
+        spans = [(0, 0, 1), (1, 0, 1)]
+    args = _args(critic_context_mode=mode, global_batch_size=1, critic_num_steps_per_rollout=1,
+                 max_tokens_per_gpu=120 * 1024, critic_max_tokens_per_gpu=150 * 1024)
+    (actor_shard,), (critic_shard,) = conversion.split_full_history_shards(args, actor, critic, spans, _parallel())
+    assert actor_shard["micro_batch_indices"] == [[0], [1]]
+    assert critic_shard["micro_batch_indices"] == [list(range(len(critic["tokens"])))]
+    assert critic_shard["value_slices"] == spans
+
+    if mode == "full_detach":
+        args.critic_max_tokens_per_gpu -= 1
+        with pytest.raises(ValueError, match="exceeds --critic-max-tokens-per-gpu=153599"):
+            conversion.split_full_history_shards(args, actor, critic, spans, _parallel())

@@ -528,7 +528,12 @@ def split_full_history_shards(
     shards = _package_shards(args, {**data, "total_lengths": actor_lengths}, actor_partitions)
     critic_shards = _package_shards(args, {**critic_data, "total_lengths": critic_lengths}, critic_partitions)
     _pack_shard_steps(shards, partitions, siblings, batch_size, budget)
-    _pack_shard_steps(critic_shards, partitions, critic_rows, critic_batch_size, budget)
+    critic_budget = getattr(args, "critic_max_tokens_per_gpu", None)
+    _pack_shard_steps(
+        critic_shards, partitions, critic_rows, critic_batch_size,
+        budget if critic_budget is None else critic_budget,
+        budget_flag="--max-tokens-per-gpu" if critic_budget is None else "--critic-max-tokens-per-gpu",
+    )
     attach_value_slices(shards, critic_shards, spans)
     return shards, critic_shards
 
@@ -553,7 +558,7 @@ def _critic_episode_rows(data, critic_data, spans) -> tuple[list[list[int]], lis
     return critic_rows, siblings
 
 
-def _pack_shard_steps(shards, partitions, episode_rows, batch_size, budget):
+def _pack_shard_steps(shards, partitions, episode_rows, batch_size, budget, *, budget_flag="--max-tokens-per-gpu"):
     """Pack rank-local rows, with equal forward counts across DP ranks per optimizer step."""
     local_batch = batch_size // len(shards)
     offsets = [list(accumulate((len(episode_rows[e]) for e in episodes), initial=0)) for episodes in partitions]
@@ -567,7 +572,7 @@ def _pack_shard_steps(shards, partitions, episode_rows, batch_size, budget):
             first, last = edges[0], edges[-1]
             lengths = [len(tokens) for tokens in shard["tokens"][first:last]]
             if max(lengths) > budget:
-                raise ValueError(f"Training row of {max(lengths)} tokens exceeds --max-tokens-per-gpu={budget}")
+                raise ValueError(f"Training row of {max(lengths)} tokens exceeds {budget_flag}={budget}")
             bins = first_fit_decreasing_pack(lengths, budget)
             # FFD is heuristic. Keep the known episode layout if it uses fewer bins.
             if len(bins) > local_batch:

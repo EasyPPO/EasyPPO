@@ -1681,6 +1681,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
             )
             parser.add_argument(
+                "--critic-max-tokens-per-gpu",
+                type=int,
+                default=None,
+                help="Token budget per critic microbatch in episode-aligned packing. Defaults to --max-tokens-per-gpu.",
+            )
+            parser.add_argument(
                 "--critic-context-mode",
                 type=str,
                 choices=["shared", "full_history", "full_detach", "actor-summary"],
@@ -4419,6 +4425,11 @@ def _validate_easyppo_args(args) -> None:
     if args.critic_num_steps_per_rollout is not None:
         assert args.critic_num_steps_per_rollout >= 1, "--critic-num-steps-per-rollout must be at least 1"
         assert not args.multi_lora, "--critic-num-steps-per-rollout does not support multi-LoRA"
+    if (critic_budget := getattr(args, "critic_max_tokens_per_gpu", None)) is not None:
+        if critic_budget <= 0:
+            raise ValueError("--critic-max-tokens-per-gpu must be positive")
+        if not args.use_critic or args.critic_context_mode == "shared":
+            raise ValueError("--critic-max-tokens-per-gpu requires episode-aligned critic packing")
     if getattr(args, "ppo_prompt_mean", False) and args.critic_context_mode not in ("full_detach", "actor-summary"):
         raise ValueError("--ppo-prompt-mean requires episode-aware prompt group IDs from a memory critic recipe")
     if args.critic_context_mode in ("full_detach", "actor-summary"):

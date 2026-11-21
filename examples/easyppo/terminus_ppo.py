@@ -38,6 +38,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     use_rollout_logprobs: bool = True
     compact_threshold: int = 12000
     max_tokens_per_gpu: int = 120 * 1024
+    critic_max_tokens_per_gpu: int = 150 * 1024
     score_centering_recompute_loss: bool = False
     max_total_tokens: int = 100 * 1024
     max_context_tokens: int = 63488
@@ -81,8 +82,10 @@ def main(default_mode=None):
         "--max-tokens-per-gpu",
         type=int,
         default=ScriptArgs.max_tokens_per_gpu,
-        help="Maximum input tokens per training microbatch.",
+        help="Maximum input tokens per actor microbatch.",
     )
+    parser.add_argument("--critic-max-tokens-per-gpu", type=int, default=ScriptArgs.critic_max_tokens_per_gpu,
+                        help="Maximum input tokens per critic microbatch.")
     parser.add_argument("--num-nodes", type=int, default=ScriptArgs.num_nodes)
     parser.add_argument("--num-gpus-per-node", type=int, default=ScriptArgs.num_gpus_per_node)
     parser.add_argument("--trainer-num-nodes", type=int, default=ScriptArgs.trainer_num_nodes)
@@ -125,6 +128,7 @@ def main(default_mode=None):
         critic_context_mode=opts.critic_context_mode,
         score_centering=opts.score_centering,
         max_tokens_per_gpu=opts.max_tokens_per_gpu,
+        critic_max_tokens_per_gpu=opts.critic_max_tokens_per_gpu,
         num_rollout=opts.num_rollout,
         num_critic_only_steps=opts.num_critic_only_steps,
         **({"run_id": opts.run_id} if opts.run_id else {}),
@@ -135,6 +139,7 @@ def main(default_mode=None):
         script_path=__file__,
         extra_args=(
             "--fully-async",
+            "--critic-max-tokens-per-gpu", str(args.critic_max_tokens_per_gpu),
             "--ppo-prompt-mean",
             *(("--log-probs-backend", "fused") if args.score_centering else ()),
             "--pause-generation-mode",

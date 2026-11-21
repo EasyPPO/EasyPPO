@@ -117,7 +117,7 @@ produces 89 evaluation rows. Both launchers read these JSONL files.
 | Generation | Terminus-2 XML, 63,488-token context, up to 16,384 new tokens per action. Compact at 12,000 context tokens, up to 2,048 new tokens per summary. Each compaction replaces the actor history with the original task and the visible summary, including an empty summary. Episode budget 102,400 generated tokens including summaries, with one reminder at 51,200. |
 | Updates | 150 batches, first 30 critic-only. Four critic updates of 96 trajectories per batch (LR 5e-6, value clip 0.2, value loss coefficient 0.5). One actor update per subsequent batch (LR 3e-6, one warmup step). |
 | Actor loss | Score centering with PPO advantages, prompt means, sampled rollout log probabilities, top-128 candidates and TIS clipped at 2. Fused log probabilities with in-place backward. |
-| Memory and kernels | 122,880 tokens per GPU training microbatch. SGLang static memory fraction 0.92; dense attention uses Triton on Blackwell or FA3 with `--gpu-arch hopper`. Trainer linear attention uses FLA. |
+| Memory and kernels | Per-GPU microbatch limits are 122,880 input tokens for the actor and 153,600 for the critic. SGLang static memory fraction 0.92; dense attention uses Triton on Blackwell or FA3 with `--gpu-arch hopper`. Trainer linear attention uses FLA. |
 | Evaluation and checkpoints | Evaluate the base and every 15 rollout batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches. |
 
 **Launch.** Set the allocation below and run the command for the desired critic.
@@ -143,5 +143,5 @@ python -m examples.easyppo.terminus_actor_summary "${TB[@]}" --run-id tb21-9b-ac
 ```
 
 Override training capacity with `--trainer-num-nodes`, `--trainer-gpus-per-node`
-and `--eval-num-gpus`. Set `--max-tokens-per-gpu` for the training pack limit
+and `--eval-num-gpus`. Set `--max-tokens-per-gpu` for actor packs, `--critic-max-tokens-per-gpu` for critic packs
 and `--async-max-concurrent-samples` for the rollout concurrency cap.
