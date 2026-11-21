@@ -354,7 +354,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     assert "--colocate" not in args and "--offload-rollout" not in args
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
     assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
-    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--max-tokens-per-gpu": 163840,
+    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880,
                 "--global-batch-size": 384, "--rollout-batch-size": 32, "--n-samples-per-prompt": 12,
                 "--async-max-concurrent-samples": 1000, "--max-weight-staleness": 4,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
@@ -367,10 +367,13 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     assert (dataset["name"], dataset["path"]) == ("tb21", "eval.jsonl")
     assert args[args.index("--loss-type") + 1] == "score_centering"
     assert "--ppo-prompt-mean" in args and "--fully-async" in args
+    assert "--recompute-loss-function" not in args
     for flag, value in {"--critic-context-mode": mode, "--critic-num-steps-per-rollout": "4",
                         "--sglang-attention-backend": flash, "--linear-attention-backend": "fla",
                         "--terminal-environment": "modal", "--terminal-agent-protocol": "terminus-2",
-                        "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "120000"}.items():
+                        "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "102400",
+                        "--terminal-max-new-tokens": "16384", "--eval-max-response-len": "16384",
+                        "--rollout-max-response-len": "16384"}.items():
         assert args[args.index(flag) + 1] == value
 
 @pytest.mark.parametrize("mode", ["actor-summary", "full_detach"])

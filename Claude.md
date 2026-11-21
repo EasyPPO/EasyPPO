@@ -336,16 +336,17 @@ whole 12-response groups, so at most 996 trajectories are in flight. Once
 have unfinished responses. The trainer publishes weights each step and filters groups
 whose oldest sampled weight version lags by more than four updates.
 
-Run length is 150 updates. The actor uses LR 3e-6 with one warmup step;
+Training runs for 150 rollout batches. The first 30 update only the critic
+(120 critic optimizer steps). The remaining 120 batches update both models. The actor uses LR 3e-6 with one warmup step;
 both critic modes use LR 5e-6, value clip 0.2 and value loss coefficient
-0.5, with zero critic-only warmup. The default per-GPU training pack is
-163,840 tokens (`--max-tokens-per-gpu`). Each full-detach critic history
+0.5. The default per-GPU training pack is
+122,880 tokens (`--max-tokens-per-gpu`). Each full-detach critic history
 must fit in one pack. Both launchers default to score centering with PPO
 critic advantages, top-128 rollout candidates, TIS clipped at 2 and
-the fused trainer log-probability backend.
+the fused trainer log-probability backend with in-place backward.
 Use `--no-score-centering` and a distinct run ID for the clipped-PPO baseline.
-At TP1, the output projection for a full 163,840-token pack with a
-248,320-token vocabulary requires 75.8 GiB for BF16 logits alone.
+At TP1, the output projection for a full 122,880-token pack with a
+248,320-token vocabulary requires 56.8 GiB for BF16 logits alone.
 
 Save actor and critic checkpoints every five updates. Miles
 evaluates the base and dispatches TB2.1 every 20 updates on the eval fleet
@@ -353,7 +354,7 @@ using snapshots in the shared run directory.
 
 Terminus-2 uses Modal CPU sandboxes, a 12,000-token summary threshold,
 a 63,488-token call context, at most 16,384 new tokens per call and a
-120,000-generated-token episode budget including summaries.
+102,400-generated-token episode budget including summaries.
 
 ### Compare the TB2.1 evaluation
 

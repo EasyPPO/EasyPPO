@@ -30,7 +30,6 @@ class ScriptArgs(async_ppo.ScriptArgs):
     rollout_batch_size: int = 32
     samples_per_prompt: int = 12
     num_rollout: int = 150
-    num_critic_only_steps: int = 0
     eval_interval: int = 20
     eval_temperature: float = 0.7
     eval_top_p: float = 0.95
@@ -38,7 +37,9 @@ class ScriptArgs(async_ppo.ScriptArgs):
     actor_lr_warmup_iters: int = 1
     use_rollout_logprobs: bool = True
     compact_threshold: int = 12000
-    max_tokens_per_gpu: int = 160 * 1024
+    max_tokens_per_gpu: int = 120 * 1024
+    score_centering_recompute_loss: bool = False
+    max_total_tokens: int = 100 * 1024
     max_context_tokens: int = 63488
     max_new_tokens: int = 16384
     max_steps: int = 120
@@ -73,6 +74,7 @@ def main(default_mode=None):
     parser.add_argument("--tasks-dir", type=Path)
     parser.add_argument("--prompt-data", type=Path, help="Prepared AgentPick training JSONL")
     parser.add_argument("--eval-data", type=Path, help="Prepared TB2.1 evaluation JSONL")
+    parser.add_argument("--num-critic-only-steps", type=int, default=ScriptArgs.num_critic_only_steps)
     parser.add_argument("--num-rollout", type=int, default=ScriptArgs.num_rollout)
     parser.add_argument(
         "--max-tokens-per-gpu",
@@ -123,6 +125,7 @@ def main(default_mode=None):
         score_centering=opts.score_centering,
         max_tokens_per_gpu=opts.max_tokens_per_gpu,
         num_rollout=opts.num_rollout,
+        num_critic_only_steps=opts.num_critic_only_steps,
         **({"run_id": opts.run_id} if opts.run_id else {}),
     )
     async_ppo._execute(
