@@ -193,8 +193,12 @@ def _validate(args: ScriptArgs) -> None:
     total_gpus = args.num_nodes * args.num_gpus_per_node
     if not 0 < args.trainer_gpus_per_node <= args.num_gpus_per_node or args.eval_num_gpus < 0:
         raise ValueError("Invalid per-node trainer GPU count or eval GPU reservation")
-    if args.trainer_num_nodes > 1 and args.trainer_gpus_per_node != args.num_gpus_per_node:
-        raise ValueError("Multi-node trainers require whole nodes in the contiguous placement group")
+    if (
+        args.cluster_backend != ClusterBackend.RAY
+        and args.trainer_num_nodes > 1
+        and args.trainer_gpus_per_node != args.num_gpus_per_node
+    ):
+        raise ValueError("This cluster backend requires whole nodes for multi-node trainers")
     trainer_gpus = args.trainer_num_nodes * args.trainer_gpus_per_node
     if args.colocate:
         if trainer_gpus != total_gpus or args.rollout_num_gpus != total_gpus or args.eval_num_gpus:

@@ -299,7 +299,6 @@ ID and output directory to resume.
 export MILES_SCRIPT_EXTERNAL_RAY=1
 TB_ARGS=(
   --num-nodes "${NUM_NODES:-2}" --num-gpus-per-node "${GPUS_PER_NODE:-8}"
-  --trainer-num-nodes "${TRAINER_NODES:-1}" --eval-num-gpus "${EVAL_GPUS:-1}"
   --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR"
   --prompt-data "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl"
   --eval-data "$DATA_DIR/tb21.eval.jsonl"
@@ -309,16 +308,19 @@ python -m examples.easyppo.terminus_full_detach "${TB_ARGS[@]}" --run-id tb21-9b
 python -m examples.easyppo.terminus_actor_summary "${TB_ARGS[@]}" --run-id tb21-9b-actor-summary
 ```
 
-| Nodes × GPUs | Trainer allocation | Actor and critic share | Training rollout | Dedicated eval |
-|---|---|---:|---:|---:|
-| 1 × 8 | 2 trainer GPUs on one node | 2 | 5 | 1 |
-| 2 × 8 (default) | 1 trainer node | 8 | 7 | 1 |
-| 4 × 8 | 1 trainer node | 8 | 23 | 1 |
-| 8 × 8 | 2 trainer nodes | 16 | 47 | 1 |
+| Nodes × GPUs | Actor and critic share | Training rollout | Dedicated eval |
+|---|---:|---:|---:|
+| 1 × 8 | 3 | 4 | 1 |
+| 2 × 8 (default) | 6 | 8 | 2 |
+| 4 × 8 | 12 | 16 | 4 |
+| 8 × 8 | 24 | 32 | 8 |
 
-Training rollout uses the GPUs left after reserving the trainer and eval
-pools. Each rollout or eval engine uses one GPU. A single trainer node can
-use a partial node with `--trainer-gpus-per-node`. Training TP defaults to
+The default training/rollout/eval ratio is 3:4:1 across the cluster. For
+other GPU counts, trainer and eval reservations round down (at least one
+GPU each); rollout receives the remainder. Ray allocates trainer slots
+contiguously. To override the split, set `--trainer-num-nodes`,
+`--trainer-gpus-per-node` and/or `--eval-num-gpus`. Each rollout or eval
+engine uses one GPU. Training TP defaults to
 1; set `--tensor-model-parallel-size` so that trainer DP divides the
 96-episode critic mini-batch. For Hopper specify `--gpu-arch hopper` to
 select FA3 for rollout. On Blackwell, SGLang uses Triton for dense attention
@@ -329,8 +331,9 @@ The critic takes four optimizer steps of eight complete prompt groups
 (96 trajectories each); the actor takes one step. Training uses sampled
 behavior-policy log probabilities and prompt-mean PPO. The async producer
 accepts `--async-max-concurrent-samples` (default 1,000); Miles submits
-whole 12-response groups, so at most 83 groups or 996 trajectories are in
-flight. The trainer publishes weights each step. Miles filters groups
+whole 12-response groups, so at most 996 trajectories are in flight. Once
+12 trajectories finish, another group can start while earlier groups still
+have unfinished responses. The trainer publishes weights each step and filters groups
 whose oldest sampled weight version lags by more than four updates.
 
 Run length is 150 updates. The actor uses LR 3e-6 with one warmup step;

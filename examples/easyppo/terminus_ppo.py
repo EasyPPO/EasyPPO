@@ -20,9 +20,9 @@ class ScriptArgs(async_ppo.ScriptArgs):
     hf_revision: str = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
     megatron_model_type: str = "qwen3.5-9B"
     num_nodes: int = 2
-    trainer_num_nodes: int = 1
+    trainer_num_nodes: int | None = None
     num_gpus_per_node: int = 8
-    eval_num_gpus: int = 1
+    eval_num_gpus: int | None = None
     tensor_model_parallel_size: int = 1
     rollout_gpus_per_engine: int = 1
     terminal_environment: str = "modal"
@@ -50,8 +50,19 @@ class ScriptArgs(async_ppo.ScriptArgs):
     async_max_concurrent_samples: int = 1000
 
     def __post_init__(self):
-        if self.trainer_gpus_per_node is None and self.num_nodes == 1:
-            self.trainer_gpus_per_node = 2
+        if self.num_nodes < 1 or self.num_gpus_per_node < 1:
+            raise ValueError("Node and per-node GPU counts must be positive")
+        total = self.num_nodes * self.num_gpus_per_node
+        if self.eval_num_gpus is None:
+            self.eval_num_gpus = max(1, total // 8)
+        if self.trainer_num_nodes is None and self.trainer_gpus_per_node is None:
+            trainer_gpus = max(1, 3 * total // 8)
+            # Ray places one worker per slot. Express the trainer world as equal-sized groups.
+            widths = range(1, min(trainer_gpus, self.num_gpus_per_node) + 1)
+            self.trainer_gpus_per_node = max(width for width in widths if trainer_gpus % width == 0)
+            self.trainer_num_nodes = trainer_gpus // self.trainer_gpus_per_node
+        elif self.trainer_num_nodes is None:
+            self.trainer_num_nodes = 1
         super().__post_init__()
 
 

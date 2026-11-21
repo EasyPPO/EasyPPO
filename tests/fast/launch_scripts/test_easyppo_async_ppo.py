@@ -337,14 +337,14 @@ def test_nondivisible_episode_batches_still_fail(launcher, overrides, message):
 
 
 @pytest.mark.parametrize(("mode", "arch", "flash"), [("full_detach", "blackwell", "triton"), ("actor-summary", "hopper", "fa3")])
-@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout"), [(1, 1, 2, 5), (2, 1, 8, 7), (4, 1, 8, 23), (8, 2, 8, 47)])
+@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout"), [(1, 1, 3, 4), (2, 1, 6, 8), (4, 2, 6, 16), (8, 3, 8, 32)])
 def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_nodes, trainer_gpus, rollout):
     from examples.easyppo import terminus_ppo
 
     backend = _recording_backend(monkeypatch, _recipe)
     monkeypatch.setattr(sys, "argv", ["run", "--gpu-arch", arch,
                                       *(["--num-nodes", str(nodes)] if nodes != 2 else []),
-                                      "--trainer-num-nodes", str(train_nodes), "--tasks-dir", str(tmp_path),
+                                      "--tasks-dir", str(tmp_path),
                                       "--model-dir", str(tmp_path), "--output-dir", str(tmp_path / "runs"),
                                       "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl"])
     terminus_ppo.main(mode)
@@ -359,7 +359,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                 "--async-max-concurrent-samples": 1000, "--max-weight-staleness": 4,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
                 "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
-                "--rollout-num-gpus": rollout, "--eval-num-gpus": 1, "--eval-interval": 20, "--save-interval": 5}
+                "--rollout-num-gpus": rollout, "--eval-num-gpus": nodes, "--eval-interval": 20, "--save-interval": 5}
     for flag, value in expected.items():
         assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(value)
     encoded = args[args.index("--eval-config") + 1].removeprefix("base64:")
@@ -372,3 +372,10 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                         "--terminal-environment": "modal", "--terminal-agent-protocol": "terminus-2",
                         "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "120000"}.items():
         assert args[args.index(flag) + 1] == value
+
+def test_terminus_explicit_gpu_reservations():
+    from examples.easyppo.terminus_ppo import ScriptArgs
+
+    args = ScriptArgs(num_nodes=2, trainer_num_nodes=1, trainer_gpus_per_node=4, eval_num_gpus=1)
+    _recipe._validate(args)
+    assert args.rollout_num_gpus == 11
