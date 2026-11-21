@@ -61,18 +61,52 @@ with `--model-size 9b`.
 
 ## Terminal Bench
 
-**Prepare.** Configure Modal credentials on the rollout and evaluation workers
-for the Terminus-2 CPU sandboxes. Generate the training JSONL from the pinned
-remote AgentPick split (543 tasks) and the evaluation JSONL from Terminal-Bench
-2.1 (89 tasks). Convert the pinned `Qwen/Qwen3.5-9B` base once on a GPU.
+### Set shared paths
+
+Run from the repository root. Replace `/shared/easyppo` with a writable mount
+visible at the same path on the training, rollout and evaluation nodes.
+
+```bash
+export TB_ROOT=/shared/easyppo
+export MODEL_DIR="$TB_ROOT/models" DATA_DIR="$TB_ROOT/data" RUN_DIR="$TB_ROOT/runs"
+mkdir -p "$MODEL_DIR" "$DATA_DIR" "$RUN_DIR"
+```
+
+### Prepare the base model
+
+Run once on a node with one allocated GPU, the Miles training image, the
+`hf` CLI and Megatron at `/root/Megatron-LM`. The command downloads
+`Qwen/Qwen3.5-9B` at revision `c202236235762e1c871ad0ccb60c8ee5ba337b9a`
+and converts it to a Megatron distributed checkpoint.
+
+```bash
+python -m examples.easyppo.terminus_full_detach --prepare-model-only --model-dir "$MODEL_DIR"
+test -s "$MODEL_DIR/Qwen3.5-9B/config.json"
+test -s "$MODEL_DIR/Qwen3.5-9B/model.safetensors.index.json"
+grep -qx release "$MODEL_DIR/Qwen3.5-9B_torch_dist/latest_checkpointed_iteration.txt"
+```
+
+Both critic modes use these same artifacts. SGLang and the tokenizer load
+`$MODEL_DIR/Qwen3.5-9B`. Fresh actor and critic runs initialize from
+`$MODEL_DIR/Qwen3.5-9B_torch_dist`. Training saves their checkpoints separately
+under `$RUN_DIR/<run-id>/checkpoints` and `$RUN_DIR/<run-id>/checkpoints_critic`.
+
+### Prepare the training and evaluation data
+
+Configure Modal credentials on the rollout and evaluation workers. Prepare
+both datasets once on the shared mount, starting with a new
+`$DATA_DIR/harbor/agentpick-csk4gby2` directory path.
 
 ```bash
 python -m pip install 'harbor[modal]==0.24.0'
 python scripts/make_miles_agentpick_data.py --tasks-dir "$DATA_DIR/harbor"
 python scripts/make_miles_terminal_data.py --dataset terminal-bench-2.1 \
   --tasks-dir "$DATA_DIR/harbor" --out "$DATA_DIR"
-python -m examples.easyppo.terminus_full_detach --prepare-model-only --model-dir "$MODEL_DIR"
+wc -l "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl" "$DATA_DIR/tb21.eval.jsonl"
 ```
+
+The pinned AgentPick split produces 543 training rows. Terminal-Bench 2.1
+produces 89 evaluation rows. Both launchers read these JSONL files.
 
 **Configure.** The two launchers use the same asynchronous PPO recipe.
 
