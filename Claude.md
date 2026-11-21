@@ -114,7 +114,7 @@ produces 89 evaluation rows. Both launchers read these JSONL files.
 |---|---|
 | GPU allocation | 2 nodes × 8 GPUs. Actor and critic share 6, training rollout uses 8, evaluation uses 2. The split scales as 3:4:1 for eight-GPU nodes. Trainer TP1, one GPU per rollout or eval engine. |
 | Async rollout | 32 prompts × 12 trajectories per batch. Concurrency cap 1,000 (996 in complete groups of 12), 512 requests per engine. Weight publication uses `in_place`; maximum weight staleness is 4 updates. |
-| Generation | Terminus-2 XML, 63,488-token context, up to 16,384 new tokens per action. Compact at 12,000 context tokens, up to 2,048 new tokens per summary. Episode budget 102,400 generated tokens including summaries, with one reminder at 51,200. |
+| Generation | Terminus-2 XML, 63,488-token context, up to 16,384 new tokens per action. Compact at 12,000 context tokens, up to 2,048 new tokens per summary. Each compaction replaces the actor history with the original task and the visible summary, including an empty summary. Episode budget 102,400 generated tokens including summaries, with one reminder at 51,200. |
 | Updates | 150 batches, first 30 critic-only. Four critic updates of 96 trajectories per batch (LR 5e-6, value clip 0.2, value loss coefficient 0.5). One actor update per subsequent batch (LR 3e-6, one warmup step). |
 | Actor loss | Score centering with PPO advantages, prompt means, sampled rollout log probabilities, top-128 candidates and TIS clipped at 2. Fused log probabilities with in-place backward. |
 | Memory and kernels | 122,880 tokens per GPU training microbatch. SGLang static memory fraction 0.92; dense attention uses Triton on Blackwell or FA3 with `--gpu-arch hopper`. Trainer linear attention uses FLA. |

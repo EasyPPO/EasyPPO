@@ -301,10 +301,11 @@ class TerminalTrace:
 
     def segment_metadata(self, index: int) -> dict:
         calls = [call for call in self.calls if call["segment"] == index]
-        summaries = [tuple(call["token_span"]) for call in calls if call["kind"] == "summary"]
+        summaries = [call["token_span"] for call in calls if call["kind"] == "summary"]
+        if len(summaries) > 1:
+            raise ValueError("Multiple summary completions in one segment")
         return {
-            "summary_span": summaries[0] if len(summaries) == 1 else None,
-            "summary_spans": summaries,
+            "summary_span": tuple(summaries[0]) if summaries else None,
             "generation_truncated": any(call["finish_reason"] == "length" for call in calls),
         }
 
@@ -428,13 +429,6 @@ class TerminalAgent(DefaultAgent):
         if self.options.compaction == "summary":
             summary = await self._complete(request, limit=self.options.summary_tokens, kind="summary")
             replacement = self._summary_resume(summary.text)
-            if replacement is None:
-                # Keep the sampled turn and the current task state when the summary has no visible text.
-                self.messages = request + [
-                    {"role": "assistant", "content": summary.text},
-                    {"role": "user", "content": "Resume the terminal task from the preceding history."},
-                ]
-                return
         else:
             # Retain whole assistant/observation turns, never a dangling tool result.
             start = len(self.original_messages)
@@ -497,7 +491,7 @@ class TerminalAgent(DefaultAgent):
     def _should_compact(self, current_size: int, reserve: int) -> bool:
         return current_size >= min(self.options.compact_threshold, self.options.max_context_tokens - reserve)
 
-    def _summary_resume(self, summary: str) -> list[dict] | None:
+    def _summary_resume(self, summary: str) -> list[dict]:
         return self.original_messages + [{"role": "user", "content": "Progress summary:\n" + summary}]
 
     async def run_async(self, task: str) -> TerminalTrace:

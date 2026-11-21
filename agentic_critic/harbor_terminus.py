@@ -37,14 +37,14 @@ class _TerminusSession(TerminalAgent):
         )
         return request
 
-    def _summary_resume(self, summary: str):
+    def _summary_resume(self, summary: str) -> list[dict]:
         # SGLang can include Qwen's reasoning and EOS in its text response.
         visible = summary.partition("<|im_end|>")[0].partition("<|endoftext|>")[0]
         if self.options.enable_thinking and self.trace.calls[-1]["finish_reason"] == "length" and "</think>" not in visible:
-            return None
+            visible = ""
         visible = visible.rsplit("</think>", 1)[-1].strip()
-        if not visible or visible.startswith("<think>"):
-            return None
+        if visible.startswith("<think>"):
+            visible = ""
         if visible.startswith("<response>"):
             parsed = _TerminusXMLParser().parse_response(visible)
             if not parsed.error and (parsed.analysis or parsed.plan):
