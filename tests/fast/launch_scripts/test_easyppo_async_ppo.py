@@ -359,7 +359,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                 "--async-max-concurrent-samples": 1000, "--max-weight-staleness": 4,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
                 "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
-                "--rollout-num-gpus": rollout, "--eval-num-gpus": nodes, "--eval-interval": 20, "--save-interval": 5}
+                "--rollout-num-gpus": rollout, "--eval-num-gpus": nodes, "--eval-interval": 15, "--save-interval": 5}
     for flag, value in expected.items():
         assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(value)
     encoded = args[args.index("--eval-config") + 1].removeprefix("base64:")

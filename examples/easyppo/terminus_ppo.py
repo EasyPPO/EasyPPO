@@ -30,7 +30,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     rollout_batch_size: int = 32
     samples_per_prompt: int = 12
     num_rollout: int = 150
-    eval_interval: int = 20
+    eval_interval: int = 15
     eval_temperature: float = 0.7
     eval_top_p: float = 0.95
     save_interval: int = 5

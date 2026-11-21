@@ -1,5 +1,7 @@
 # Qwen3.5-9B PPO
 
+**Current runs use Terminal Bench only.**
+
 Run from the repository root in a Miles training image with Megatron installed.
 Set `MODEL_DIR`, `DATA_DIR` and `RUN_DIR` to shared directories accessible at
 the same paths on every worker. On an existing Ray cluster, run the launchers
@@ -82,7 +84,7 @@ python -m examples.easyppo.terminus_full_detach --prepare-model-only --model-dir
 | Updates | 150 batches, first 30 critic-only. Four critic updates of 96 trajectories per batch (LR 5e-6, value clip 0.2, value loss coefficient 0.5). One actor update per subsequent batch (LR 3e-6, one warmup step). |
 | Actor loss | Score centering with PPO advantages, prompt means, sampled rollout log probabilities, top-128 candidates and TIS clipped at 2. Fused log probabilities with in-place backward. |
 | Memory and kernels | 122,880 tokens per GPU training microbatch. SGLang static memory fraction 0.92; dense attention uses Triton on Blackwell or FA3 with `--gpu-arch hopper`. Trainer linear attention uses FLA. |
-| Evaluation and checkpoints | Evaluate the base and every 20 batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches. |
+| Evaluation and checkpoints | Evaluate the base and every 15 rollout batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches. |
 
 **Launch.** Set the allocation below and run the command for the desired critic.
 The full-detach critic reads chronological history with gradients detached at
