@@ -298,7 +298,7 @@ ID and output directory to resume.
 ```bash
 export MILES_SCRIPT_EXTERNAL_RAY=1
 TB_ARGS=(
-  --num-nodes "${NUM_NODES:-4}" --num-gpus-per-node "${GPUS_PER_NODE:-8}"
+  --num-nodes "${NUM_NODES:-2}" --num-gpus-per-node "${GPUS_PER_NODE:-8}"
   --trainer-num-nodes "${TRAINER_NODES:-1}" --eval-num-gpus "${EVAL_GPUS:-1}"
   --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR"
   --prompt-data "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl"
@@ -312,7 +312,8 @@ python -m examples.easyppo.terminus_actor_summary "${TB_ARGS[@]}" --run-id tb21-
 | Nodes × GPUs | Trainer allocation | Actor and critic share | Training rollout | Dedicated eval |
 |---|---|---:|---:|---:|
 | 1 × 8 | 2 trainer GPUs on one node | 2 | 5 | 1 |
-| 4 × 8 (default) | 1 trainer node | 8 | 23 | 1 |
+| 2 × 8 (default) | 1 trainer node | 8 | 7 | 1 |
+| 4 × 8 | 1 trainer node | 8 | 23 | 1 |
 | 8 × 8 | 2 trainer nodes | 16 | 47 | 1 |
 
 Training rollout uses the GPUs left after reserving the trainer and eval

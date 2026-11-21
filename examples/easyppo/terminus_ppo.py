@@ -19,7 +19,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     hf_repo: str = "Qwen/Qwen3.5-9B"
     hf_revision: str = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
     megatron_model_type: str = "qwen3.5-9B"
-    num_nodes: int = 4
+    num_nodes: int = 2
     trainer_num_nodes: int = 1
     num_gpus_per_node: int = 8
     eval_num_gpus: int = 1

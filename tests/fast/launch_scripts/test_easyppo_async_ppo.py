@@ -337,12 +337,13 @@ def test_nondivisible_episode_batches_still_fail(launcher, overrides, message):
 
 
 @pytest.mark.parametrize(("mode", "arch", "flash"), [("full_detach", "blackwell", "triton"), ("actor-summary", "hopper", "fa3")])
-@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout"), [(1, 1, 2, 5), (4, 1, 8, 23), (8, 2, 8, 47)])
+@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout"), [(1, 1, 2, 5), (2, 1, 8, 7), (4, 1, 8, 23), (8, 2, 8, 47)])
 def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_nodes, trainer_gpus, rollout):
     from examples.easyppo import terminus_ppo
 
     backend = _recording_backend(monkeypatch, _recipe)
-    monkeypatch.setattr(sys, "argv", ["run", "--gpu-arch", arch, "--num-nodes", str(nodes),
+    monkeypatch.setattr(sys, "argv", ["run", "--gpu-arch", arch,
+                                      *(["--num-nodes", str(nodes)] if nodes != 2 else []),
                                       "--trainer-num-nodes", str(train_nodes), "--tasks-dir", str(tmp_path),
                                       "--model-dir", str(tmp_path), "--output-dir", str(tmp_path / "runs"),
                                       "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl"])
