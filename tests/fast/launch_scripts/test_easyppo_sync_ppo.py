@@ -345,6 +345,10 @@ def test_sync_and_async_dataset_wrappers_expose_the_same_parameters(launcher):
     sync_fields = {field.name for field in fields(args)} - {"max_keep", "checkpoint_commit_hook"}
     assert sync_fields == {field.name for field in fields(async_args)}
     differences = {name for name in sync_fields if getattr(args, name) != getattr(async_args, name)}
+    if args.dataset == "tmax":
+        assert (async_args.terminal_agent_protocol, async_args.terminal_environment) == ("terminus-2", "modal")
+        assert (args.terminal_agent_protocol, args.terminal_environment) == ("terminal", "docker")
+        differences -= {"terminal_agent_protocol", "terminal_environment"}
     if args.dataset == "frontiersmith":
         differences.remove("eval_samples_per_prompt")
         differences.remove("rollout_gpus_per_engine")

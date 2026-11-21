@@ -9,6 +9,7 @@ from pathlib import Path
 
 from harbor.agents.base import BaseAgent
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
+from harbor.trial.hooks import TrialEvent
 from harbor.trial.trial import Trial
 
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
@@ -108,11 +109,23 @@ async def run_trial(
         "terminal": "agentic_critic.harbor_terminal:MiniSweTerminalAgent",
         "fcs-submit": "agentic_critic.harbor_fcs:HarborFcsAgent",
     }
+    terminus = agent_protocol in ("terminus-2", "terminus-2-etl")
+    if terminus:
+        agent = AgentConfig(
+            import_path="agentic_critic.harbor_terminus:MilesTerminus2",
+            model_name=getattr(tokenizer, "name_or_path", "Qwen/Qwen3.5-9B"),
+            kwargs=dict(
+                parser_name="xml", max_turns=config.max_steps, suppress_max_turns_warning=True,
+                record_terminal_session=False, enable_summarize=False,
+            ),
+        )
+    else:
+        agent = AgentConfig(import_path=agents[agent_protocol])
     trial = await Trial.create(
         TrialConfig(
             task=TaskConfig(path=task_path),
             trials_dir=trials_dir,
-            agent=AgentConfig(import_path=agents[agent_protocol]),
+            agent=agent,
             environment=EnvironmentConfig(
                 type=environment,
                 override_memory_mb=memory_mb,
@@ -127,19 +140,26 @@ async def run_trial(
             max_submissions=fcs_max_submissions,
             max_turns=fcs_max_turns,
         )
+    if terminus:
+        async def grade_submissions_only(_event):
+            trial.config.verifier.disable = trial.agent.trace.exit_status != "Submitted"
+
+        trial.add_hook(TrialEvent.AGENT_END, grade_submissions_only)
     result = await trial.run()
     trace = trial.agent.trace
     if result.exception_info is not None:
         error = result.exception_info
         # Harbor still verifies after an agent timeout. Preserve that outcome,
         # but do not silently treat setup or verifier failures as task failures.
-        if error.exception_type == "AgentTimeoutError" and result.verifier_result is not None:
+        if error.exception_type == "AgentTimeoutError" and (terminus or result.verifier_result is not None):
             trace.exit_status = "AgentTimeoutError"
             trace.truncated = True
         else:
             raise RuntimeError(
                 f"Harbor trial {trial.config.trial_name}: {error.exception_type}: {error.exception_message}"
             )
+    if terminus and trace.exit_status != "Submitted":
+        return trace, {}, str(trial.paths.trial_dir)
     if result.verifier_result is None or result.verifier_result.rewards is None:
         raise RuntimeError(f"Harbor trial {trial.config.trial_name} returned no verifier reward")
     return trace, result.verifier_result.rewards, str(trial.paths.trial_dir)

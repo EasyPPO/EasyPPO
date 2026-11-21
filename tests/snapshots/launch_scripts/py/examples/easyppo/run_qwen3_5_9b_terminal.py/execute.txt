@@ -126,7 +126,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --terminal-compact-threshold 12000
   --terminal-max-context-tokens 32768
   --terminal-max-new-tokens 8192
-  --terminal-max-total-tokens 65536
+  --terminal-max-total-tokens 120000
   --terminal-max-steps 100
   --rollout-max-context-len 32768  
   --deploy-component all

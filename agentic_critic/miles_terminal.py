@@ -211,6 +211,8 @@ async def generate(input):
     candidate_count = args.rollout_top_logprobs_num if not input.evaluation else 0
     metadata = base.metadata or {}
     agent_protocol = metadata.get("agent_protocol", getattr(args, "terminal_agent_protocol", "terminal"))
+    if agent_protocol in ("terminus-2", "terminus-2-etl"):
+        metadata = {**metadata, "agent_name": "terminus-2"}
     config = _config(args, metadata)
     task_path = Path(metadata["task_path"])
     if not task_path.is_absolute():
@@ -270,7 +272,10 @@ async def generate(input):
         }
         return GenerateFnOutput(samples=sample)
     trace, rewards, trial_dir = result
-    reward, reward_metadata = _reward(args, metadata, rewards)
+    if agent_protocol in ("terminus-2", "terminus-2-etl") and trace.exit_status != "Submitted":
+        reward, reward_metadata = 0.0, {"reward_mode": "native", "reward_fallback": "unsubmitted"}
+    else:
+        reward, reward_metadata = _reward(args, metadata, rewards)
     samples = []
     for i, sample_fields in enumerate(trace.sample_fields()):
         segment_metadata = trace.segment_metadata(i)
@@ -323,7 +328,7 @@ def _add_arguments(parser):
             kwargs["choices"] = ("summary", "keep_last_turns", "none")
         parser.add_argument("--terminal-" + f.name.replace("_", "-"), **kwargs)
     parser.add_argument("--terminal-tasks-dir", default="")
-    parser.add_argument("--terminal-agent-protocol", choices=("terminal", "fcs-submit"), default="terminal")
+    parser.add_argument("--terminal-agent-protocol", choices=("terminal", "fcs-submit", "terminus-2", "terminus-2-etl"), default="terminal")
     parser.add_argument("--fcs-max-submissions", type=int, default=DEFAULT_MAX_SUBMISSIONS)
     parser.add_argument("--fcs-max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--terminal-trials-dir", default="terminal-trials")

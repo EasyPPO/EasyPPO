@@ -214,3 +214,19 @@ def test_native_critic_fixes_all_old_values_before_four_preplanned_updates(monke
     with store.get(output.values) as stored:
         assert [value.item() for value in stored["values"]] == [3.0, 1.0, 4.0, 2.0]
     assert events == ["all-old-values", "all-returns", "update-0", "update-1", "update-2", "update-3"]
+
+
+def test_prompt_mean_scales_segmented_ppo_advantages_after_masking(monkeypatch):
+    from miles.backends.training_utils.loss import objective
+
+    monkeypatch.setattr(objective, "get_parallel_state", lambda: SimpleNamespace(effective_dp=SimpleNamespace(size=1)))
+    # Group 3 spans two segments. Group 4 has a shorter episode and group 5
+    # contributes to the denominator with zero learning signal.
+    data = {
+        "prompt_group_ids": [3, 3, 4, 5],
+        "advantages": [torch.tensor(a, dtype=torch.float) for a in ([2, 2], [8, 2], [-1], [0, 0])],
+        "loss_masks": [torch.tensor(m) for m in ([1, 1], [0, 1], [1], [1, 1])],
+    }
+    objective.scale_ppo_advantages_to_prompt_mean(data)
+    token_sum = sum((a * m).sum() for a, m in zip(data["advantages"], data["loss_masks"], strict=True))
+    torch.testing.assert_close(token_sum / 6, torch.tensor((2 - 1) / 2))

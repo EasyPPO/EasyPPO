@@ -47,7 +47,7 @@ class ScriptArgs(_base.ScriptArgs):
     compact_threshold: int = 12000
     max_context_tokens: int = 32768
     max_new_tokens: int = 8192
-    max_total_tokens: int = 65536
+    max_total_tokens: int = 120000
     max_steps: int = 100
     eval_interval: int = 10
     chat_template_path: str = field(

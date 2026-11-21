@@ -152,3 +152,33 @@ async def test_harbor_command_timeout_recovers_but_infrastructure_failure_propag
     else:
         with pytest.raises(RuntimeError, match="Container connection lost"):
             await agent.run("task", SimpleNamespace(exec=execute), AgentContext())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("submitted", [True, False])
+async def test_terminus_only_grades_confirmed_submissions(monkeypatch, tmp_path, submitted):
+    from agentic_critic import harbor_terminal
+
+    trace = TerminalTrace(exit_status="Submitted" if submitted else "TurnLimit")
+    hooks = {}
+
+    async def create(config):
+        async def run():
+            await hooks[harbor_terminal.TrialEvent.AGENT_END](None)
+            assert config.verifier.disable != submitted
+            verdict = SimpleNamespace(rewards={"reward": 1.0}) if submitted else None
+            return SimpleNamespace(exception_info=None, verifier_result=verdict)
+
+        return SimpleNamespace(
+            config=config, run=run, add_hook=hooks.__setitem__,
+            agent=SimpleNamespace(bind=lambda **kwargs: None, trace=trace),
+            paths=SimpleNamespace(trial_dir=tmp_path),
+        )
+
+    monkeypatch.setattr(harbor_terminal.Trial, "create", create)
+    actual, rewards, _ = await run_trial(
+        task_path=tmp_path, trials_dir=tmp_path, environment="modal",
+        tokenizer=Tokenizer(), decode=None, config=TerminalConfig(), agent_protocol="terminus-2",
+    )
+    assert actual is trace
+    assert rewards == ({"reward": 1.0} if submitted else {})

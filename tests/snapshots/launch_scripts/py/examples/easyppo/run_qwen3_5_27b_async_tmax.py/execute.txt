@@ -78,11 +78,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-top-p 1.0
   --eval-top-k -1
   --eval-max-response-len 8192
+  --terminal-agent-protocol terminus-2
   --chat-template-path <REPO_ROOT>/agentic_critic/qwen3_5_interleaved.jinja
   --terminal-enable-thinking
   --terminal-tasks-dir /root/datasets/harbor
   --terminal-trials-dir /root/shared_data/260101-000000-000/trials
-  --terminal-environment docker
+  --terminal-environment modal
   --terminal-compaction summary
   --terminal-compact-threshold 24576
   --terminal-max-context-tokens 32768
@@ -103,7 +104,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --num-critic-only-steps 30
   --critic-num-steps-per-rollout 4
   --critic-return-std-floor 0.075
-  --filter-truncated-in-actor-loss
   --value-clip 0.2
   --value-loss-coef 0.5
   --entropy-coef 0

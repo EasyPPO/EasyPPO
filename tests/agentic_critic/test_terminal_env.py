@@ -10,6 +10,9 @@ from agentic_critic.terminal_env import Completion, TerminalAgent, TerminalConfi
 
 
 class Tokenizer:
+    def get_vocab(self):
+        return {"<|im_end|>": 3}
+
     def apply_chat_template(self, messages, **kwargs):
         text = "".join(f"<{m['role']}>{m['content']}</{m['role']}>" for m in messages) + "<assistant>"
         return list(map(ord, text))

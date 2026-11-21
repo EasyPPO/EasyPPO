@@ -1,4 +1,5 @@
 from argparse import Namespace
+from collections import Counter
 
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -124,6 +125,41 @@ def compute_advantages_and_returns(
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
+
+
+def scale_ppo_advantages_to_prompt_mean(rollout_data: RolloutBatch) -> None:
+    """Scale after actor masking, before microbatching. The critic keeps its own token mean."""
+    advantages = rollout_data["advantages"]
+    masks = rollout_data["loss_masks"]
+    groups = rollout_data["prompt_group_ids"]
+    # A compacted episode can span several rows. Preserve the global token
+    # denominator used by Megatron and sum effective row lengths per prompt.
+    stats = torch.stack(
+        [
+            torch.stack((mask.sum(), (adv.ne(0) & mask.bool()).any().long()))
+            for adv, mask in zip(advantages, masks, strict=True)
+        ]
+    ).tolist()
+    denominator = 0
+    active_tokens = Counter()
+    for group, (count, active) in zip(groups, stats, strict=True):
+        denominator += count
+        if active and count:
+            active_tokens[int(group)] += count
+
+    dp = get_parallel_state().effective_dp
+    if dp.size > 1:
+        totals = [None] * dp.size
+        torch.distributed.all_gather_object(totals, (denominator, active_tokens), group=dp.gloo_group or dp.group)
+        denominator = 0
+        active_tokens = Counter()
+        for count, group_counts in totals:
+            denominator += count
+            active_tokens.update(group_counts)
+
+    if active_tokens:
+        scales = {g: denominator / (len(active_tokens) * count) for g, count in active_tokens.items()}
+        rollout_data["advantages"] = [adv * scales.get(int(g), 1.0) for g, adv in zip(groups, advantages, strict=True)]
 
 
 def drop_truncated_samples_from_actor_loss(rollout_data: RolloutBatch) -> None:

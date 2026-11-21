@@ -1,6 +1,6 @@
 # Terminal actor-critic datasets
 
-The asynchronous and synchronous recipes use the same bash/mini-swe-agent harness and dataset pairs:
+The FrontierSmith and TMAX recipes use these training and evaluation pairs:
 
 | Recipe | Training corpus | Evaluation corpus | Prepared inputs |
 | --- | --- | --- | --- |
@@ -71,3 +71,46 @@ judge URL embedded during preparation. Direct submissions use the launch-time
 `--frontier-judge-url`. See the [judge deployment instructions](../../README.md#4-run-the-task-environments-and-judges)
 for endpoint and reachability settings. TMAX and Terminal-Bench use their task
 verifiers and rewards.
+
+## csk4gby2 terminal training subset
+
+List the 543 historical task IDs, corpora and splits in shuffled order:
+
+```bash
+python scripts/make_miles_agentpick_data.py --list-tasks
+```
+
+Both listing and preparation select tasks from the pinned upstream
+[split_assignment.tsv](https://huggingface.co/datasets/Fzz1/tb-training-mix-agentpick/blob/6e3e6c8a01d84f06b9f18f61782170f4801d5330/metadata/split_assignment.tsv).
+They use the `clean` and `calibforge_clean` splits, excluding corpus `SMITH`
+and task `tw_14495`. Preparation writes all 543 tasks in filtered TSV order.
+`source_index` is the zero-based position in that order. Pass `--seed N`
+to reproduce a shuffled listing. The selection includes TerminalWorld
+benchmark tasks, and upstream used TB2.1 for retrieval.
+
+From the repository root, with the terminal extra installed:
+
+```bash
+python scripts/make_miles_agentpick_data.py --tasks-dir /data/harbor
+```
+
+Preparation downloads two checksum-verified archives from the pinned release.
+TMAX resource limits come from the same release’s `data/clean.parquet`.
+To reuse local archives, pass `--archive-dir` pointing to a directory containing
+`tasks-clean.tar` and `tasks-calibforge_clean.tar`. The command creates
+`agentpick-csk4gby2/` under the tasks directory and requires that output
+subdirectory to be new. The TMAX environments use their prebuilt images.
+Workers need Docker access to the source images.
+
+Pass these arguments to the existing 9B terminal launcher:
+
+```text
+--tasks-dir /data/harbor --prompt-data /data/harbor/agentpick-csk4gby2/train.jsonl
+```
+
+The launcher's preparation step supplies TB2.1 evaluation data.
+[Source release](https://huggingface.co/datasets/Fzz1/tb-training-mix-agentpick/tree/6e3e6c8a01d84f06b9f18f61782170f4801d5330)
+
+
+For Qwen3.5-9B Terminus-2 training checks and the TB2.1 critic comparison,
+follow the [Terminal Bench runbook](../../Claude.md#terminal-bench).

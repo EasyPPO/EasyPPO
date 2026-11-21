@@ -1,39 +1,30 @@
-# Qwen3.5-9B Synchronous PPO on FrontierSmith
+# Qwen3.5-9B PPO critic comparison
 
-The main objective is to test whether, in synchronous agentic PPO, giving the
-critic access to the full episode history improves value estimation compared
-with the current approach of managing critic context through actor-generated
-summaries. We then evaluate whether any improvement in critic estimates
-translates into more effective end-to-end PPO training and stronger final
-policy performance.
+**Current objective.** Compare the training effectiveness of `full_detach` and
+`actor-summary` on Qwen3.5-9B using Terminal-Bench 2.1 (TB2.1) evaluation.
+Train from the same Qwen3.5-9B base on AgentPick. Compare official TB2.1
+success rates at matching policy versions and report the final checkpoint
+and training budget for each run. Frontier-CS is a separate experiment with
+its own initialization, training data, judge, and evaluation score.
 
-Entry point: [`run_qwen3_5_9b_sync_frontiersmith.py`](examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py).
-Adapt the commands below to the cluster's image, scheduler, storage, and service configuration.
-
-## 1. Environment
-
-Use a Miles-compatible GPU image and this branch's code. Follow the
-[installation guide](docs/getting-started/installation.md) when building an image.
-For a fresh checkout:
-
-```bash
-git clone --branch miles https://github.com/EasyPPO/EasyPPO.git EasyPPO
-cd EasyPPO
-```
-
-To update an existing checkout from **EasyPPO/EasyPPO, branch `miles`**:
-
-```bash
-git remote set-url origin https://github.com/EasyPPO/EasyPPO.git
-git switch miles
-git pull --ff-only origin miles
-```
-
-If the job image needs the project or its terminal dependencies, install:
+Run the commands from the repository root on the checkout containing both
+Terminus launch scripts. Set `MODEL_DIR`, `DATA_DIR`, and `RUN_DIR` to
+paths accessible inside the job. Keep dataset versions, seeds, evaluation
+settings, and compute allocation fixed across critic modes. Use distinct
+output directories so the two runs retain independent checkpoints and logs.
+Use a Miles-compatible image with the matching Megatron checkout. Install
+the project and terminal extras in the training environment:
 
 ```bash
 python -m pip install -e '.[agentic,terminal]'
 ```
+
+## FCS
+
+Train synchronous PPO on FrontierSmith and evaluate on Frontier-CS with the
+[9B FrontierSmith launcher](examples/easyppo/run_qwen3_5_9b_sync_frontiersmith.py).
+
+### Environment
 
 Choose the GPU allocation to fit the available hardware and memory budget.
 Set `--num-nodes` and `--num-gpus-per-node` to match the cluster allocation.
@@ -61,7 +52,7 @@ platform's storage or distribution mechanism. Each rollout worker needs the
 prepared tasks and HTTP access to the shared judge.
 Set `--megatron-path` when using a custom Megatron installation path.
 
-## 2. Judge deployment
+### Judge deployment
 
 Use one shared judge service for all training and evaluation episodes. The bundled
 `Frontier-CS/algorithmic/` contains the judge and both corpora: **200 FrontierSmith
@@ -85,7 +76,14 @@ Set `JUDGE_URL` to the service's reachable DNS name or address.
 `FRONTIERCS_JUDGE_BIND_IP` controls the server's local listening interface.
 Keep the unauthenticated API behind the platform's internal network or access controls.
 
-## 3. Model preparation
+### Data and model preparation
+
+To prepare only the 200 training tasks and 180 evaluation tasks on CPU:
+
+```bash
+python scripts/make_miles_frontiersmith_data.py \
+  --tasks-dir "$DATA_DIR/harbor" --out "$DATA_DIR" --judge-url "$JUDGE_URL"
+```
 
 Run from the repository root in an allocated GPU job environment:
 
@@ -103,7 +101,7 @@ then converts the Megatron checkpoint. Reuse compatible existing artifacts:
 Checkpoint conversion requires GPUs. Regenerate task data after changing
 `--frontier-judge-timeout`. Supply the shared judge URL when launching training.
 
-## 4. Training
+### Training
 
 Submit through the platform's job environment. For platform-managed Ray:
 
@@ -156,10 +154,10 @@ rollout state have all been saved. Evaluation runs initially, every ten rounds, 
 with 180 tasks × 3 trials per evaluation.
 
 Outputs are under `$RUN_DIR/<run-id>/`: `checkpoints/`, `checkpoints_critic/`,
-and `trials/`. Use a new run ID for each new experiment. See [section 6](#6-resume-training)
+and `trials/`. Use a new run ID for each new experiment. See [Resume training](#resume-training)
 to resume an existing run.
 
-## 5. Primary experiment: full_detach vs. actor-summary
+### Critic comparison
 
 Our current primary focus is comparing **`full_detach` and `actor-summary`**
 to measure how critic access to episode history affects synchronous PPO training.
@@ -170,7 +168,7 @@ to measure how critic access to episode history affects synchronous PPO training
 | `actor-summary` | The actor's context for each segment: task, current summary, and local conversation | `sync-fs-9b-actor-summary-001` |
 
 Complete model/data preparation in sections 1–3 and configure the job/Ray
-environment in section 4. Use the same `NUM_NODES`, `GPUS_PER_NODE`, `MODEL_DIR`,
+environment described under [Training](#training). Use the same `NUM_NODES`, `GPUS_PER_NODE`, `MODEL_DIR`,
 `DATA_DIR`, and `RUN_DIR` for both commands below. Run each in its allocated job
 environment with a fresh run ID.
 
@@ -229,13 +227,13 @@ hyperparameters identical. Start both runs from the same base checkpoint;
 their run IDs select separate output directories. Compare training curves and
 full Frontier-CS evaluation rewards at matched rounds.
 
-## 6. Resume training
+### Resume training
 
-Rerun the same training command from [section 5](#5-primary-experiment-full_detach-vs-actor-summary)
+Rerun the same training command from [Critic comparison](#critic-comparison)
 with the same `--output-dir` and `--run-id`. Training automatically resumes
 from the latest complete checkpoint.
 
-## 7. Modal launchers
+### Modal launchers
 
 See [Modal setup and resume](modal_launchers/README.md). Select two or four nodes
 and either H200 or B200; each node has eight GPUs:
@@ -254,3 +252,94 @@ and 1024 GiB RAM. Omitting `--nodes` retains the single-node default.
 Each invocation runs one experiment and resumes its latest complete checkpoint.
 Timeouts trigger up to three sequential cluster restarts. Keep the same node
 count, GPU type and run ID when resuming; use a new ID to change topology.
+
+## Terminal Bench
+
+### Prepare the training and evaluation data
+
+Use the Qwen3.5-9B base model and Modal's native CPU sandboxes for terminal
+interaction and verification. Configure Modal credentials on rollout workers.
+Prepare both datasets from the repository root:
+
+```bash
+python -m pip install 'harbor[modal]==0.24.0'
+python scripts/make_miles_agentpick_data.py --tasks-dir "$DATA_DIR/harbor"
+python scripts/make_miles_terminal_data.py --dataset terminal-bench-2.1 \
+  --tasks-dir "$DATA_DIR/harbor" --out "$DATA_DIR"
+```
+
+AgentPick preparation selects 543 tasks from the pinned upstream
+[split_assignment.tsv](https://huggingface.co/datasets/Fzz1/tb-training-mix-agentpick/blob/6e3e6c8a01d84f06b9f18f61782170f4801d5330/metadata/split_assignment.tsv)
+and writes `$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl`. The official
+89 evaluation tasks go into `$DATA_DIR/tb21.eval.jsonl`. The AgentPick output
+directory must be new on the first preparation. Reuse it for both modes.
+
+### Prepare the base model
+
+Run checkpoint conversion once on an allocated GPU and reuse the result:
+
+```bash
+python -m examples.easyppo.terminus_full_detach --prepare-model-only --model-dir "$MODEL_DIR"
+```
+
+Both modes initialize from `Qwen/Qwen3.5-9B` and use the converted
+`$MODEL_DIR/Qwen3.5-9B_torch_dist` checkpoint.
+
+### Launch the single-GPU training checks
+
+```bash
+python -m examples.easyppo.terminus_full_detach \
+  --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR/full_detach"
+
+python -m examples.easyppo.terminus_actor_summary \
+  --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR/actor-summary"
+```
+
+Each command collects four prompt groups with two responses per group on the
+AgentPick configuration-drift ETL task. Terminus-2 drives the terminal using
+XML and tmux. EasyPPO triggers an actor-generated summary at 12,000 context
+tokens. The single-call context limit is 63,488, the action generation limit
+is 16,384, and the episode budget is 120,000 generated tokens including
+summaries. PPO uses the sampled behavior-policy log probabilities. On B200
+the scripts use SGLang’s Triton dense attention backend. The pinned FA4
+kernel rejects Qwen3.5-9B’s head dimension of 256 during paged decode. On H100/H200 pass
+`--gpu-arch hopper` for FA3. SGLang’s Triton GDN backend uses its FLA
+chunk and fused recurrent kernels. Megatron uses FlashAttention for dense
+attention and FLA for GDN in both actor and critic. Inspect the resolved
+server arguments and GDN dispatcher in each run log.
+
+Each batch takes four independent critic optimizer steps and one actor step.
+The single-card scripts set `--ppo-head-chunk-size 8192`. The actor projects
+up to 8,192 response positions at a time and recomputes the output projection
+for each chunk during backward. The training pack limit is set separately.
+Both modes use critic LR `5e-6`, value clip `0.2`, and value loss coefficient
+`0.5`. The smoke uses zero critic-only warmup steps. A successful check
+requires a verified rollout and completed optimizer updates.
+
+### Reference scale for the comparison
+
+| Setting | csk4gby2 reference | Single-GPU check |
+|---|---:|---:|
+| Prompt groups × responses per step | 32 × 12 | 4 × 2 |
+| Controller training steps | 150 | 1 |
+| Actor learning rate / weight decay | 3e-6 / 0 | 3e-6 / 0 |
+| Actor warmup steps | 1 | 0 |
+| Evaluation corpus | 89 TB2.1 tasks | Configuration-drift ETL fixture |
+| Checkpoint interval | 5 steps | Final step |
+
+### Compare the TB2.1 evaluation
+
+For AgentPick training and TB2.1 evaluation, pass these additional arguments to either script:
+
+```bash
+--prompt-data "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl" \
+--eval-data "$DATA_DIR/tb21.eval.jsonl" --num-rollout 150
+```
+
+Terminus-2 uses Harbor’s XML prompt. A capped action is salvaged when it contains a complete XML response; otherwise Harbor requests a shorter response. Context exhaustion and the episode token budget end the attempt. Unsubmitted tasks receive zero reward. Their sampled action tokens remain eligible for PPO actor loss. At each comparison checkpoint, evaluate all 89 tasks with the same
+harness and Modal environment for both modes. Follow the reference sampling
+protocol of five trials per task, temperature 0.7 and top-p 0.95. Average
+binary verifier rewards within each task, then over tasks. Record the policy
+version, number of graded trials, timeouts and infrastructure failures with
+the score. The [reference recipe](https://github.com/yichuan-w/torchtitan/tree/60facb4549bd9a1c73ca8492c4715c0e2edca59b/torchtitan/experiments/rl/experiment%20record/csk4gby2)
+runs evaluation every 20 policy steps.

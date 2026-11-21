@@ -116,7 +116,7 @@ def test_one_step_async_recipe(launcher, monkeypatch, tmp_path, mode, centering)
     assert Path(value("--terminal-trials-dir")) == Path(args.output_dir) / args.run_id / "trials"
     assert value("--critic-num-steps-per-rollout") == "4"
     assert value("--critic-return-std-floor") == "0.075"
-    assert "--filter-truncated-in-actor-loss" in argv
+    assert ("--filter-truncated-in-actor-loss" in argv) == frontier
     assert value("--num-critic-only-steps") == "30"
     assert value("--num-rollout") == "200"
     assert value("--kl-coef") == "0"
@@ -334,3 +334,41 @@ def test_episode_batch_divisibility_allows_prompt_groups_to_span_dp_ranks(launch
 def test_nondivisible_episode_batches_still_fail(launcher, overrides, message):
     with pytest.raises(ValueError, match=message):
         _recipe._validate(launcher.ScriptArgs(**overrides))
+
+
+@pytest.mark.parametrize(("mode", "arch", "flash"), [("full_detach", "blackwell", "triton"), ("actor-summary", "hopper", "fa3")])
+@pytest.mark.parametrize("prepared", [False, True])
+def test_terminus_launch_uses_sampled_logprobs_without_old_actor_backup(monkeypatch, tmp_path, mode, arch, flash, prepared):
+    pytest.importorskip("harbor")
+    from agentic_critic.harbor_terminus import ETL_SMOKE_TASK_ID
+    from examples.easyppo import terminus_etl
+
+    task = tmp_path / "agentpick-csk4gby2" / "tasks" / ETL_SMOKE_TASK_ID
+    (task / "environment").mkdir(parents=True)
+    (task / "tests").mkdir()
+    (task / "task.toml").touch()
+    (task / "instruction.md").write_text("Normalize the configuration records.")
+    backend = _recording_backend(monkeypatch, _recipe)
+    monkeypatch.setattr(sys, "argv", ["run", "--critic-context-mode", mode, "--gpu-arch", arch,
+                                       "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
+                                       "--output-dir", str(tmp_path / "runs"),
+                                       *(["--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl", "--num-rollout", "30"] if prepared else [])])
+    terminus_etl.main()
+    invocation, = backend.training
+    args = shlex.split(invocation["train_args"])
+    assert invocation["train_script"] == "train_async.py"
+    assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
+    assert "--filter-truncated-in-actor-loss" not in args
+    if prepared:
+        assert args[args.index("--prompt-data") + 1] == "train.jsonl"
+        assert args[args.index("--num-rollout") + 1] == "30"
+        encoded = args[args.index("--eval-config") + 1].removeprefix("base64:")
+        dataset, = json.loads(base64.b64decode(encoded))["datasets"]
+        assert (dataset["name"], dataset["path"]) == ("tb21", "eval.jsonl")
+    assert args[args.index("--ppo-head-chunk-size") + 1] == "8192"
+    assert "--ppo-prompt-mean" in args and "--fully-async" in args
+    for flag, value in {"--critic-context-mode": mode, "--critic-num-steps-per-rollout": "4",
+                        "--sglang-attention-backend": flash, "--linear-attention-backend": "fla",
+                        "--terminal-environment": "modal", "--terminal-agent-protocol": "terminus-2",
+                        "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "120000"}.items():
+        assert args[args.index(flag) + 1] == value

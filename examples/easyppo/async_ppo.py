@@ -55,6 +55,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     frontier_judge_url: str = ""
     frontier_judge_timeout: int = 3600
     terminal_environment: Literal["docker", "daytona", "modal", "shared-judge"] = "docker"
+    terminal_agent_protocol: Literal["terminal", "terminus-2"] = "terminal"
     terminal_memory_mb: int | None = None
     terminal_docker_compose: list[str] = field(default_factory=list)
     fcs_max_submissions: int = DEFAULT_MAX_SUBMISSIONS
@@ -74,6 +75,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = -1
+    actor_lr_warmup_iters: int = 0
     actor_lr: float = 1e-6
     critic_lr: float = 5e-6
     adam_beta1: float = 0.9
@@ -83,6 +85,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     clip_grad: float = 1.0
     policy_clip: float = 0.2
     policy_clip_high: float = 0.28
+    use_rollout_logprobs: bool = False
     score_centering: bool = True
     score_centering_candidates: int = 128
     score_centering_is: Literal["none", "tis", "mis"] = "tis"
@@ -94,6 +97,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     value_clip: float = 0.2
     value_loss_coef: float = 0.5
     max_context_tokens: int = 32768
+    compaction: Literal["summary", "keep_last_turns", "none"] = "summary"
     compact_threshold: int = 24576
     max_new_tokens: int = 8192
     max_total_tokens: int = 120000
@@ -279,6 +283,7 @@ def _validate(args: ScriptArgs) -> None:
         max_context_tokens=args.max_context_tokens,
         max_new_tokens=args.max_new_tokens,
         max_total_tokens=args.max_total_tokens,
+        compaction=args.compaction,
         compact_threshold=args.compact_threshold,
         summary_tokens=args.summary_tokens,
         fcs_summary_thinking=args.fcs_summary_thinking,
@@ -431,19 +436,17 @@ def _rollout_args(args: ScriptArgs) -> list[str]:
 
 
 def _terminal_args(args: ScriptArgs) -> list[str]:
+    protocol = []
+    if args.dataset == "frontiersmith":
+        protocol = [
+            "--terminal-agent-protocol", "fcs-submit",
+            "--fcs-max-submissions", str(args.fcs_max_submissions),
+            "--fcs-max-turns", str(args.fcs_max_turns),
+        ]
+    elif args.terminal_agent_protocol != "terminal":
+        protocol = ["--terminal-agent-protocol", args.terminal_agent_protocol]
     return [
-        *(
-            [
-                "--terminal-agent-protocol",
-                "fcs-submit",
-                "--fcs-max-submissions",
-                str(args.fcs_max_submissions),
-                "--fcs-max-turns",
-                str(args.fcs_max_turns),
-            ]
-            if args.dataset == "frontiersmith"
-            else []
-        ),
+        *protocol,
         *(["--chat-template-path", args.chat_template_path] if args.chat_template_path else []),
         "--terminal-enable-thinking",
         *(["--terminal-continue-on-length"] if args.continue_on_length else []),
@@ -457,7 +460,7 @@ def _terminal_args(args: ScriptArgs) -> list[str]:
         *(["--terminal-memory-mb", str(args.terminal_memory_mb)] if args.terminal_memory_mb is not None else []),
         *[value for path in args.terminal_docker_compose for value in ("--terminal-docker-compose", path)],
         "--terminal-compaction",
-        "summary",
+        args.compaction,
         "--terminal-compact-threshold",
         str(args.compact_threshold),
         "--terminal-max-context-tokens",
@@ -502,7 +505,7 @@ def _algorithm_args(args: ScriptArgs, *, keep_old_actor: bool = True) -> list[st
         str(args.critic_steps_per_rollout),
         "--critic-return-std-floor",
         str(args.critic_return_std_floor),
-        "--filter-truncated-in-actor-loss",
+        *(["--filter-truncated-in-actor-loss"] if args.dataset == "frontiersmith" or args.terminal_agent_protocol != "terminus-2" else []),
         "--value-clip",
         str(args.value_clip),
         "--value-loss-coef",
@@ -532,7 +535,7 @@ def _algorithm_args(args: ScriptArgs, *, keep_old_actor: bool = True) -> list[st
         "--lr-decay-style",
         "constant",
         "--lr-warmup-iters",
-        "0",
+        str(args.actor_lr_warmup_iters),
         "--critic-lr-warmup-iters",
         "0",
     ]
@@ -563,7 +566,9 @@ def _algorithm_args(args: ScriptArgs, *, keep_old_actor: bool = True) -> list[st
         if args.score_centering_recompute_loss:
             argv += ["--recompute-loss-function"]
     else:
-        if keep_old_actor:
+        if args.use_rollout_logprobs:
+            argv += ["--use-rollout-logprobs"]
+        elif keep_old_actor:
             argv += ["--keep-old-actor"]
         argv += [
             "--eps-clip",
@@ -647,7 +652,7 @@ def _ray_worker_startup(args: ScriptArgs, backend: BaseCommandBackend) -> Callab
     )
 
 
-def _execute(args: ScriptArgs, *, dataset: str, script_path: str) -> None:
+def _execute(args: ScriptArgs, *, dataset: str, script_path: str, extra_args: tuple[str, ...] = ()) -> None:
     _validate_dataset(args, dataset=dataset)
     _validate(args)
     argv = (
@@ -656,6 +661,7 @@ def _execute(args: ScriptArgs, *, dataset: str, script_path: str) -> None:
         + _terminal_args(args)
         + _algorithm_args(args)
         + _resource_args(args)
+        + list(extra_args)
         + shlex.split(U.get_default_wandb_args(script_path, run_id=args.run_id))
     )
     backend = args.create_backend()

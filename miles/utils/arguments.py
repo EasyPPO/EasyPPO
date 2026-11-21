@@ -1667,6 +1667,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "hf_checkpoint_dir: str | None) -> None."
                 ),
             )
+            parser.add_argument(
+                "--ppo-prompt-mean",
+                action="store_true",
+                help="Give each prompt group with learning signal equal weight in the PPO policy gradient.",
+            )
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
@@ -4431,6 +4436,8 @@ def _validate_easyppo_args(args) -> None:
     if args.critic_num_steps_per_rollout is not None:
         assert args.critic_num_steps_per_rollout >= 1, "--critic-num-steps-per-rollout must be at least 1"
         assert not args.multi_lora, "--critic-num-steps-per-rollout does not support multi-LoRA"
+    if getattr(args, "ppo_prompt_mean", False) and args.critic_context_mode not in ("full_detach", "actor-summary"):
+        raise ValueError("--ppo-prompt-mean requires episode-aware prompt group IDs from a memory critic recipe")
     if args.critic_context_mode in ("full_detach", "actor-summary"):
         _validate_memory_critic_args(args)
 

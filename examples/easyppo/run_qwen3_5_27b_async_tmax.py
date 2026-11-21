@@ -1,6 +1,6 @@
 """One-step asynchronous actor-critic on TMAX-15K with Terminal-Bench 2.1 evaluation.
 
-Requires a configured Miles cluster and Harbor Docker access.
+Requires a configured Miles cluster and Modal Sandbox access.
 Use MILES_SCRIPT_EXTERNAL_RAY=1 for platform-managed Ray; SSH bootstrap is optional.
 The prepare action downloads the pinned model/data and
 converts the Megatron checkpoint. Actor and critic have independent parameters
@@ -44,6 +44,8 @@ from miles.utils.external_utils import command_utils as U  # noqa: E402
 @dataclass
 class ScriptArgs(_async.ScriptArgs):
     dataset: Literal["tmax"] = "tmax"
+    terminal_agent_protocol: Literal["terminus-2"] = "terminus-2"
+    terminal_environment: str = "modal"
 
     def __post_init__(self):
         super().__post_init__()

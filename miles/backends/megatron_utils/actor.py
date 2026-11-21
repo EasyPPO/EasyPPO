@@ -29,6 +29,7 @@ from miles.backends.training_utils.loss.objective import (
     get_log_probs_and_entropy,
     get_values,
     log_train_advantage_computation_event,
+    scale_ppo_advantages_to_prompt_mean,
 )
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.metrics.log_utils import (
@@ -806,6 +807,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if getattr(self.args, "filter_truncated_in_actor_loss", False):
                 drop_truncated_samples_from_actor_loss(rollout_data)
+            if getattr(self.args, "ppo_prompt_mean", False):
+                scale_ppo_advantages_to_prompt_mean(rollout_data)
 
             # Train
             num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
