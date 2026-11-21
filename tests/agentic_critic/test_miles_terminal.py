@@ -57,6 +57,7 @@ async def test_wrapper_returns_trainable_compacted_episode(monkeypatch, tmp_path
         return {
             "text": reply.text,
             "meta_info": {
+                "weight_version": str(len(requests)),
                 "output_token_logprobs": [
                     (lp, token, None) for token, lp in zip(reply.tokens, reply.logprobs, strict=True)
                 ],
@@ -79,6 +80,7 @@ async def test_wrapper_returns_trainable_compacted_episode(monkeypatch, tmp_path
     monkeypatch.setattr(http_utils, "post", post)
     monkeypatch.setattr(harbor_terminal, "run_trial", trial)
     args = args_for(tmp_path)
+    args.max_weight_staleness = 4
     base = Sample(index=9, prompt="task", metadata={"task_path": "task", "terminal": {"max_steps": 5}})
     params = {"temperature": 1.0, "max_new_tokens": 512}
     result = await miles_terminal.generate(
@@ -93,6 +95,9 @@ async def test_wrapper_returns_trainable_compacted_episode(monkeypatch, tmp_path
     assert len(result.samples) == 2
     assert all(s.rollout_id == 9 and s.reward == 0.75 and s.status == Sample.Status.COMPLETED for s in result.samples)
     assert all(s.metadata["n_compactions"] == 1 for s in result.samples)
+    from miles.rollout.filter_hub.common_filters import group_staleness
+
+    assert group_staleness([result.samples], 6) == (None if evaluation else 5)
     for sample in result.samples:
         sample.validate()
         assert len(sample.loss_mask) == len(sample.rollout_log_probs) == sample.response_length

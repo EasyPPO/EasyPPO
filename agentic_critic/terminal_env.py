@@ -121,6 +121,7 @@ class Completion:
     finish_reason: str = "stop"
     topk_token_ids: np.ndarray | None = None
     topk_log_probs: np.ndarray | None = None
+    weight_versions: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,7 @@ class TerminalTrace:
         self.calls.append(
             {
                 "kind": kind,
+                **({"weight_versions": result.weight_versions} if result.weight_versions is not None else {}),
                 "prompt_tokens": len(prompt),
                 "output_tokens": len(result.tokens),
                 "finish_reason": result.finish_reason,

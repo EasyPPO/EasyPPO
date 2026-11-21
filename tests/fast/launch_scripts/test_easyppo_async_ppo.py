@@ -337,36 +337,33 @@ def test_nondivisible_episode_batches_still_fail(launcher, overrides, message):
 
 
 @pytest.mark.parametrize(("mode", "arch", "flash"), [("full_detach", "blackwell", "triton"), ("actor-summary", "hopper", "fa3")])
-@pytest.mark.parametrize("prepared", [False, True])
-def test_terminus_launch_uses_sampled_logprobs_without_old_actor_backup(monkeypatch, tmp_path, mode, arch, flash, prepared):
-    pytest.importorskip("harbor")
-    from agentic_critic.harbor_terminus import ETL_SMOKE_TASK_ID
-    from examples.easyppo import terminus_etl
+@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout"), [(1, 1, 2, 5), (4, 1, 8, 23), (8, 2, 8, 47)])
+def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_nodes, trainer_gpus, rollout):
+    from examples.easyppo import terminus_ppo
 
-    task = tmp_path / "agentpick-csk4gby2" / "tasks" / ETL_SMOKE_TASK_ID
-    (task / "environment").mkdir(parents=True)
-    (task / "tests").mkdir()
-    (task / "task.toml").touch()
-    (task / "instruction.md").write_text("Normalize the configuration records.")
     backend = _recording_backend(monkeypatch, _recipe)
-    monkeypatch.setattr(sys, "argv", ["run", "--critic-context-mode", mode, "--gpu-arch", arch,
-                                       "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
-                                       "--output-dir", str(tmp_path / "runs"),
-                                       *(["--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl", "--num-rollout", "30",
-                                          "--max-tokens-per-gpu", "110592"] if prepared else [])])
-    terminus_etl.main()
+    monkeypatch.setattr(sys, "argv", ["run", "--gpu-arch", arch, "--num-nodes", str(nodes),
+                                      "--trainer-num-nodes", str(train_nodes), "--tasks-dir", str(tmp_path),
+                                      "--model-dir", str(tmp_path), "--output-dir", str(tmp_path / "runs"),
+                                      "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl"])
+    terminus_ppo.main(mode)
     invocation, = backend.training
     args = shlex.split(invocation["train_args"])
     assert invocation["train_script"] == "train_async.py"
-    assert args[args.index("--max-tokens-per-gpu") + 1] == ("110592" if prepared else "163840")
+    assert "--colocate" not in args and "--offload-rollout" not in args
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
-    assert "--filter-truncated-in-actor-loss" not in args
-    if prepared:
-        assert args[args.index("--prompt-data") + 1] == "train.jsonl"
-        assert args[args.index("--num-rollout") + 1] == "30"
-        encoded = args[args.index("--eval-config") + 1].removeprefix("base64:")
-        dataset, = json.loads(base64.b64decode(encoded))["datasets"]
-        assert (dataset["name"], dataset["path"]) == ("tb21", "eval.jsonl")
+    assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
+    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--max-tokens-per-gpu": 163840,
+                "--global-batch-size": 384, "--rollout-batch-size": 32, "--n-samples-per-prompt": 12,
+                "--async-max-concurrent-samples": 1000, "--max-weight-staleness": 4,
+                "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
+                "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
+                "--rollout-num-gpus": rollout, "--eval-num-gpus": 1, "--eval-interval": 20, "--save-interval": 5}
+    for flag, value in expected.items():
+        assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(value)
+    encoded = args[args.index("--eval-config") + 1].removeprefix("base64:")
+    dataset, = json.loads(base64.b64decode(encoded))["datasets"]
+    assert (dataset["name"], dataset["path"]) == ("tb21", "eval.jsonl")
     assert args[args.index("--ppo-head-chunk-size") + 1] == "8192"
     assert "--ppo-prompt-mean" in args and "--fully-async" in args
     for flag, value in {"--critic-context-mode": mode, "--critic-num-steps-per-rollout": "4",

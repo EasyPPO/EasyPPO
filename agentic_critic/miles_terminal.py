@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import math
 from copy import deepcopy
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
@@ -204,7 +204,7 @@ async def generate(input):
     from miles.rollout.base_types import GenerateFnOutput
     from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, compute_routing_headers
     from miles.utils.http_utils import post
-    from miles.utils.types import Sample
+    from miles.utils.types import Sample, WeightVersionsPerCall
 
     args, base = input.args, input.sample
     _validate_runtime(args, evaluation=input.evaluation)
@@ -241,7 +241,13 @@ async def generate(input):
             # Aborted SGLang replies can omit token/candidate side channels.
             # Wait for Harbor teardown instead of validating discarded output.
             raise asyncio.CancelledError("Collector aborted terminal rollout during decode")
-        return _completion_from_output(output, candidate_count=candidate_count)
+        completion = _completion_from_output(output, candidate_count=candidate_count)
+        if not input.evaluation and completion.tokens and getattr(args, "max_weight_staleness", None) is not None:
+            versions = WeightVersionsPerCall.from_meta_info(output["meta_info"], len(prompt) + len(completion.tokens))
+            if not versions.spans or any(not str(span.version).isdigit() for span in versions.spans):
+                raise ValueError("Terminal rollout staleness filtering requires numeric SGLang weight versions")
+            completion = replace(completion, weight_versions=versions.to_dict())
+        return completion
 
     result = await _run_cancellable_trial(
         args=args,
@@ -276,6 +282,10 @@ async def generate(input):
         reward, reward_metadata = 0.0, {"reward_mode": "native", "reward_fallback": "unsubmitted"}
     else:
         reward, reward_metadata = _reward(args, metadata, rewards)
+    versions_by_segment = [[] for _ in trace.segments]
+    for call in trace.calls:
+        if "weight_versions" in call:
+            versions_by_segment[call["segment"]].append(WeightVersionsPerCall.from_dict(call["weight_versions"]))
     samples = []
     for i, sample_fields in enumerate(trace.sample_fields()):
         segment_metadata = trace.segment_metadata(i)
@@ -285,6 +295,7 @@ async def generate(input):
             raise ValueError("Terminal rollouts require a sample index or rollout_id")
         for name, value in sample_fields.items():
             setattr(sample, name, value)
+        sample.weight_versions = versions_by_segment[i]
         sample.response = input.state.tokenizer.decode(sample.tokens[-sample.response_length :])
         sample.reward = reward
         # FCS continues length-limited turns, but the reference masks affected

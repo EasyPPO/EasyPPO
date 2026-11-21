@@ -285,65 +285,67 @@ python -m examples.easyppo.terminus_full_detach --prepare-model-only --model-dir
 Both modes initialize from `Qwen/Qwen3.5-9B` and use the converted
 `$MODEL_DIR/Qwen3.5-9B_torch_dist` checkpoint.
 
-### Launch the single-GPU training checks
+### Launch N-node asynchronous PPO
+
+Run one command on the head of an allocated Ray cluster. All nodes need the
+same training image, model, datasets and shared writable output directory.
+Configure Modal access on workers that run training and evaluation tasks.
+For an existing Ray cluster set `MILES_SCRIPT_EXTERNAL_RAY=1`. For SSH
+bootstrap, unset it, set `MASTER_ADDR` and pass `--ray-hostfile` with the
+allocated hosts. Use a separate run ID for each critic mode and reuse that
+ID and output directory to resume.
 
 ```bash
-python -m examples.easyppo.terminus_full_detach \
-  --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR/full_detach"
+export MILES_SCRIPT_EXTERNAL_RAY=1
+TB_ARGS=(
+  --num-nodes "${NUM_NODES:-4}" --num-gpus-per-node "${GPUS_PER_NODE:-8}"
+  --trainer-num-nodes "${TRAINER_NODES:-1}" --eval-num-gpus "${EVAL_GPUS:-1}"
+  --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR"
+  --prompt-data "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl"
+  --eval-data "$DATA_DIR/tb21.eval.jsonl"
+)
 
-python -m examples.easyppo.terminus_actor_summary \
-  --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR/actor-summary"
+python -m examples.easyppo.terminus_full_detach "${TB_ARGS[@]}" --run-id tb21-9b-full-detach
+python -m examples.easyppo.terminus_actor_summary "${TB_ARGS[@]}" --run-id tb21-9b-actor-summary
 ```
 
-Each command collects four prompt groups with two responses per group on the
-AgentPick configuration-drift ETL task. Terminus-2 drives the terminal using
-XML and tmux. EasyPPO triggers an actor-generated summary at 12,000 context
-tokens. The single-call context limit is 63,488, the action generation limit
-is 16,384, and the episode budget is 120,000 generated tokens including
-summaries. PPO uses the sampled behavior-policy log probabilities. On B200
-the scripts use SGLang’s Triton dense attention backend. The pinned FA4
-kernel rejects Qwen3.5-9B’s head dimension of 256 during paged decode. On H100/H200 pass
-`--gpu-arch hopper` for FA3. SGLang’s Triton GDN backend uses its FLA
-chunk and fused recurrent kernels. Megatron uses FlashAttention for dense
-attention and FLA for GDN in both actor and critic. Inspect the resolved
-server arguments and GDN dispatcher in each run log.
+| Nodes × GPUs | Trainer allocation | Actor and critic share | Training rollout | Dedicated eval |
+|---|---|---:|---:|---:|
+| 1 × 8 | 2 trainer GPUs on one node | 2 | 5 | 1 |
+| 4 × 8 (default) | 1 trainer node | 8 | 23 | 1 |
+| 8 × 8 | 2 trainer nodes | 16 | 47 | 1 |
 
-Each batch takes four independent critic optimizer steps and one actor step.
-The single-card scripts set `--ppo-head-chunk-size 8192`. The actor projects
-up to 8,192 response positions at a time and recomputes the output projection
-for each chunk during backward. The single-GPU scripts default to 163,840
-packed input tokens per forward. Use `--max-tokens-per-gpu` to change this limit. Each
-full-detach critic history must fit in one forward.
-Both modes use critic LR `5e-6`, value clip `0.2`, and value loss coefficient
-`0.5`. The smoke uses zero critic-only warmup steps. A successful check
-requires a verified rollout and completed optimizer updates.
+Training rollout uses the GPUs left after reserving the trainer and eval
+pools. Each rollout or eval engine uses one GPU. A single trainer node can
+use a partial node with `--trainer-gpus-per-node`. Training TP defaults to
+1; set `--tensor-model-parallel-size` so that trainer DP divides the
+96-episode critic mini-batch. For Hopper specify `--gpu-arch hopper` to
+select FA3 for rollout. On Blackwell, SGLang uses Triton for dense attention
+and its GDN backend; Megatron uses flash attention and FLA.
 
-For repeated B200 runs, pass `TRITON_CACHE_DIR`, `TILELANG_CACHE_DIR`,
-`TORCHINDUCTOR_CACHE_DIR` and `CUDA_CACHE_PATH` to training workers through
-Megatron trainer arguments (`--train-env-vars` accepts a JSON object). Use
-writable directories on the mounted Modal volume per training image and GPU type. For throughput comparisons replay identical data and report the first
-update separately from warmed updates. Miles logs `perf/actor_train_mfu`
-and `perf/actor_train_tok_per_s` for the actor.
+Each policy update uses 32 prompts × 12 responses (384 trajectories).
+The critic takes four optimizer steps of eight complete prompt groups
+(96 trajectories each); the actor takes one step. Training uses sampled
+behavior-policy log probabilities and prompt-mean PPO. The async producer
+accepts `--async-max-concurrent-samples` (default 1,000); Miles submits
+whole 12-response groups, so at most 83 groups or 996 trajectories are in
+flight. The trainer publishes weights each step. Miles filters groups
+whose oldest sampled weight version lags by more than four updates.
 
-### Reference scale for the comparison
+Run length is 150 updates. The actor uses LR 3e-6 with one warmup step;
+both critic modes use LR 5e-6, value clip 0.2 and value loss coefficient
+0.5, with zero critic-only warmup. The default per-GPU training pack is
+163,840 tokens (`--max-tokens-per-gpu`) and the PPO head projects 8,192
+response positions per chunk. Each full-detach critic history must fit in
+one pack. Save actor and critic checkpoints every five updates. Miles
+evaluates the base and dispatches TB2.1 every 20 updates on the eval fleet
+using snapshots in the shared run directory.
 
-| Setting | csk4gby2 reference | Single-GPU check |
-|---|---:|---:|
-| Prompt groups × responses per step | 32 × 12 | 4 × 2 |
-| Controller training steps | 150 | 1 |
-| Actor learning rate / weight decay | 3e-6 / 0 | 3e-6 / 0 |
-| Actor warmup steps | 1 | 0 |
-| Evaluation corpus | 89 TB2.1 tasks | Configuration-drift ETL fixture |
-| Checkpoint interval | 5 steps | Final step |
+Terminus-2 uses Modal CPU sandboxes, a 12,000-token summary threshold,
+a 63,488-token call context, at most 16,384 new tokens per call and a
+120,000-generated-token episode budget including summaries.
 
 ### Compare the TB2.1 evaluation
-
-For AgentPick training and TB2.1 evaluation, pass these additional arguments to either script:
-
-```bash
---prompt-data "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl" \
---eval-data "$DATA_DIR/tb21.eval.jsonl" --num-rollout 150
-```
 
 Terminus-2 uses Harbor’s XML prompt. A capped action is salvaged when it contains a complete XML response; otherwise Harbor requests a shorter response. Context exhaustion and the episode token budget end the attempt. Unsubmitted tasks receive zero reward. Their sampled action tokens remain eligible for PPO actor loss. At each comparison checkpoint, evaluate all 89 tasks with the same
 harness and Modal environment for both modes. Follow the reference sampling

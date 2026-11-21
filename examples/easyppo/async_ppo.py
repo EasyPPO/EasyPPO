@@ -39,6 +39,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     join_ray_workers: bool = True
     ray_hostfile: str = "/root/mpi_rack_hostfile"
     trainer_num_nodes: int = 2
+    trainer_gpus_per_node: int | None = None
+    eval_num_gpus: int = 0
     rollout_num_gpus: int = 0
     dataset: Literal["frontiersmith", "tmax"] = "frontiersmith"
     model_dir: str = "/root/models"
@@ -143,9 +145,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.over_sampling_batch_size = max(recipe.oversample, self.rollout_batch_size)
         if self.colocate and self.trainer_num_nodes == 0:
             self.trainer_num_nodes = self.num_nodes
+        if self.trainer_gpus_per_node is None:
+            self.trainer_gpus_per_node = self.num_gpus_per_node
         if self.rollout_num_gpus == 0:
-            rollout_nodes = self.num_nodes if self.colocate else self.num_nodes - self.trainer_num_nodes
-            self.rollout_num_gpus = rollout_nodes * self.num_gpus_per_node
+            self.rollout_num_gpus = self.num_nodes * self.num_gpus_per_node
+            if not self.colocate:
+                self.rollout_num_gpus -= self.trainer_num_nodes * self.trainer_gpus_per_node + self.eval_num_gpus
 
     @property
     def colocate(self) -> bool:
@@ -186,17 +191,21 @@ def _validate(args: ScriptArgs) -> None:
     if args.num_nodes <= 0 or args.num_gpus_per_node <= 0:
         raise ValueError("Node and per-node GPU counts must be positive")
     total_gpus = args.num_nodes * args.num_gpus_per_node
-    trainer_gpus = args.trainer_num_nodes * args.num_gpus_per_node
+    if not 0 < args.trainer_gpus_per_node <= args.num_gpus_per_node or args.eval_num_gpus < 0:
+        raise ValueError("Invalid per-node trainer GPU count or eval GPU reservation")
+    if args.trainer_num_nodes > 1 and args.trainer_gpus_per_node != args.num_gpus_per_node:
+        raise ValueError("Multi-node trainers require whole nodes in the contiguous placement group")
+    trainer_gpus = args.trainer_num_nodes * args.trainer_gpus_per_node
     if args.colocate:
-        if args.trainer_num_nodes != args.num_nodes or args.rollout_num_gpus != total_gpus:
+        if trainer_gpus != total_gpus or args.rollout_num_gpus != total_gpus or args.eval_num_gpus:
             raise ValueError(
                 "Synchronous PPO shares all allocated GPUs: trainer nodes and rollout GPUs must cover the full allocation"
             )
     else:
-        if not 0 < args.trainer_num_nodes < args.num_nodes:
+        if not 0 < args.trainer_num_nodes <= args.num_nodes or trainer_gpus >= total_gpus:
             raise ValueError("Reserve positive, separate trainer and rollout node allocations")
-        if trainer_gpus + args.rollout_num_gpus != total_gpus or args.rollout_num_gpus <= 0:
-            raise ValueError("Training GPUs plus dedicated rollout GPUs must equal the allocation")
+        if trainer_gpus + args.rollout_num_gpus + args.eval_num_gpus != total_gpus or args.rollout_num_gpus <= 0:
+            raise ValueError("Training GPUs plus dedicated rollout GPUs and eval GPUs must equal the allocation")
     if args.rollout_gpus_per_engine <= 0 or args.rollout_num_gpus % args.rollout_gpus_per_engine:
         raise ValueError("Rollout GPUs must divide into complete inference engines")
     if args.rollout_gpus_per_engine not in (1, 2, 4, 8):
@@ -583,15 +592,22 @@ def _resource_args(args: ScriptArgs) -> list[str]:
     placement = (
         ["--colocate", "--offload-rollout"] if args.colocate else ["--rollout-num-gpus", str(args.rollout_num_gpus)]
     )
+    if args.eval_num_gpus:
+        placement += [
+            "--eval-num-gpus",
+            str(args.eval_num_gpus),
+            "--eval-hf-dir",
+            str(Path(args.output_dir) / args.run_id / "eval-snapshots"),
+        ]
     return [
         "--actor-num-nodes",
         str(args.trainer_num_nodes),
         "--actor-num-gpus-per-node",
-        str(args.num_gpus_per_node),
+        str(args.trainer_gpus_per_node),
         "--critic-num-nodes",
         str(args.trainer_num_nodes),
         "--critic-num-gpus-per-node",
-        str(args.num_gpus_per_node),
+        str(args.trainer_gpus_per_node),
         "--num-gpus-per-node",
         str(args.num_gpus_per_node),
         *placement,
