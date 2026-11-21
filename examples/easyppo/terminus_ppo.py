@@ -69,6 +69,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
 def main(default_mode=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--critic-context-mode", required=default_mode is None, default=default_mode, choices=["full_detach", "actor-summary"])
+    parser.add_argument("--score-centering", action="store_true", help="Use the Miles score-centering actor loss with PPO critic advantages.")
     parser.add_argument("--prepare-model-only", action="store_true", help="Download the pinned base model and convert its Miles checkpoint.")
     parser.add_argument("--tasks-dir", type=Path)
     parser.add_argument("--prompt-data", type=Path, help="Prepared AgentPick training JSONL")
@@ -120,6 +121,7 @@ def main(default_mode=None):
         prompt_data=str(opts.prompt_data),
         eval_data=str(opts.eval_data),
         critic_context_mode=opts.critic_context_mode,
+        score_centering=opts.score_centering,
         max_tokens_per_gpu=opts.max_tokens_per_gpu,
         num_rollout=opts.num_rollout,
         **({"run_id": opts.run_id} if opts.run_id else {}),
@@ -131,8 +133,7 @@ def main(default_mode=None):
         extra_args=(
             "--fully-async",
             "--ppo-prompt-mean",
-            "--ppo-head-chunk-size",
-            "8192",
+            *(("--ppo-head-chunk-size", "8192") if not args.score_centering else ()),
             "--pause-generation-mode",
             "in_place",
             "--async-max-concurrent-samples",

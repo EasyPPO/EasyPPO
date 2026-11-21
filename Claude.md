@@ -341,7 +341,15 @@ both critic modes use LR 5e-6, value clip 0.2 and value loss coefficient
 0.5, with zero critic-only warmup. The default per-GPU training pack is
 163,840 tokens (`--max-tokens-per-gpu`) and the PPO head projects 8,192
 response positions per chunk. Each full-detach critic history must fit in
-one pack. Save actor and critic checkpoints every five updates. Miles
+one pack. To run the score-centering actor objective, add `--score-centering`
+to either launcher and select a distinct run ID. It uses the PPO critic's
+advantages, top-128 rollout candidates, TIS clipped at 2 and the native
+score-centering loss. Its output projection materializes full vocabulary
+logits before chunking the loss. At TP1 a full 163,840-token pack with the
+248,320-token vocabulary requires 75.8 GiB just for BF16 logits. The
+8,192-position output-head optimization applies to clipped PPO.
+
+Save actor and critic checkpoints every five updates. Miles
 evaluates the base and dispatches TB2.1 every 20 updates on the eval fleet
 using snapshots in the shared run directory.
 

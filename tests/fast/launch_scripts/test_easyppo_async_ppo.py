@@ -373,6 +373,25 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                         "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "120000"}.items():
         assert args[args.index(flag) + 1] == value
 
+@pytest.mark.parametrize("mode", ["actor-summary", "full_detach"])
+def test_terminus_score_centering(monkeypatch, tmp_path, mode):
+    from examples.easyppo import terminus_ppo
+
+    backend = _recording_backend(monkeypatch, _recipe)
+    monkeypatch.setattr(sys, "argv", [
+        "run", "--score-centering", "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
+        "--output-dir", str(tmp_path), "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl",
+    ])
+    terminus_ppo.main(mode)
+    invocation, = backend.training
+    args = shlex.split(invocation["train_args"])
+    for flag, value in {"--loss-type": "score_centering", "--advantage-estimator": "ppo",
+                        "--rollout-top-logprobs-num": "128", "--score-centering-is": "tis",
+                        "--max-weight-staleness": "4", "--pause-generation-mode": "in_place"}.items():
+        assert args[args.index(flag) + 1] == value
+    assert "--ppo-head-chunk-size" not in args
+
+
 def test_terminus_explicit_gpu_reservations():
     from examples.easyppo.terminus_ppo import ScriptArgs
 
