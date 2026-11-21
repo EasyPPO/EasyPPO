@@ -115,22 +115,17 @@ def policy_loss_function(
     calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
     rollout_sampling_mask = get_rollout_sampling_masks(batch) if args.use_sampling_support_replay else None
 
-    if batch.get("chunked_policy_scores"):
-        log_probs_and_entropy = {"log_probs": logits[:, 0].split(response_lengths)}
-        if calculate_entropy:
-            log_probs_and_entropy["entropy"] = logits[:, 1].split(response_lengths)
-    else:
-        log_probs_and_entropy = get_log_probs_and_entropy(
-            logits,
-            args=args,
-            unconcat_tokens=batch["unconcat_tokens"],
-            total_lengths=total_lengths,
-            response_lengths=response_lengths,
-            with_entropy=calculate_entropy,
-            entropy_requires_grad=args.entropy_coef != 0,
-            max_seq_lens=max_seq_lens,
-            rollout_sampling_mask=rollout_sampling_mask,
-        )
+    log_probs_and_entropy = get_log_probs_and_entropy(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        with_entropy=calculate_entropy,
+        entropy_requires_grad=args.entropy_coef != 0,
+        max_seq_lens=max_seq_lens,
+        rollout_sampling_mask=rollout_sampling_mask,
+    )
 
     log_probs = log_probs_and_entropy["log_probs"]
     if args.skip_actor_forward_only:

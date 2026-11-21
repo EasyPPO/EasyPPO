@@ -365,7 +365,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     encoded = args[args.index("--eval-config") + 1].removeprefix("base64:")
     dataset, = json.loads(base64.b64decode(encoded))["datasets"]
     assert (dataset["name"], dataset["path"]) == ("tb21", "eval.jsonl")
-    assert args[args.index("--ppo-head-chunk-size") + 1] == "8192"
+    assert args[args.index("--loss-type") + 1] == "score_centering"
     assert "--ppo-prompt-mean" in args and "--fully-async" in args
     for flag, value in {"--critic-context-mode": mode, "--critic-num-steps-per-rollout": "4",
                         "--sglang-attention-backend": flash, "--linear-attention-backend": "fla",
@@ -374,22 +374,25 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
         assert args[args.index(flag) + 1] == value
 
 @pytest.mark.parametrize("mode", ["actor-summary", "full_detach"])
-def test_terminus_score_centering(monkeypatch, tmp_path, mode):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_terminus_score_centering(monkeypatch, tmp_path, mode, enabled):
     from examples.easyppo import terminus_ppo
 
     backend = _recording_backend(monkeypatch, _recipe)
     monkeypatch.setattr(sys, "argv", [
-        "run", "--score-centering", "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
+        "run", "--score-centering" if enabled else "--no-score-centering", "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
         "--output-dir", str(tmp_path), "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl",
     ])
     terminus_ppo.main(mode)
     invocation, = backend.training
     args = shlex.split(invocation["train_args"])
+    if not enabled:
+        assert "--score-centering-is" not in args and "--rollout-top-logprobs-num" not in args
+        return
     for flag, value in {"--loss-type": "score_centering", "--advantage-estimator": "ppo",
                         "--rollout-top-logprobs-num": "128", "--score-centering-is": "tis",
                         "--max-weight-staleness": "4", "--pause-generation-mode": "in_place"}.items():
         assert args[args.index(flag) + 1] == value
-    assert "--ppo-head-chunk-size" not in args
 
 
 def test_terminus_explicit_gpu_reservations():

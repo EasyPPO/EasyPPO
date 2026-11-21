@@ -126,23 +126,3 @@ def test_native_optimizer_schedule_and_checkpoint_options_are_available(mode):
 def test_full_detach_requires_the_native_state_carrying_layers(overrides, message):
     with pytest.raises(ValueError, match=message):
         _validate_easyppo_args(_args(**overrides))
-
-
-@pytest.mark.parametrize(
-    ("override", "message"),
-    [
-        ({"ppo_head_chunk_size": -1}, "nonnegative"),
-        ({"loss_type": "score_centering"}, "policy_loss"),
-        ({"tensor_model_parallel_size": 2}, "TP=CP=1"),
-        ({"use_sampling_support_replay": True}, "standard torch"),
-        ({"defer_embedding_wgrad_compute": True}, "schedule"),
-    ],
-)
-def test_chunked_policy_head_rejects_incompatible_launch_options(override, message):
-    options = dict(
-        ppo_head_chunk_size=8192, tensor_model_parallel_size=1, loss_type="policy_loss",
-        true_on_policy_mode=False, use_sampling_support_replay=False, log_probs_backend="torch",
-        overlap_moe_expert_parallel_comm=False, defer_embedding_wgrad_compute=False,
-    )
-    with pytest.raises(ValueError, match=message):
-        _validate_easyppo_args(_args(**(options | override)))

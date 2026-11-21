@@ -619,10 +619,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable recompute loss function to save memory during training.",
             )
             parser.add_argument(
-                "--ppo-head-chunk-size", type=int, default=0,
-                help="Maximum response rows per checkpointed PPO output projection (THD, TP=CP=1); 0 disables.",
-            )
-            parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
@@ -4405,20 +4401,7 @@ def validate_skip_actor_forward_only(args) -> None:
 
 
 def _validate_easyppo_args(args) -> None:
-    """Validate actor and critic recipe options before workers start."""
-    head_rows = getattr(args, "ppo_head_chunk_size", 0)
-    if head_rows < 0:
-        raise ValueError("--ppo-head-chunk-size must be nonnegative")
-    if head_rows:
-        if args.train_backend != "megatron" or args.loss_type != "policy_loss":
-            raise ValueError("--ppo-head-chunk-size requires Megatron policy_loss")
-        if args.qkv_format != "thd" or (args.tensor_model_parallel_size, args.context_parallel_size) != (1, 1):
-            raise ValueError("--ppo-head-chunk-size requires THD packing and TP=CP=1")
-        if args.true_on_policy_mode or args.use_sampling_support_replay or args.log_probs_backend != "torch":
-            raise ValueError("--ppo-head-chunk-size requires standard torch policy scoring")
-        if args.overlap_moe_expert_parallel_comm or args.defer_embedding_wgrad_compute:
-            raise ValueError("--ppo-head-chunk-size requires the ordinary output-layer forward and backward schedule")
-
+    """The EasyPPO flags only act on the critic path; refuse them where they would be silently unread."""
     critic_only_flags = {
         "--critic-return-std-floor": args.critic_return_std_floor is not None,
         "--critic-num-steps-per-rollout": args.critic_num_steps_per_rollout is not None,
