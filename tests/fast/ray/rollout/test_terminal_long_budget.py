@@ -129,6 +129,13 @@ async def test_terminus_summary_keeps_exact_critic_memory_at_12k(tmp_path):
     await agent._llm.session._compact()
     assert agent.trace.n_compactions == 1
     assert any("keep this observation" in msg["content"] for msg in agent._llm.session.messages)
+    await agent._llm.session._compact()
+    last_segment = len(agent.trace.segments) - 1
+    metadata = agent.trace.segment_metadata(last_segment)
+    calls = [c for c in agent.trace.calls if c["segment"] == last_segment and c["kind"] == "summary"]
+    assert len(calls) == 2
+    assert metadata["summary_spans"] == [tuple(c["token_span"]) for c in calls]
+    assert metadata["summary_span"] is None
 
 
 @pytest.mark.parametrize("salvage", [True, False])

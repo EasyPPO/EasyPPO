@@ -231,7 +231,9 @@ async def generate(input):
             **input.sampling_params,
             "max_new_tokens": min(limit, input.sampling_params.get("max_new_tokens", args.rollout_max_response_len)),
         }
-        payload, _ = compute_request_payload(args, prompt, sampling, evaluation=input.evaluation)
+        payload, _ = compute_request_payload(
+            args, prompt, sampling, evaluation=input.evaluation, kv_cache_namespace=base.kv_cache_namespace
+        )
         if payload is None:
             raise RuntimeError("Terminal context limit disagrees with Miles request budget")
         if candidate_count:

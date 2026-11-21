@@ -301,11 +301,10 @@ class TerminalTrace:
 
     def segment_metadata(self, index: int) -> dict:
         calls = [call for call in self.calls if call["segment"] == index]
-        summaries = [call["token_span"] for call in calls if call["kind"] == "summary"]
-        if len(summaries) > 1:
-            raise ValueError("Multiple summary completions in one segment")
+        summaries = [tuple(call["token_span"]) for call in calls if call["kind"] == "summary"]
         return {
-            "summary_span": tuple(summaries[0]) if summaries else None,
+            "summary_span": summaries[0] if len(summaries) == 1 else None,
+            "summary_spans": summaries,
             "generation_truncated": any(call["finish_reason"] == "length" for call in calls),
         }
 

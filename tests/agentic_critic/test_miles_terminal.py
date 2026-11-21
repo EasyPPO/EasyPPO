@@ -82,6 +82,7 @@ async def test_wrapper_returns_trainable_compacted_episode(monkeypatch, tmp_path
     args = args_for(tmp_path)
     args.max_weight_staleness = 4
     base = Sample(index=9, prompt="task", metadata={"task_path": "task", "terminal": {"max_steps": 5}})
+    base.kv_cache_namespace = "eval:-:9:1" if evaluation else "train:-:9"
     params = {"temperature": 1.0, "max_new_tokens": 512}
     result = await miles_terminal.generate(
         SimpleNamespace(
@@ -102,6 +103,7 @@ async def test_wrapper_returns_trainable_compacted_episode(monkeypatch, tmp_path
         sample.validate()
         assert len(sample.loss_mask) == len(sample.rollout_log_probs) == sample.response_length
     assert [r["sampling_params"]["max_new_tokens"] for r in requests] == [512, 200, 512]
+    assert all(r["extra_key"] == base.kv_cache_namespace for r in requests)
     assert all(r["return_logprob"] for r in requests)
     assert args.terminal_max_steps == 100 and params["max_new_tokens"] == 512
     assert base.tokens == []  # input sample is not mutated
