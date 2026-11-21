@@ -46,6 +46,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     actor_lr: float = 3e-6
     weight_decay: float = 0
     seed: int = 42
+    sglang_mem_fraction_static: float = 0.92
     sglang_server_concurrency: int = 512
     async_max_concurrent_samples: int = 1000
 
