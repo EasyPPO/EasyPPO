@@ -206,8 +206,7 @@ gradient-norm clipping at 1. Dropout is zero.
 **`actor-summary`** reads the actor's actual context for each segment: the task,
 current summary, and local conversation. Each segment is a separate
 packed-sequence row, with its own attention and GDN sequence boundaries.
-Segments from one episode occupy the same micro-batch, and attention KV,
-convolution state, and recurrent state start fresh for each segment.
+Attention KV, convolution state, and recurrent state start fresh for each segment.
 
 **`full_detach`** reads the critic's chronological episode stream as one
 packed sequence. Its `critic_segment_lengths` describe the compaction
@@ -291,11 +290,11 @@ per tool output. Harbor's task-specific agent/verifier timeouts also apply.
 Exhausting the episode budget, step limit, or a Harbor timeout marks the
 episode truncated.
 
-The **262144-token training packing budget** checks the critic's history and
-the total actor-segment length for an episode. Tool outputs and repeated actor
-contexts count toward training length. Actor segments of one episode are
-packed into the same micro-batch; full-detach memory also grows with episode
-history. Over-budget training episodes raise an explicit error.
+The **262144-token training packing budget** applies to the sum of input row
+lengths in each micro-batch. Actor and actor-summary rows are individual
+segments. A full-detach row contains one episode's chronological history.
+Rows from different episodes can share a forward within an optimizer step.
+Each row must fit the budget, including tool outputs and any repeated context.
 
 At K128, the candidate IDs and FP32 log-probs occupy about 1 KiB per response
 position. A batch with 512 episodes generating 120000 tokens each needs about

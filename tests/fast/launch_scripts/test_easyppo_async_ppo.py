@@ -352,11 +352,13 @@ def test_terminus_launch_uses_sampled_logprobs_without_old_actor_backup(monkeypa
     monkeypatch.setattr(sys, "argv", ["run", "--critic-context-mode", mode, "--gpu-arch", arch,
                                        "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
                                        "--output-dir", str(tmp_path / "runs"),
-                                       *(["--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl", "--num-rollout", "30"] if prepared else [])])
+                                       *(["--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl", "--num-rollout", "30",
+                                          "--max-tokens-per-gpu", "110592"] if prepared else [])])
     terminus_etl.main()
     invocation, = backend.training
     args = shlex.split(invocation["train_args"])
     assert invocation["train_script"] == "train_async.py"
+    assert args[args.index("--max-tokens-per-gpu") + 1] == ("110592" if prepared else "163840")
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
     assert "--filter-truncated-in-actor-loss" not in args
     if prepared:

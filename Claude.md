@@ -311,10 +311,19 @@ server arguments and GDN dispatcher in each run log.
 Each batch takes four independent critic optimizer steps and one actor step.
 The single-card scripts set `--ppo-head-chunk-size 8192`. The actor projects
 up to 8,192 response positions at a time and recomputes the output projection
-for each chunk during backward. The training pack limit is set separately.
+for each chunk during backward. The single-GPU scripts default to 163,840
+packed input tokens per forward. Use `--max-tokens-per-gpu` to change this limit. Each
+full-detach critic history must fit in one forward.
 Both modes use critic LR `5e-6`, value clip `0.2`, and value loss coefficient
 `0.5`. The smoke uses zero critic-only warmup steps. A successful check
 requires a verified rollout and completed optimizer updates.
+
+For repeated B200 runs, pass `TRITON_CACHE_DIR`, `TILELANG_CACHE_DIR`,
+`TORCHINDUCTOR_CACHE_DIR` and `CUDA_CACHE_PATH` to training workers through
+Megatron trainer arguments (`--train-env-vars` accepts a JSON object). Use
+writable directories on the mounted Modal volume per training image and GPU type. For throughput comparisons replay identical data and report the first
+update separately from warmed updates. Miles logs `perf/actor_train_mfu`
+and `perf/actor_train_tok_per_s` for the actor.
 
 ### Reference scale for the comparison
 

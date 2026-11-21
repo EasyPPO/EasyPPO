@@ -1,7 +1,5 @@
 """A 120k generated-token episode survives compaction and training conversion."""
 
-from copy import deepcopy
-
 import pytest
 from agentic_critic.terminal_env import Completion, TerminalAgent, TerminalConfig
 from tests.agentic_critic.test_terminal_env import Tokenizer, completion
@@ -11,8 +9,9 @@ from miles.utils.data import process_rollout_data
 from miles.utils.types import Sample
 
 
+@pytest.mark.parametrize("budget", [131072, 262144])
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
-async def test_cumulative_budget_and_training_pack_include_different_tokens(monkeypatch, mode):
+async def test_cumulative_budget_and_training_pack_include_different_tokens(monkeypatch, mode, budget):
     config = TerminalConfig(
         max_steps=300,
         max_context_tokens=32768,
@@ -60,17 +59,20 @@ async def test_cumulative_budget_and_training_pack_include_different_tokens(monk
     assert 131072 < sum(len(sample.tokens) for sample in samples) <= 262144
     executor = _executor(monkeypatch, mode=mode, dp_size=1, balance=False, samples=samples, num_groups=1, fanout=1, critic_steps=1)
     executor.args.num_critic_only_steps = 30
-    executor.args.max_tokens_per_gpu = 131072
-    source = deepcopy(samples)
-    with pytest.raises(ValueError, match="exceeds --max-tokens-per-gpu"):
-        await executor.get(0)
-    # Exercise the larger budget on fresh rollout data, under a new snapshot ID.
-    executor._get_rollout_data.return_value = (source, {}, {})
-    executor.args.max_tokens_per_gpu = 262144
-    pack = await executor.get(1)
+    executor.args.max_tokens_per_gpu = budget
+    if mode == "full_detach" and budget == 131072:
+        # The chronological critic sequence is indivisible.
+        with pytest.raises(ValueError, match="exceeds --max-tokens-per-gpu"):
+            await executor.get(0)
+        return
+    pack = await executor.get(0)
     actor, actor_result = process_rollout_data(executor.args, pack.data_ref, 0, _parallel(), witness_info=None)
     critic, critic_result = process_rollout_data(executor.args, pack.for_critic().data_ref, 0, _parallel(), witness_info=None)
     with actor_result, critic_result:
+        for shard in (actor, critic):
+            bins = shard["micro_batch_indices"]
+            assert (len(bins) > 1) == (budget == 131072)
+            assert all(sum(shard["total_lengths"][i] for i in rows) <= budget for rows in bins)
         assert sum(sum(mask) for mask in actor["loss_masks"]) == 120000
         assert sum(sum(mask) for mask in critic["loss_masks"]) == 120000
         responses = [tokens[-length:] for tokens, length in zip(critic["tokens"], critic["response_lengths"], strict=True)]

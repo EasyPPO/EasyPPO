@@ -32,6 +32,7 @@ class SmokeArgs(async_ppo.ScriptArgs):
     score_centering: bool = False
     use_rollout_logprobs: bool = True
     compact_threshold: int = 12000
+    max_tokens_per_gpu: int = 160 * 1024
     max_context_tokens: int = 63488
     max_new_tokens: int = 16384
     max_steps: int = 120
@@ -57,6 +58,12 @@ def main(default_mode=None):
     parser.add_argument("--prompt-data", type=Path, help="Prepared AgentPick training JSONL")
     parser.add_argument("--eval-data", type=Path, help="Prepared TB2.1 evaluation JSONL")
     parser.add_argument("--num-rollout", type=int, default=1)
+    parser.add_argument(
+        "--max-tokens-per-gpu",
+        type=int,
+        default=SmokeArgs.max_tokens_per_gpu,
+        help="Maximum input tokens per training microbatch.",
+    )
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--gpu-arch", choices=["blackwell", "hopper"], default="blackwell")
     parser.add_argument("--output-dir", type=Path)
@@ -80,6 +87,7 @@ def main(default_mode=None):
     if opts.num_rollout < 1:
         parser.error("--num-rollout must be positive")
     args.num_rollout = opts.num_rollout
+    args.max_tokens_per_gpu = opts.max_tokens_per_gpu
     if opts.prompt_data:
         args.prompt_data, args.eval_data = str(opts.prompt_data), str(opts.eval_data)
         args.eval_interval, args.eval_temperature, args.eval_top_p = 20, 0.7, 0.95

@@ -1,5 +1,6 @@
 import copy
 import logging
+from itertools import accumulate, pairwise
 from typing import Any
 
 import torch
@@ -12,7 +13,11 @@ from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
-from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.seqlen_balancing import (
+    expand_bins_by_splitting,
+    first_fit_decreasing_pack,
+    get_seqlen_balanced_partitions,
+)
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
 
@@ -472,11 +477,8 @@ def split_full_history_shards(
 ) -> tuple[list[dict], list[dict]]:
     """Keep each complete critic episode and all its actor segments on the same DP rank.
 
-    Adapted from EasyPPO/EasyPPO's actor-summary-compact branch (72fa1ce).
-    The shared-context split remains unchanged. Memory critics keep whole prompt
-    groups in each optimizer mini-batch, then reuse the episode planner inside it.
-    One episode per forward micro-batch keeps collective counts equal even when
-    ranks receive different numbers of actor segments.
+    Pack training rows within each optimizer step after episode placement.
+    The critic's prompt groups determine its optimizer-step boundaries.
     """
     if getattr(args, "critic_context_mode", "shared") not in ("full_history", "full_detach", "actor-summary"):
         raise ValueError("Episode-aligned actor/critic sharding requires --critic-context-mode full_history")
@@ -509,8 +511,6 @@ def split_full_history_shards(
     for episode, indices in enumerate(siblings):
         if not indices:
             raise ValueError(f"full_history critic episode {episode} has no actor samples")
-        if max(sum(critic_lengths[i] for i in critic_rows[episode]), sum(actor_lengths[i] for i in indices)) > budget:
-            raise ValueError(f"full_history episode {episode} exceeds --max-tokens-per-gpu; increase the token budget")
 
     # The critic's episode ownership wins over independent actor length balancing:
     # all sibling values must be available locally for the existing value_slices.
@@ -527,16 +527,8 @@ def split_full_history_shards(
     critic_partitions = [[i for episode in part for i in critic_rows[episode]] for part in partitions]
     shards = _package_shards(args, {**data, "total_lengths": actor_lengths}, actor_partitions)
     critic_shards = _package_shards(args, {**critic_data, "total_lengths": critic_lengths}, critic_partitions)
-    num_rollouts = [batch_size] * (num_episodes // batch_size)
-    for actor, critic, episodes in zip(shards, critic_shards, partitions, strict=True):
-        for shard, rows in ((actor, siblings), (critic, critic_rows)):
-            shard["micro_batch_indices"] = _episode_microbatches(episodes, rows)
-            shard["num_microbatches"] = [batch_size // dp_size] * len(num_rollouts)
-            shard["num_rollouts"] = list(num_rollouts)
-        if memory_critic:
-            local_batch_size = critic_batch_size // dp_size
-            critic["num_microbatches"] = [local_batch_size] * critic_steps
-            critic["num_rollouts"] = [critic_batch_size] * critic_steps
+    _pack_shard_steps(shards, partitions, siblings, batch_size, budget)
+    _pack_shard_steps(critic_shards, partitions, critic_rows, critic_batch_size, budget)
     attach_value_slices(shards, critic_shards, spans)
     return shards, critic_shards
 
@@ -561,14 +553,37 @@ def _critic_episode_rows(data, critic_data, spans) -> tuple[list[list[int]], lis
     return critic_rows, siblings
 
 
-def _episode_microbatches(episodes: list[int], rows: list[list[int]]) -> list[list[int]]:
-    offset = 0
-    microbatches = []
-    for episode in episodes:
-        count = len(rows[episode])
-        microbatches.append(list(range(offset, offset + count)))
-        offset += count
-    return microbatches
+def _pack_shard_steps(shards, partitions, episode_rows, batch_size, budget):
+    """Pack rank-local rows, with equal forward counts across DP ranks per optimizer step."""
+    local_batch = batch_size // len(shards)
+    offsets = [list(accumulate((len(episode_rows[e]) for e in episodes), initial=0)) for episodes in partitions]
+    for shard in shards:
+        shard.update(micro_batch_indices=[], num_microbatches=[], num_rollouts=[])
+
+    for start in range(0, len(partitions[0]), local_batch):
+        plans = []
+        for shard, boundaries in zip(shards, offsets, strict=True):
+            edges = boundaries[start : start + local_batch + 1]
+            first, last = edges[0], edges[-1]
+            lengths = [len(tokens) for tokens in shard["tokens"][first:last]]
+            if max(lengths) > budget:
+                raise ValueError(f"Training row of {max(lengths)} tokens exceeds --max-tokens-per-gpu={budget}")
+            bins = first_fit_decreasing_pack(lengths, budget)
+            # FFD is heuristic. Keep the known episode layout if it uses fewer bins.
+            if len(bins) > local_batch:
+                episode_bins = [list(range(lo - first, hi - first)) for lo, hi in pairwise(edges)]
+                if all(sum(lengths[i] for i in group) <= budget for group in episode_bins):
+                    bins = episode_bins
+            plans.append((first, lengths, bins))
+
+        count = max(len(bins) for _, _, bins in plans)
+        for shard, (first, lengths, bins) in zip(shards, plans, strict=True):
+            if len(lengths) < count:
+                raise ValueError("Cannot align packed microbatches across DP ranks under the token budget")
+            expand_bins_by_splitting(bins, count, lengths)
+            shard["micro_batch_indices"].extend([[first + i for i in group] for group in bins])
+            shard["num_microbatches"].append(count)
+            shard["num_rollouts"].append(batch_size)
 
 
 def _memory_critic_episode_order(

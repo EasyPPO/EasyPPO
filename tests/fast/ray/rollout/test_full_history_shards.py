@@ -98,7 +98,7 @@ def test_every_segment_and_value_is_local_and_visited_once(dp_size, balance, num
         seen_critic.extend(c["partition"])
         assert len(c["tokens"]) == num_episodes // dp_size
         assert set(a["rollout_ids"]) == set(c["rollout_ids"])
-        assert a["num_microbatches"] == c["num_microbatches"] == [8 // dp_size] * (num_episodes // 8)
+        assert a["num_microbatches"] == c["num_microbatches"] == [1] * (num_episodes // 8)
         assert a["num_rollouts"] == c["num_rollouts"] == [8] * (num_episodes // 8)
         # Each original field survives placement byte for byte, with no replicated/dropped samples.
         for shard, source in ((a, actor), (c, critic)):
@@ -112,7 +112,7 @@ def test_every_segment_and_value_is_local_and_visited_once(dp_size, balance, num
         iterator = DataIterator(a, micro_batch_indices=a["micro_batch_indices"])
         for _ in range(sum(a["num_microbatches"])):
             micro_batch = iterator.get_next(["rollout_ids", "tokens"])
-            assert len(set(micro_batch["rollout_ids"])) == 1
+            assert len(set(micro_batch["rollout_ids"])) == 8 // dp_size
             assert sum(map(len, micro_batch["tokens"])) <= 1000
     assert sorted(seen_actor) == list(range(len(actor["tokens"])))
     assert sorted(seen_critic) == list(range(num_episodes))
@@ -158,7 +158,7 @@ def test_shared_rollout_schedule_remains_selected(monkeypatch):
         ({"global_batch_size": 6}, {}, "complete logical"),
         ({"critic_num_steps_per_rollout": 3}, {}, "critic mini-batch"),
         ({"use_dynamic_batch_size": False}, {}, "dynamic-batch-size"),
-        ({"max_tokens_per_gpu": 3}, {}, "episode.*exceeds"),
+        ({"max_tokens_per_gpu": 3}, {}, "row.*exceeds"),
         ({}, {"cp_size": 2}, "context parallel"),
         ({}, {"vpp_size": 2}, "virtual pipeline"),
     ],
@@ -189,3 +189,33 @@ def test_flops_balance_uses_episode_costs(monkeypatch):
     monkeypatch.setattr(conversion, "calculate_fwd_flops", estimate)
     conversion.split_full_history_shards(_args(balance_by_flops=True), actor, critic, spans, _parallel(dp_size=2))
     assert lengths_seen == list(map(len, critic["tokens"]))
+
+
+@pytest.mark.parametrize(
+    "rank_episode_lengths,expected_counts",
+    [
+        # Rank 0 needs two bins. Rank 1 splits its single packed bin to match.
+        ([[[7, 4], [3]], [[3], [5]]], [2]),
+        # Greedy packing would need three bins on rank 0. The two original
+        # episodes fit and rank 1 has only two indivisible rows.
+        ([[[2, 2, 6], [2, 3, 5]], [[10], [10]]], [2]),
+    ],
+)
+def test_token_budget_and_dp_alignment(rank_episode_lengths, expected_counts):
+    shards, partitions, episode_rows = [], [], []
+    for rank_lengths in rank_episode_lengths:
+        partition, tokens = [], []
+        for lengths in rank_lengths:
+            partition.append(len(episode_rows))
+            episode_rows.append(list(range(len(tokens), len(tokens) + len(lengths))))
+            tokens.extend([0] * length for length in lengths)
+        partitions.append(partition)
+        shards.append({"tokens": tokens})
+
+    conversion._pack_shard_steps(shards, partitions, episode_rows, batch_size=4, budget=10)
+    for shard in shards:
+        assert shard["num_microbatches"] == expected_counts
+        assert shard["num_rollouts"] == [4]
+        bins = shard["micro_batch_indices"]
+        assert sorted(i for group in bins for i in group) == list(range(len(shard["tokens"])))
+        assert all(0 < sum(len(shard["tokens"][i]) for i in group) <= 10 for group in bins)

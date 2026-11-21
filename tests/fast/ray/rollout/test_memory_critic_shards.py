@@ -99,7 +99,7 @@ def test_memory_modes_build_own_episode_and_return_actor_spans(mode):
     assert actor_shards[0]["tokens"] == [sample.tokens for sample in samples]
     # Actor-summary's two sequences stay in one episode microbatch, with an
     # independent packed-sequence boundary for each original actor context.
-    assert critic_shards[0]["micro_batch_indices"] == ([[0]] if mode == "full_detach" else [[0, 1]])
+    assert [sorted(rows) for rows in critic_shards[0]["micro_batch_indices"]] == ([[0]] if mode == "full_detach" else [[0, 1]])
 
 
 @pytest.mark.parametrize("mode", ["shared", "actor-summary", "full_detach"])
