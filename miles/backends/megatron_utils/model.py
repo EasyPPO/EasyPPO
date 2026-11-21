@@ -530,6 +530,12 @@ def run_forward_backward_pass(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
+            if args.loss_type == "policy_loss" and getattr(args, "ppo_head_chunk_size", 0) > 0:
+                from .chunked_policy_head import chunked_policy_head
+
+                forward_kwargs.update(output_processor=chunked_policy_head, output_processor_context=(args, batch))
+                batch["chunked_policy_scores"] = True
+
             output_tensor = model(
                 **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
             )

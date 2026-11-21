@@ -374,3 +374,55 @@ def test_mismatch_metrics_keep_actor_log_probs_as_training_source(process_group,
     monkeypatch.setattr(losses_module, "load_function", lambda _path: fake_tis_function)
 
     _run_policy_loss(args, batch, inputs, skip_actor_forward_only=skip_actor_forward_only)
+
+
+@pytest.mark.parametrize("entropy_coef", [0.0, 0.03])
+def test_chunked_ppo_head_matches_full_projection(process_group, entropy_coef):
+    from miles.backends.megatron_utils.chunked_policy_head import chunked_policy_head
+
+    make_parallel_state()
+    args = make_args(
+        advantage_estimator="ppo", true_on_policy_mode=False, use_rollout_logprobs=True,
+        entropy_coef=entropy_coef, observe_training_entropy=False, ppo_head_chunk_size=4,
+        rollout_temperature=0.8,
+    )
+    inputs = make_inputs(23, 2, [3, 4], [7, 6], 32, args)
+    batch = make_batch(inputs, "policy_loss")
+    reducer = get_sum_of_sample_mean(
+        batch["total_lengths"], batch["response_lengths"], batch["loss_masks"], False, "thd",
+    )
+    generator = torch.Generator().manual_seed(23)
+    hidden = torch.randn(20, 1, 8, generator=generator, requires_grad=True)
+    weight = (torch.randn(32, 8, generator=generator) * 0.1).requires_grad_()
+    projected_rows = []
+
+    def project(rows, weight, runtime_gather_output):
+        projected_rows.append(len(rows))
+        return torch.nn.functional.linear(rows, weight), None
+
+    def scale(logits):
+        return logits * 0.9
+
+    logits = scale(torch.nn.functional.linear(hidden, weight)).transpose(0, 1)
+    # Keep ratios in the active clipping range so both gradient comparisons are meaningful.
+    with torch.no_grad():
+        base = get_log_probs_and_entropy(
+            logits, args=args, unconcat_tokens=batch["unconcat_tokens"],
+            total_lengths=batch["total_lengths"], response_lengths=batch["response_lengths"],
+        )
+        batch["rollout_log_probs"] = [row + 0.03 for row in base["log_probs"]]
+    original, metrics = policy_loss_function(args, batch, logits, reducer)
+    grads = torch.autograd.grad(original, (hidden, weight))
+    scores = chunked_policy_head(
+        hidden_states=hidden, output_layer=project, output_weight=weight, runtime_gather_output=None,
+        scale_logits=scale, context=(args, batch),
+    )
+    assert projected_rows == [4, 3, 4, 2]
+    actual, chunk_metrics = policy_loss_function(args, {**batch, "chunked_policy_scores": True}, scores, reducer)
+    chunk_grads = torch.autograd.grad(actual, (hidden, weight))
+    torch.testing.assert_close(actual, original)
+    torch.testing.assert_close(chunk_metrics, metrics)
+    for got, expected in zip(chunk_grads, grads, strict=True):
+        assert expected.norm() > 0
+        torch.testing.assert_close(got, expected)
+    assert projected_rows[4:] == [2, 4, 3, 4]
