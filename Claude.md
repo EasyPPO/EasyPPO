@@ -341,7 +341,8 @@ both critic modes use LR 5e-6, value clip 0.2 and value loss coefficient
 0.5, with zero critic-only warmup. The default per-GPU training pack is
 163,840 tokens (`--max-tokens-per-gpu`). Each full-detach critic history
 must fit in one pack. Both launchers default to score centering with PPO
-critic advantages, top-128 rollout candidates and TIS clipped at 2.
+critic advantages, top-128 rollout candidates, TIS clipped at 2 and
+the fused trainer log-probability backend.
 Use `--no-score-centering` and a distinct run ID for the clipped-PPO baseline.
 At TP1, the output projection for a full 163,840-token pack with a
 248,320-token vocabulary requires 75.8 GiB for BF16 logits alone.

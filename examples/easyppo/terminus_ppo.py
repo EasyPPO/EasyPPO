@@ -132,6 +132,7 @@ def main(default_mode=None):
         extra_args=(
             "--fully-async",
             "--ppo-prompt-mean",
+            *(("--log-probs-backend", "fused") if args.score_centering else ()),
             "--pause-generation-mode",
             "in_place",
             "--async-max-concurrent-samples",
