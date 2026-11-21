@@ -7,26 +7,28 @@ from megatron.core.transformer.enums import AttnMaskType
 from miles_plugins.models.detached_memory import detached_attention, memory_segments
 
 
-class DetachedMemoryDotProductAttention(TEDotProductAttention):
+class QwenCausalDotProductAttention(TEDotProductAttention):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.flash_attention.register_forward_pre_hook(self._fa4_causal_window, with_kwargs=True)
 
     @staticmethod
     def _fa4_causal_window(module, inputs, kwargs):
-        # TE passes (-1, 0) for unlimited causal attention. FA4 interprets
-        # that pair as a local window and its SM100 HD256 backward rejects it.
+        # NVIDIA/TransformerEngine#3540 represents an unbounded side as None at
+        # the FA4 boundary. Keep the causal mask and right bound intact.
         query = inputs[0]
         if (
-            kwargs.get("attn_mask_type") == "causal_bottom_right"
+            kwargs.get("attn_mask_type") in {"causal_bottom_right", "padding_causal", "causal", "padding_causal_bottom_right"}
             and kwargs.get("window_size") == (-1, 0)
             and getattr(kwargs.get("flash_attention_backend"), "major", None) == 4
-            and query.ndim == 4
+            and query.ndim in (3, 4)
             and query.shape[-1] == 256
             and torch.cuda.get_device_capability(query.device) == (10, 0)
         ):
-            return inputs, {**kwargs, "window_size": (None, None)}
+            return inputs, {**kwargs, "window_size": (None, 0)}
 
+
+class DetachedMemoryDotProductAttention(QwenCausalDotProductAttention):
     def forward(
         self,
         query,

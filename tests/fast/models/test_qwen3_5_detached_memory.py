@@ -94,12 +94,17 @@ class _NativeTE(nn.Module):
 
 
 def _memory_attention():
+    causal_cls = _load_class(
+        "miles_plugins/models/qwen3_5_memory.py",
+        "QwenCausalDotProductAttention",
+        dict(torch=torch, TEDotProductAttention=_NativeTE),
+    )
     cls = _load_class(
         "miles_plugins/models/qwen3_5_memory.py",
         "DetachedMemoryDotProductAttention",
         dict(
             torch=torch,
-            TEDotProductAttention=_NativeTE,
+            QwenCausalDotProductAttention=causal_cls,
             AttnMaskType=_Mask,
             memory_segments=memory_segments,
             detached_attention=detached_attention,
@@ -144,8 +149,9 @@ def test_attention_without_metadata_delegates_native_arguments_unchanged():
 @pytest.mark.parametrize(
     "mask,window,version,head_dim,arch,expected",
     [
-        ("causal_bottom_right", (-1, 0), 4, 256, (10, 0), (None, None)),
-        ("padding_causal", (-1, 0), 4, 256, (10, 0), (-1, 0)),
+        ("causal_bottom_right", (-1, 0), 4, 256, (10, 0), (None, 0)),
+        ("padding_causal", (-1, 0), 4, 256, (10, 0), (None, 0)),
+        ("padding", (-1, 0), 4, 256, (10, 0), (-1, 0)),
         ("causal_bottom_right", (128, 0), 4, 256, (10, 0), (128, 0)),
         ("causal_bottom_right", (-1, 0), 3, 256, (10, 0), (-1, 0)),
         ("causal_bottom_right", (-1, 0), 4, 128, (10, 0), (-1, 0)),
@@ -157,7 +163,7 @@ def test_fa4_window_at_flash_dispatch(monkeypatch, mask, window, version, head_d
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: arch)
     monkeypatch.setattr(layer.flash_attention, "forward", lambda q, **kwargs: kwargs["window_size"])
     assert layer.flash_attention(
-        torch.empty(8, 1, 2, head_dim),
+        torch.empty((8, 2, head_dim) if mask == "padding_causal" else (8, 1, 2, head_dim)),
         attn_mask_type=mask,
         window_size=window,
         flash_attention_backend=SimpleNamespace(major=version),
@@ -451,6 +457,7 @@ def test_qwen_spec_only_installs_memory_core_for_full_detach(mode):
         _get_text_config=lambda value: value,
         Attention=linear_attention,
         DetachedMemoryDotProductAttention=memory_core,
+        QwenCausalDotProductAttention=object(),
     )
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
     config = SimpleNamespace(num_layers=2, pipeline_model_parallel_layout=None)
@@ -458,4 +465,6 @@ def test_qwen_spec_only_installs_memory_core_for_full_detach(mode):
     result = namespace["get_qwen3_5_spec"](args, config, None)
     assert result.layer_specs[0].submodules.self_attention.module is linear_attention
     core = result.layer_specs[1].submodules.self_attention.submodules.core_attention
+    if mode == "actor-summary":
+        assert core is namespace["QwenCausalDotProductAttention"]
     assert (core is memory_core) == (mode == "full_detach")

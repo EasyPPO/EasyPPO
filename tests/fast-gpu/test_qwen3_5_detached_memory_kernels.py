@@ -128,3 +128,59 @@ def test_native_fla_conv_and_recurrent_memory_state_gradients_and_recompute():
     torch.testing.assert_close(x.grad, expected_x, atol=0.025, rtol=0.025)
     for parameter, grad in zip(model.parameters(), expected_parameters, strict=True):
         torch.testing.assert_close(parameter.grad, grad, atol=0.025, rtol=0.025)
+
+
+@pytest.mark.parametrize("detached", [False, True], ids=["packed-actor", "detached-critic"])
+def test_sm100_fa4_causal_hd256_against_reference(monkeypatch, detached):
+    _require_cuda()
+    if torch.cuda.get_device_capability() != (10, 0):
+        pytest.skip("SM100 FA4 regression")
+
+    from megatron.core.transformer.enums import AttnMaskType
+    from megatron.core.transformer.transformer_config import TransformerConfig
+    from miles_plugins.models.qwen3_5_memory import DetachedMemoryDotProductAttention, QwenCausalDotProductAttention
+
+    monkeypatch.setenv("NVTE_FLASH_ATTN", "1")
+    monkeypatch.setenv("NVTE_FUSED_ATTN", "0")
+    monkeypatch.setenv("NVTE_UNFUSED_ATTN", "0")
+    torch.manual_seed(45)
+    config = TransformerConfig(num_layers=1, hidden_size=1024, num_attention_heads=4, num_query_groups=2,
+                               kv_channels=256, attention_dropout=0.0, params_dtype=torch.bfloat16)
+    cls = DetachedMemoryDotProductAttention if detached else QwenCausalDotProductAttention
+    layer = cls(config, 1, AttnMaskType.causal, "self").cuda()
+    versions = []
+    layer.flash_attention.register_forward_pre_hook(
+        lambda module, args, kwargs: versions.append(kwargs["flash_attention_backend"].major), with_kwargs=True
+    )
+    packed = _packed()
+    if not detached:
+        packed.critic_segment_lengths = None
+    inputs = [torch.randn(24, h, 256, device="cuda", dtype=torch.bfloat16, requires_grad=True) for h in (4, 2, 2)]
+    output = layer(*inputs, None, AttnMaskType.causal, packed_seq_params=packed).reshape(24, 4, 256)
+    reference_inputs = [x.detach().float().requires_grad_() for x in inputs]
+    refs = []
+    for start, end in ((0, 13), (13, 22), (22, 24)):
+        q, k, v = (x[start:end] for x in reference_inputs)
+        # Take the loss only on the last segment of each real episode.
+        if detached:
+            prefix = {0: 5, 13: 3, 22: 0}[start]
+            k = torch.cat((k[:prefix].detach(), k[prefix:]))
+            v = torch.cat((v[:prefix].detach(), v[prefix:]))
+        scores = torch.einsum("thd,shd->hts", q, k.repeat_interleave(2, dim=1)) / 16
+        scores = scores.masked_fill(torch.ones_like(scores, dtype=torch.bool).triu(1), -torch.inf)
+        refs.append(torch.einsum("hts,shd->thd", scores.softmax(-1), v.repeat_interleave(2, dim=1)))
+    reference = torch.cat(refs)
+    torch.testing.assert_close(output.float(), reference, rtol=0.025, atol=0.025)
+    probe = torch.randn_like(output)
+    if detached:
+        probe[:5] = 0
+        probe[13:16] = 0
+    actual = torch.autograd.grad(output, inputs, probe)
+    expected = torch.autograd.grad(reference, reference_inputs, probe.float())
+    for grad, target in zip(actual, expected, strict=True):
+        torch.testing.assert_close(grad.float(), target, rtol=0.04, atol=0.04)
+    if detached:
+        # TE can dispatch short rectangular segments to another flash backend.
+        assert 4 in versions
+    else:
+        assert versions == [4]

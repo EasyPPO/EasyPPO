@@ -14,7 +14,7 @@ from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
-from miles_plugins.models.qwen3_5_memory import DetachedMemoryDotProductAttention
+from miles_plugins.models.qwen3_5_memory import DetachedMemoryDotProductAttention, QwenCausalDotProductAttention
 
 
 def _get_text_config(hf_config):
@@ -113,12 +113,17 @@ def get_qwen3_5_spec(args, config, vp_stage):
                 params={"args": args},
             )
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
-        elif getattr(args, "critic_context_mode", "shared") == "full_detach":
+        elif getattr(args, "critic_context_mode", "shared") in ("full_detach", "actor-summary"):
+            core = (
+                DetachedMemoryDotProductAttention
+                if args.critic_context_mode == "full_detach"
+                else QwenCausalDotProductAttention
+            )
             layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
             attention_spec = layer_specs.submodules.self_attention.submodules
             if isinstance(attention_spec.core_attention, ModuleSpec):
-                attention_spec.core_attention.module = DetachedMemoryDotProductAttention
+                attention_spec.core_attention.module = core
             else:
-                attention_spec.core_attention = DetachedMemoryDotProductAttention
+                attention_spec.core_attention = core
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
     return transformer_layer_spec
