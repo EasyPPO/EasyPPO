@@ -2,6 +2,11 @@ import asyncio
 import logging
 import os
 
+from miles.backends.training_utils.checkpoint.joint_checkpoint import (
+    add_checkpoint_arguments,
+    finalize_checkpoint,
+    prepare_checkpoint_retention,
+)
 from miles.ray.placement_group import (
     create_rollout_components,
     create_training_models,
@@ -22,6 +27,7 @@ logger = logging.getLogger(__name__)
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args, *, disposer: Disposer):
     assert not args.colocate or args.fully_async, "Colocation is only supported for async training with --fully-async."
+    max_keep = prepare_checkpoint_retention(args)
     validate_async_off_policy_correction(args)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
 
@@ -81,6 +87,13 @@ async def train(args, *, disposer: Disposer):
         return await rollout_executor.get(rollout_id)
 
     # async train loop.
+    if args.start_rollout_id >= args.num_rollout:
+        # The final checkpoint is committed before final evaluation. Finish that
+        # evaluation when a timeout interrupted it, without collecting another batch.
+        if max_keep and args.num_rollout > 0 and args.start_rollout_id == args.num_rollout and args.eval_interval:
+            await inference_controller.prepare_eval()
+            await eval_dispatcher.dispatch(args.num_rollout - 1, force=True)
+        return
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
@@ -124,11 +137,13 @@ async def train(args, *, disposer: Disposer):
             num_rollout_per_epoch if getattr(args, "save_on_epoch", True) else None,
             args.num_rollout,
         ):
-            force_sync = external_save or rollout_id == args.num_rollout - 1
+            force_sync = external_save or rollout_id == args.num_rollout - 1 or max_keep > 0
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
             await rollout_executor.save(rollout_id)
+            if max_keep:
+                finalize_checkpoint(args, rollout_id, max_keep)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -173,5 +188,5 @@ async def train(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = parse_args(add_custom_arguments=add_checkpoint_arguments)
     asyncio.run(with_disposer(train, args))

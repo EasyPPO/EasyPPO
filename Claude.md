@@ -105,7 +105,7 @@ python scripts/make_miles_terminal_data.py --dataset terminal-bench-2.1 \
 wc -l "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl" "$DATA_DIR/tb21.eval.jsonl"
 ```
 
-The pinned AgentPick split produces 543 training rows. Terminal-Bench 2.1
+To update an existing dataset, prepare it in a fresh directory and point all workers at that directory. Preparation applies the pinned CPU, memory and disk quotas, sets agent and verifier timeouts to 2,400 and 600 seconds, and preserves task entrypoints and protected-file checks for the Modal runner. The pinned AgentPick split produces 543 training rows. Terminal-Bench 2.1
 produces 89 evaluation rows. Both launchers read these JSONL files.
 
 **Configure.** The two launchers use the same asynchronous PPO recipe.
@@ -118,7 +118,7 @@ produces 89 evaluation rows. Both launchers read these JSONL files.
 | Updates | 150 batches, first 30 critic-only. Four critic updates of 96 trajectories per batch (LR 5e-6, value clip 0.2, value loss coefficient 0.5). One actor update per subsequent batch (LR 3e-6, one warmup step). |
 | Actor loss | Score centering with PPO advantages, prompt means, sampled rollout log probabilities, top-128 candidates and TIS clipped at 2. Fused log probabilities with in-place backward. |
 | Memory and kernels | Per-GPU microbatch limits are 122,880 input tokens for the actor and 153,600 for the critic. SGLang static memory fraction 0.92; dense attention uses Triton on Blackwell or FA3 with `--gpu-arch hopper`. Trainer linear attention uses FLA. |
-| Evaluation and checkpoints | Evaluate the base and every 15 rollout batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches. |
+| Evaluation and checkpoints | Evaluate the base and every 15 rollout batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches and at the final batch. Keep the latest three complete actor, critic and rollout checkpoints. |
 
 **Launch.** Set the allocation below and run the command for the desired critic.
 The full-detach critic reads chronological history with gradients detached at

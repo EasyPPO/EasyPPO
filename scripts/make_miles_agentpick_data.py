@@ -5,11 +5,13 @@ import csv
 import hashlib
 import json
 import random
+import re
 import tarfile
 import tempfile
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import tomlkit
 from huggingface_hub import hf_hub_download
 
 from make_miles_terminal_data import task_records, write_jsonl
@@ -60,41 +62,64 @@ def _extract(root, split, ids, archive_dir):
                 tar.extract(member, root, filter="data")
 
 
-def _configure_task(task, row, tmax_resources):
+def _configure_task(task, corpus, resources):
+    # Harbor reads this staged file at rollout time; task_records also uses it for the JSONL prompt.
+    instruction = task / "instruction.md"
+    raw_instruction = instruction.read_text()
+    prompt, removed = re.subn(r"^.*harbor-canary.*$\n?", "", raw_instruction, flags=re.MULTILINE)
+    if removed:
+        instruction.write_text(prompt)
+
     config = task / "task.toml"
-    if row["corpus"] == "TMAX":
-        # TMAX publishes a prebuilt image with setup already applied.
+    # TMAX packages have no task.toml. REBENCH places environment keys at the root.
+    raw = config.read_text() if corpus != "TMAX" else ""
+    if corpus == "REBENCH":
+        raw = "[environment]\n" + raw
+    document = tomlkit.parse(raw)
+    if "environment" not in document:
+        document["environment"] = tomlkit.table()
+    env = document["environment"]
+    if corpus == "TMAX":
         first_line = (task / "environment/Dockerfile").read_text().splitlines()[0]
         directive, image = first_line.split()
         if directive != "FROM":
             raise ValueError(f"Expected a prebuilt image for {task.name}")
-        resources = tmax_resources[task.name]
-        config.write_text(
-            f"[environment]\ndocker_image = {json.dumps(image)}\ncpus = {int(resources['req_cpus'])}\nmemory_mb = {int(resources['req_memory_mb'])}\nstorage_mb = {int(resources['est_disk_mb'])}\n"
-        )
-    elif row["corpus"] == "REBENCH":
-        # The release puts these Harbor environment fields at the TOML root.
-        raw = config.read_text()
-        config.write_text("[environment]\n" + raw)
+        env["docker_image"] = image
+
+    # The pinned split publishes the final allocations. Harbor rejects conflicting legacy units.
+    env.pop("memory", None)
+    env.pop("storage", None)
+    env["cpus"] = int(resources["req_cpus"])
+    env["memory_mb"] = int(resources["req_memory_mb"])
+    env["storage_mb"] = int(resources["est_disk_mb"])
+    # csk4gby2 disabled per-task agent budgets at release build time. Neither
+    # pinned parquet has validated_test_timeout_s, so the verifier uses the run default too.
+    for phase, seconds in (("agent", 2400), ("verifier", 600)):
+        if phase not in document:
+            document[phase] = tomlkit.table()
+        document[phase]["timeout_sec"] = seconds
+    config.write_text(tomlkit.dumps(document))
 
 
 def prepare(tasks_dir, archive_dir):
     selected = selected_tasks()
-    path = hf_hub_download(_DATASET, "data/clean.parquet", repo_type="dataset", revision=_REVISION)
-    resources = pq.read_table(path, columns=["task_id", "req_cpus", "req_memory_mb", "est_disk_mb"])
-    tmax_resources = {row["task_id"]: row for row in resources.to_pylist()}
     tasks_dir.mkdir(parents=True, exist_ok=True)
     dest = tasks_dir / "agentpick-csk4gby2"
     if dest.exists():
         raise FileExistsError(f"Output already exists: {dest}")
     with tempfile.TemporaryDirectory(dir=tasks_dir) as staging:
         root = Path(staging) / dest.name
+        resources = {}
         for split in _ARCHIVES:
+            path = hf_hub_download(_DATASET, f"data/{split}.parquet", repo_type="dataset", revision=_REVISION)
+            table = pq.read_table(path, columns=["task_id", "req_cpus", "req_memory_mb", "est_disk_mb", "protected_paths", "protected_cmds"])
+            resources.update({(split, row["task_id"]): row for row in table.to_pylist()})
             _extract(root, split, {row["task_id"] for row in selected if row["split"] == split}, archive_dir)
         records = []
         for index, row in enumerate(selected):
             task = root / "tasks" / row["task_id"]
-            _configure_task(task, row, tmax_resources)
+            settings = resources[row["split"], task.name]
+            _configure_task(task, row["corpus"], settings)
             (record,) = task_records(task, dataset=_DATASET, split="train", path_root=Path(staging))
             record["metadata"].update(
                 source_index=index,
@@ -103,6 +128,14 @@ def prepare(tasks_dir, archive_dir):
                 source_task_id=row["task_id"],
                 source_revision=_REVISION,
             )
+            for key in ("protected_paths", "protected_cmds"):
+                entries = json.loads(settings[key] or "[]")
+                if entries:
+                    record["metadata"][key] = entries
+            # Both service tasks in the pinned archives exec their argument after setup.
+            dockerfile = (task / "environment/Dockerfile").read_text()
+            if 'ENTRYPOINT ["/entrypoint.sh"]' in dockerfile.splitlines():
+                record["metadata"]["modal_task_entrypoint"] = "/entrypoint.sh"
             records.append(record)
         write_jsonl(root / "train.jsonl", records)
         root.rename(dest)

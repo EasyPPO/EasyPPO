@@ -345,3 +345,15 @@ class TestTerminalLifecycle:
             events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
         )
         assert events.index("manager_shutdown") < events.index("manager_kill")
+
+
+async def test_resume_at_final_joint_checkpoint_only_runs_final_eval(monkeypatch):
+    args = _make_args(
+        start_rollout_id=5, num_rollout=5, use_critic=True, keep_old_actor=True, max_keep=3, save="actor", critic_save="critic",
+        megatron_config=None, eval_interval=20, eval_uses_snapshots=False, skip_eval_before_train=True,
+    )
+    events = []
+    _install_driver_fakes(monkeypatch, args, events)
+    await with_disposer(train_async_driver.train, args)
+    assert "eval:4" in events
+    assert not any(event.startswith("generate_start:") for event in events)

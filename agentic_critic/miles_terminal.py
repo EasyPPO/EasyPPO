@@ -256,6 +256,7 @@ async def generate(input):
         evaluation=input.evaluation,
         state=input.state,
         task_path=task_path,
+        task_metadata=metadata,
         trials_dir=Path(args.terminal_trials_dir),
         environment=args.terminal_environment,
         judge_url=getattr(args, "fcs_judge_url", None),

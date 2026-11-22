@@ -46,7 +46,7 @@ setup(
     package_data={"miles.dashboard": ["static/*"], "agentic_critic": ["*.jinja"]},
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={
-        "terminal": ["harbor==0.24.0", "mini-swe-agent==1.17.1", "jinja2"],
+        "terminal": ["harbor==0.24.0", "mini-swe-agent==1.17.1", "jinja2", "tomlkit"],
         "agentic": [
             "torch>=2.0",
             "transformers==5.19.0",

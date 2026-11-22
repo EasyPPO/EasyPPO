@@ -139,6 +139,8 @@ def main(default_mode=None):
         script_path=__file__,
         extra_args=(
             "--fully-async",
+            "--max-keep", "3",
+            "--use-checkpoint-opt-param-scheduler",
             "--critic-max-tokens-per-gpu", str(args.critic_max_tokens_per_gpu),
             "--ppo-prompt-mean",
             *(("--log-probs-backend", "fused") if args.score_centering else ()),

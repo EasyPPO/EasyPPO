@@ -9,10 +9,12 @@ from pathlib import Path
 
 from harbor.agents.base import BaseAgent
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
+from harbor.models.verifier.result import VerifierResult
 from harbor.trial.hooks import TrialEvent
 from harbor.trial.trial import Trial
 
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
+from agentic_critic.task_integrity import protected_digests
 from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 
 
@@ -78,6 +80,7 @@ async def run_trial(
     tokenizer,
     decode,
     config,
+    task_metadata: dict | None = None,
     memory_mb: int | None = None,
     docker_compose: tuple[str, ...] = (),
     judge_url: str | None = None,
@@ -121,6 +124,10 @@ async def run_trial(
         )
     else:
         agent = AgentConfig(import_path=agents[agent_protocol])
+    metadata = task_metadata or {}
+    environment_kwargs = {}
+    if environment == "modal" and metadata.get("modal_task_entrypoint"):
+        environment_kwargs["keepalive"] = [metadata["modal_task_entrypoint"], "sleep", "infinity"]
     trial = await Trial.create(
         TrialConfig(
             task=TaskConfig(path=task_path),
@@ -129,6 +136,7 @@ async def run_trial(
             environment=EnvironmentConfig(
                 type=environment,
                 override_memory_mb=memory_mb,
+                kwargs=environment_kwargs,
                 extra_docker_compose=[Path(path) for path in docker_compose],
             ),
         )
@@ -145,6 +153,24 @@ async def run_trial(
             trial.config.verifier.disable = trial.agent.trace.exit_status != "Submitted"
 
         trial.add_hook(TrialEvent.AGENT_END, grade_submissions_only)
+    if metadata.get("protected_paths") or metadata.get("protected_cmds"):
+        baseline = None
+
+        async def capture_baseline(_event):
+            nonlocal baseline
+            baseline = await protected_digests(trial.agent_environment, metadata)
+
+        async def check_baseline(_event):
+            if trial.config.verifier.disable:
+                return
+            if baseline is None:
+                raise RuntimeError("Missing pre-agent integrity baseline")
+            if await protected_digests(trial.agent_environment, metadata) != baseline:
+                trial.config.verifier.disable = True
+                trial.result.verifier_result = VerifierResult(rewards={"reward": 0.0})
+
+        trial.add_hook(TrialEvent.AGENT_START, capture_baseline)
+        trial.add_hook(TrialEvent.AGENT_END, check_baseline)
     result = await trial.run()
     trace = trial.agent.trace
     if result.exception_info is not None:

@@ -182,3 +182,58 @@ async def test_terminus_only_grades_confirmed_submissions(monkeypatch, tmp_path,
     )
     assert actual is trace
     assert rewards == ({"reward": 1.0} if submitted else {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_agentpick_integrity_and_service_start(monkeypatch, tmp_path, changed):
+    import asyncio
+
+    from agentic_critic import harbor_terminal
+
+    protected = tmp_path / "input with spaces"
+    protected.write_bytes(b"seed")
+    command_output = tmp_path / "query-result"
+    command_output.write_text("original")
+    trace = TerminalTrace(exit_status="Submitted")
+
+    async def execute(*, command, user, timeout_sec):
+        assert user == "root" and timeout_sec == 120
+        proc = await asyncio.create_subprocess_exec("bash", "-c", command, stdout=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        return SimpleNamespace(return_code=proc.returncode, stdout=stdout.decode())
+
+    async def create(config):
+        assert config.environment.kwargs["keepalive"] == ["/entrypoint.sh", "sleep", "infinity"]
+        hooks = {}
+        result = SimpleNamespace(exception_info=None, verifier_result=None)
+
+        async def run():
+            for hook in hooks[harbor_terminal.TrialEvent.AGENT_START]:
+                await hook(None)
+            if changed:
+                command_output.write_text("changed")
+            for hook in hooks[harbor_terminal.TrialEvent.AGENT_END]:
+                await hook(None)
+            assert config.verifier.disable == changed
+            if not config.verifier.disable:
+                result.verifier_result = SimpleNamespace(rewards={"reward": 1.0})
+            return result
+
+        return SimpleNamespace(
+            agent=SimpleNamespace(bind=lambda **kw: None, trace=trace),
+            agent_environment=SimpleNamespace(exec=execute),
+            result=result, config=config, run=run, paths=SimpleNamespace(trial_dir=tmp_path),
+            add_hook=lambda event, hook: hooks.setdefault(event, []).append(hook),
+        )
+
+    monkeypatch.setattr(harbor_terminal.Trial, "create", create)
+    import shlex
+
+    _, rewards, _ = await run_trial(
+        task_path=tmp_path, trials_dir=tmp_path, environment="modal", tokenizer=Tokenizer(),
+        decode=None, config=TerminalConfig(), agent_protocol="terminus-2",
+        task_metadata={"modal_task_entrypoint": "/entrypoint.sh", "protected_paths": [str(protected)],
+                       "protected_cmds": ["cat " + shlex.quote(str(command_output))]},
+    )
+    assert rewards == {"reward": float(not changed)}
