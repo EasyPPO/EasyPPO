@@ -181,3 +181,38 @@ async def test_external_cancellation_wins_over_collector_abort(monkeypatch, tmp_
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert cleaned == [True] and not miles_terminal._ACTIVE_TRIALS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evaluation", [False, True])
+async def test_modal_image_build_failure_at_startup(monkeypatch, tmp_path, evaluation):
+    inp = _input(tmp_path, evaluation=evaluation)
+    inp.args.terminal_environment = "modal"
+    message = "Image build for im-test failed"
+    trial_dir = tmp_path / "trial"
+
+    async def create(config):
+        async def run():
+            return SimpleNamespace(
+                environment_setup=object(), agent_setup=None, agent_execution=None,
+                exception_info=SimpleNamespace(exception_type="ImageBuildError", exception_message=message),
+            )
+
+        return SimpleNamespace(
+            agent=SimpleNamespace(bind=lambda **kwargs: None, trace=None), run=run,
+            config=config, paths=SimpleNamespace(trial_dir=trial_dir),
+        )
+
+    monkeypatch.setattr(harbor_terminal.Trial, "create", create)
+    if evaluation:
+        with pytest.raises(harbor_terminal.SandboxImageBuildError, match=message):
+            await miles_terminal.generate(inp)
+    else:
+        from miles.rollout.filter_hub.common_filters import apply_aborted_filter
+
+        sample = (await miles_terminal.generate(inp)).samples
+        assert sample.status == Sample.Status.ABORTED
+        assert sample.reward is None
+        assert sample.metadata["terminal_abort_failure_type"] == "ImageBuildError"
+        assert str(trial_dir) in sample.metadata["terminal_abort_reason"]
+        assert not apply_aborted_filter(inp.args, [inp.sample, sample]).keep

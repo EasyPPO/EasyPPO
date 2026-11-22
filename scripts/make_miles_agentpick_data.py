@@ -70,6 +70,14 @@ def _configure_task(task, corpus, resources):
     if removed:
         instruction.write_text(prompt)
 
+    if task.name == "tw_12315":
+        # Buster's pip ignores Modal's HTTP index. This version supports the task's Python 3.7.
+        dockerfile = task / "environment/Dockerfile"
+        dockerfile.write_text(dockerfile.read_text().replace(
+            "RUN pip install --no-cache-dir msgpack\n",
+            "RUN pip install --index-url https://pypi.org/simple --no-cache-dir msgpack==1.0.5\n",
+        ))
+
     config = task / "task.toml"
     # TMAX packages have no task.toml. REBENCH places environment keys at the root.
     raw = config.read_text() if corpus != "TMAX" else ""

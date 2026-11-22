@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import logging
 import math
 from copy import deepcopy
 from dataclasses import dataclass, fields, replace
@@ -50,7 +51,7 @@ async def abort(args) -> None:
 async def _run_cancellable_trial(*, args, evaluation: bool, state=None, **kwargs):
     # Harbor is optional outside the online wrapper. Cancellation must reach
     # Trial.run(), which owns sandbox deletion, rather than only aborting decode.
-    from agentic_critic.harbor_terminal import run_trial
+    from agentic_critic.harbor_terminal import SandboxImageBuildError, run_trial
 
     task = asyncio.create_task(run_trial(**kwargs))
     active = _ActiveTrial(task=task, args=args, evaluation=evaluation)
@@ -76,6 +77,9 @@ async def _run_cancellable_trial(*, args, evaluation: bool, state=None, **kwargs
     except Exception as exc:
         if asyncio.current_task().cancelling():
             raise asyncio.CancelledError("Terminal rollout owner was cancelled") from exc
+        if not evaluation and isinstance(exc, SandboxImageBuildError):
+            logging.getLogger(__name__).warning("Discarding rollout after sandbox image build failure: %s", exc)
+            return _DiscardedTrial("ImageBuildError", str(exc))
         if _collector_aborted(state, evaluation=evaluation):
             # Engine abort completes before the generic collector invokes our
             # hook. Its late decode/teardown error still belongs to this tail.

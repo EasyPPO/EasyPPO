@@ -18,6 +18,10 @@ from agentic_critic.task_integrity import protected_digests
 from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 
 
+class SandboxImageBuildError(RuntimeError):
+    """Modal could not build the task image before the agent started."""
+
+
 class MiniSweTerminalAgent(BaseAgent):
     @staticmethod
     def name() -> str:
@@ -175,6 +179,14 @@ async def run_trial(
     trace = trial.agent.trace
     if result.exception_info is not None:
         error = result.exception_info
+        if (
+            environment == "modal"
+            and error.exception_type == "ImageBuildError"
+            and result.environment_setup is not None
+            and result.agent_setup is None
+            and result.agent_execution is None
+        ):
+            raise SandboxImageBuildError(f"{trial.paths.trial_dir}: {error.exception_message}")
         # Harbor still verifies after an agent timeout. Preserve that outcome,
         # but do not silently treat setup or verifier failures as task failures.
         if error.exception_type == "AgentTimeoutError" and (terminus or result.verifier_result is not None):

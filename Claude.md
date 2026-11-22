@@ -105,7 +105,7 @@ python scripts/make_miles_terminal_data.py --dataset terminal-bench-2.1 \
 wc -l "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl" "$DATA_DIR/tb21.eval.jsonl"
 ```
 
-To update an existing dataset, prepare it in a fresh directory and point all workers at that directory. Preparation applies the pinned CPU, memory and disk quotas, sets agent and verifier timeouts to 2,400 and 600 seconds, and preserves task entrypoints and protected-file checks for the Modal runner. The pinned AgentPick split produces 543 training rows. Terminal-Bench 2.1
+To update an existing dataset, prepare it in a fresh directory and point all workers at that directory. Preparation applies the pinned CPU, memory and disk quotas, sets agent and verifier timeouts to 2,400 and 600 seconds, and preserves task entrypoints and protected-file checks for the Modal runner. For training, a Modal task image that fails to build after Harbor’s two creation attempts produces an ABORTED sample. Miles drops that prompt group and continues collecting the batch. The pinned AgentPick split produces 543 training rows. Terminal-Bench 2.1
 produces 89 evaluation rows. Both launchers read these JSONL files.
 
 **Configure.** The two launchers use the same asynchronous PPO recipe.
