@@ -4,6 +4,10 @@ import re
 import shlex
 
 
+class TaskIntegrityCheckError(RuntimeError):
+    """The sandbox could not produce a usable integrity measurement."""
+
+
 async def protected_digests(environment, metadata):
     commands = []
     for path in metadata.get("protected_paths", []):
@@ -28,5 +32,5 @@ async def protected_digests(environment, metadata):
     if result.return_code or len(digests) != len(commands) or not all(
         re.fullmatch(r"[0-9a-f]{64}|ABSENT|OTHER|FAIL", value) for value in digests
     ):
-        raise RuntimeError("Could not measure AgentPick integrity baseline")
+        raise TaskIntegrityCheckError("Could not measure AgentPick integrity baseline")
     return digests

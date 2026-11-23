@@ -5,6 +5,7 @@ in-process episode; no global registry or external agent server is needed.
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
@@ -14,7 +15,7 @@ from harbor.trial.hooks import TrialEvent
 from harbor.trial.trial import Trial
 
 from agentic_critic.fcs_env import DEFAULT_MAX_SUBMISSIONS, DEFAULT_MAX_TURNS
-from agentic_critic.task_integrity import protected_digests
+from agentic_critic.task_integrity import TaskIntegrityCheckError, protected_digests
 from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 
 
@@ -23,6 +24,28 @@ class SandboxInfrastructureFailure(RuntimeError):
         super().__init__(message)
         self.failure_type = failure_type
         self.retry_start = retry_start
+
+
+# Harbor 0.24 serializes the traceback and emits plain RuntimeError from its
+# sandbox operations. Match the raising frame, not caller frames around an SDK error.
+_MODAL_OPERATION_FRAME = re.compile(
+    r'^  File "([^"]+)", line [0-9]+, in ([^\n]+)$', re.MULTILINE
+)
+_MODAL_SANDBOX_OPERATIONS = {
+    "start", "attach", "is_dir", "is_file", "_apply_network_policy",
+    "_wait_for_docker_daemon", "_wait_for_main_container", "_sdk_exec",
+    "_sdk_upload_file", "_sdk_upload_dir", "_sdk_download_file", "_sdk_download_dir",
+}
+
+
+def _raised_by_modal_sandbox(error):
+    if error.exception_type != "RuntimeError":
+        return False
+    frames = _MODAL_OPERATION_FRAME.findall(getattr(error, "exception_traceback", ""))
+    if not frames:
+        return False
+    path, function = frames[-1]
+    return path.endswith("/harbor/environments/modal.py") and function in _MODAL_SANDBOX_OPERATIONS
 
 
 def _modal_infrastructure_failure(result, trial_dir):
@@ -45,7 +68,9 @@ def _modal_infrastructure_failure(result, trial_dir):
             "service unavailable", "too many requests", "gateway timeout",
         ))
     elif not (
-        kind in {"SandboxLikelyOutOfMemoryError", "VerifierTimeoutError", "DownloadVerifierDirError"}
+        kind in {"SandboxLikelyOutOfMemoryError", "VerifierTimeoutError", "DownloadVerifierDirError",
+                 TaskIntegrityCheckError.__name__}
+        or _raised_by_modal_sandbox(error)
         or (setup and kind == "AgentSetupTimeoutError")
         or (setup and kind == "RuntimeError" and message.startswith("Failed to start tmux session"))
         or (starting and kind == "RuntimeError" and message.startswith((
@@ -211,7 +236,7 @@ async def run_trial(
             if trial.config.verifier.disable:
                 return
             if baseline is None:
-                raise RuntimeError("Missing pre-agent integrity baseline")
+                raise TaskIntegrityCheckError("Missing pre-agent integrity baseline")
             if await protected_digests(trial.agent_environment, metadata) != baseline:
                 trial.config.verifier.disable = True
                 trial.result.verifier_result = VerifierResult(rewards={"reward": 0.0})

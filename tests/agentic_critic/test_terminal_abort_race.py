@@ -252,3 +252,40 @@ def test_trial_infrastructure_error_boundaries(tmp_path, kind, trace, start, exp
             exception_type=kind, exception_message="message", exception_traceback=trace))
     error = harbor_terminal._modal_infrastructure_failure(result, tmp_path)
     assert (error.retry_start if error else None) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evaluation", [False, True])
+@pytest.mark.parametrize("kind, frame", [
+    ("RuntimeError", "_sdk_exec"),
+    ("RuntimeError", "_sdk_upload_dir"),
+    ("RuntimeError", "_sdk_download_dir"),
+    ("TaskIntegrityCheckError", "protected_digests"),
+])
+async def test_task_environment_failure_isolated_after_start(monkeypatch, tmp_path, evaluation, kind, frame):
+    inp = _input(tmp_path, evaluation=evaluation)
+    inp.args.terminal_environment = "modal"
+    attempts = []
+    async def create(config):
+        attempts.append(config)
+        async def run():
+            return SimpleNamespace(environment_setup=object(), agent_setup=object(), agent_execution=object(),
+                exception_info=SimpleNamespace(exception_type=kind, exception_message="task environment failed",
+                    exception_traceback=f'  File "/lib/harbor/environments/modal.py", line 1, in {frame}\n'))
+        return SimpleNamespace(agent=SimpleNamespace(bind=lambda **kw: None, trace=None),
+            add_hook=lambda *args: None, run=run, paths=SimpleNamespace(trial_dir=tmp_path))
+    monkeypatch.setattr(harbor_terminal.Trial, "create", create)
+    sample = (await miles_terminal.generate(inp)).samples
+    assert len(attempts) == 1
+    assert sample.status == Sample.Status.ABORTED
+    assert sample.reward == (0.0 if evaluation else None)
+    assert sample.metadata["terminal_abort_failure_type"] == kind
+    from miles.rollout.filter_hub.common_filters import apply_aborted_filter
+    assert not apply_aborted_filter(inp.args, [inp.sample, sample]).keep
+
+
+def test_modal_caller_does_not_hide_unrelated_failure():
+    trace = ('  File "/lib/harbor/environments/modal.py", line 1, in _sdk_exec\n'
+             '  File "/app/model.py", line 2, in decode\n')
+    error = SimpleNamespace(exception_type="RuntimeError", exception_traceback=trace)
+    assert not harbor_terminal._raised_by_modal_sandbox(error)
