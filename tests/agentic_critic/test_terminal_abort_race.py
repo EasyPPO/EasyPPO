@@ -214,7 +214,7 @@ async def test_modal_failure_at_startup(monkeypatch, tmp_path, evaluation, failu
 
     sample = (await miles_terminal.generate(inp)).samples
     assert sample.status == Sample.Status.ABORTED
-    assert sample.reward == (0.0 if evaluation else None)
+    assert sample.reward is None
     assert sample.metadata["terminal_abort_failure_type"] == failure_type
     assert str(trial_dir) in sample.metadata["terminal_abort_reason"]
     assert len(attempts) == (2 if failure_type == "EnvironmentStartTimeoutError" else 1)
@@ -279,7 +279,7 @@ async def test_task_environment_failure_isolated_after_start(monkeypatch, tmp_pa
     sample = (await miles_terminal.generate(inp)).samples
     assert len(attempts) == 1
     assert sample.status == Sample.Status.ABORTED
-    assert sample.reward == (0.0 if evaluation else None)
+    assert sample.reward is None
     assert sample.metadata["terminal_abort_failure_type"] == kind
     from miles.rollout.filter_hub.common_filters import apply_aborted_filter
     assert not apply_aborted_filter(inp.args, [inp.sample, sample]).keep

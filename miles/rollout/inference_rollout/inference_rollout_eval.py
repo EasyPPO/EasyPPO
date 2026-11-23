@@ -67,7 +67,7 @@ async def eval_rollout_single_dataset(
     prompt_dataset_cache: dict[Any, Dataset],
     *,
     kv_cache_namespace: str | None = None,
-) -> dict[str, dict[str, list[Any]]]:
+) -> dict[str, dict[str, Any]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
@@ -161,7 +161,8 @@ async def run_eval_samples(args, dataset_cfg, dataset, generate_sample, *, kv_ca
     reward_key = args.eval_reward_key or args.reward_key
     return {
         dataset_cfg.name: {
-            "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
+            "n_samples_per_eval_prompt": dataset_cfg.n_samples_per_eval_prompt,
+            "rewards": [s.reward if s.reward is None or not reward_key else s.reward[reward_key] for s in data],
             "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
             "samples": data,
         }

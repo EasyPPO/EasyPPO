@@ -594,7 +594,7 @@ def _pack_shard_steps(shards, partitions, episode_rows, batch_size, budget, *, b
 def _memory_critic_episode_order(
     args, data: dict[str, Any], critic_steps: int, episode_rows: list[list[int]]
 ) -> list[int]:
-    """Order complete prompt groups into equally sized critic optimizer batches."""
+    """Keep siblings together where possible within fixed-size critic optimizer steps."""
     num_episodes = len(episode_rows)
     if critic_steps == 1:
         return list(range(num_episodes))
@@ -607,9 +607,17 @@ def _memory_critic_episode_order(
         if any(group_ids[row] != group_id for row in rows):
             raise ValueError("All segments of one critic episode must belong to the same prompt group")
         groups.setdefault(group_id, []).append(episode)
+    expected_fanout = getattr(args, "n_samples_per_prompt", None)
+    if expected_fanout and max(map(len, groups.values())) <= expected_fanout and any(
+        len(group) < expected_fanout for group in groups.values()
+    ):
+        # Reward statistics already use the true prompt IDs. Place full groups first;
+        # only the trailing survivors need to cross fixed-size optimizer boundaries.
+        ordered_groups = sorted(groups.values(), key=len, reverse=True)
+        return [episode for group in ordered_groups for episode in group]
+
     if len(groups) % critic_steps:
         raise ValueError("Memory critic prompt group count must be divisible by critic mini-batch steps")
-    expected_fanout = getattr(args, "n_samples_per_prompt", None)
     if expected_fanout is not None and any(len(group) != expected_fanout for group in groups.values()):
         raise ValueError("Memory critic mini-batches require complete n_samples_per_prompt response groups")
     groups_per_step = len(groups) // critic_steps

@@ -291,11 +291,10 @@ async def generate(input):
         sample = deepcopy(base)
         sample.status = Sample.Status.ABORTED
         sample.reward = None
-        if input.evaluation:
-            # Keep the scheduled evaluation denominator, including failed draws.
+        discarded = result or _DiscardedTrial("CancelledError", "Oversampling aborted terminal trial")
+        if input.evaluation and not discarded.infrastructure:
             keys = {getattr(args, name, None) for name in ("reward_key", "eval_reward_key")} - {None, ""}
             sample.reward = {key: 0.0 for key in keys} if keys else 0.0
-        discarded = result or _DiscardedTrial("CancelledError", "Oversampling aborted terminal trial")
         sample.metadata = {
             **metadata,
             "terminal_abort_failure_type": discarded.failure_type,

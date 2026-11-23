@@ -149,6 +149,7 @@ def _make_single_policy_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         reward_key=None,
         rollout_batch_size=1,
+        n_samples_per_prompt=GROUP_SIZE,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -511,8 +512,7 @@ class TestPutTimeFilters:
         assert under_test.unused == [(group, UnusedReason.ABORTED)]
         assert under_test.buffer.get_metrics()["rollout/fully_async/aborted_groups_filtered"] == 1
 
-    async def test_a_group_with_one_aborted_sample_among_finished_ones_is_refused_whole(self, monkeypatch) -> None:
-        """The group is the training unit, so a partial one is not something the trainer can use."""
+    async def test_infra_failure_excludes_only_its_draw(self, monkeypatch) -> None:
         under_test = _make_buffer()
         group = _make_finished_group(1)
         group[-1].status = Sample.Status.ABORTED
@@ -523,9 +523,12 @@ class TestPutTimeFilters:
 
         await _put(under_test.buffer, group)
 
-        assert under_test.unused == [(group, UnusedReason.ABORTED)]
+        assert under_test.unused == []
+        await _put(under_test.buffer, _make_finished_group(2))
+        entries = await under_test.buffer.get(num_groups=1)
+        assert [[s.index for s in entry.group] for entry in entries] == [[10], [20]]
+        assert [s.index for s in under_test.buffer.state_dict()[0].group] == [21]
         metrics = under_test.buffer.get_metrics()
-        assert metrics["rollout/fully_async/queue_size"] == 0
         assert metrics["rollout/fully_async/terminal_infra_failures"] == 1
         assert metrics["rollout/fully_async/terminal_infra_failures/NewRemoteError"] == 1
         assert logged == [{"infra/failed_draws": 1, "infra/by_type/NewRemoteError": 1}]
@@ -539,6 +542,24 @@ class TestPutTimeFilters:
 
         assert under_test.unused == []
         assert under_test.buffer.get_metrics()["rollout/fully_async/queue_size"] == 0
+
+    async def test_empty_infrastructure_group_is_skipped_while_consumer_waits(self, monkeypatch):
+        under_test = _make_buffer(async_data_buffer_capacity_factor=1.0)
+        monkeypatch.setattr("miles.rollout.fully_async_data_buffer.tracking.log", lambda *a, **kw: None)
+        waiting = asyncio.create_task(_get_one(under_test.buffer))
+        failed = _make_finished_group(1, status=Sample.Status.ABORTED)
+        for draw in failed:
+            draw.metadata["terminal_infra_failure_type"] = "ImageBuildError"
+        await _put(under_test.buffer, failed)
+        await _settle()
+        assert not waiting.done()
+        valid = _make_finished_group(2)
+        await _put(under_test.buffer, valid)
+        assert (await waiting).group == valid
+        assert under_test.unused == []
+        metrics = under_test.buffer.get_metrics()
+        assert metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+        assert metrics["rollout/fully_async/terminal_infra_failures"] == 2
 
     async def test_a_dynamic_filter_rejection_is_counted_with_its_reason(self) -> None:
         """A filter that rejects for several reasons is only debuggable if each one is counted apart."""

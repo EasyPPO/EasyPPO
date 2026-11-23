@@ -169,7 +169,9 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
-        return DataBufferInput(prompt_group=prompt_group, group=result)
+        return DataBufferInput(
+            prompt_group=prompt_group, group=result, partial=len(prompt_group) < self.args.n_samples_per_prompt
+        )
 
     async def _worker_loop(self) -> None:
         active: set[asyncio.Task] = set()
@@ -222,8 +224,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         do_print = True
 
         for entry in entries:
-            assert len(entry.group) == args.n_samples_per_prompt
-
+            assert entry.partial or len(entry.group) == args.n_samples_per_prompt
             if do_print:
                 sample = first_sample(entry.group)
                 logger.info(

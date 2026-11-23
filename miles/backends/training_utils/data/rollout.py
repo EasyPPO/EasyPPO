@@ -492,9 +492,8 @@ def get_critic_train_schedule(
     """EasyPPO critic mini-batches: re-split this rank's rollout shard into
     ``--critic-num-steps-per-rollout`` optimizer steps.
 
-    Rollout-side memory-critic plans retain complete prompt groups across DP
-    ranks. Otherwise each step takes one slice of a per-rank random permutation of the local
-    samples (the EasyPPO reference shuffles its critic mini-batches per DP rank
+    Rollout-side memory-critic plans order valid episodes by prompt before DP placement.
+    Otherwise each step takes one slice of a per-rank random permutation of the local samples (the EasyPPO reference shuffles its critic mini-batches per DP rank
     as well), so every step is one mini-batch across the DP group with its own
     gradient clipping and, under --calculate-per-token-loss, its own exact
     token normalizer.
@@ -505,8 +504,7 @@ def get_critic_train_schedule(
     and, without --calculate-per-token-loss, normalizes the loss.
     """
     if getattr(args, "critic_context_mode", "shared") in ("full_detach", "actor-summary"):
-        # These schedules are planned before DP placement so every optimizer
-        # step retains complete prompt groups, even when responses span ranks.
+        # Reuse the episode order and optimizer boundaries assigned before DP placement.
         precomputed = _get_precomputed_data_iterator(args, rollout_data)
         if precomputed is None:
             raise ValueError("Memory critic requires a rollout-computed prompt-group schedule")

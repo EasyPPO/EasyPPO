@@ -87,6 +87,7 @@ class DataBufferConstructorInput:
 class DataBufferInput:
     prompt_group: list[Sample]  # resubmittable, for recycling
     group: Group  # finished samples
+    partial: bool = False  # surviving draws from a terminal infrastructure failure or batch split
 
 
 MULTI_POLICY_CHECKPOINT_UNSUPPORTED = "multi-policy rollout state is not checkpointed"
@@ -107,7 +108,7 @@ class DataBuffer(ABC):
 
     @abstractmethod
     async def get(self, *, num_groups: int, **context) -> list[DataBufferInput]:
-        """Return exactly ``num_groups`` groups at once, waiting until that many are available.
+        """Return a batch of ``num_groups`` full groups or the same number of valid draws.
 
         ``context`` is the extra information for sample processing at get() time,
         including the ``trainer_model_id`` whose groups are asked for.
@@ -132,7 +133,8 @@ class DefaultDataBuffer(DataBuffer):
 
     Rejected on put, because the verdict is fixed once the group is generated:
 
-    - aborted groups (the generate function gave up, e.g. an agentic collect timeout)
+    - terminal infrastructure failures (discard the affected draws and skip empty groups)
+    - other aborted groups (the generate function gave up, e.g. an agentic collect timeout)
     - groups with a missing reward
     - groups ``--dynamic-sampling-filter-path`` does not keep
 
@@ -186,27 +188,43 @@ class DefaultDataBuffer(DataBuffer):
             return
 
         async with self._cond:
-            while len(self._buffer) >= self._capacity:
+            while self._batch_ready(self._capacity):
                 await self._cond.wait()
             self._buffer.append(input)
             self._cond.notify_all()
 
     def _preput_filter(self, input: DataBufferInput) -> bool:
-        output = apply_aborted_filter(self._args, input.group)
-        if not output.keep:
-            self._metric_aborted_groups += 1
-            failures = Counter(
-                kind for sample in iter_samples(input.group)
-                if (kind := (sample.metadata or {}).get("terminal_infra_failure_type"))
+        failures = Counter()
+        kept_indices = []
+        for i, draw in enumerate(input.group):
+            # Terminal generation emits a single aborted sample even for a compacted trial.
+            kind = None
+            if isinstance(draw, Sample) and draw.status == Sample.Status.ABORTED:
+                kind = (draw.metadata or {}).get("terminal_infra_failure_type")
+            if kind:
+                failures[kind] += 1
+            else:
+                kept_indices.append(i)
+        if failures:
+            self._terminal_infra_failures.update(failures)
+            self._terminal_infra_total.update(failures)
+            tracking.log(self._args, {
+                "infra/failed_draws": self._terminal_infra_total.total(),
+                **{f"infra/by_type/{kind}": self._terminal_infra_total[kind] for kind in failures},
+            }, step_key="infra/failed_draws")
+            SampleOwnershipRecorder.log_dropped_samples(
+                args=self._args, samples=[p for i, p in enumerate(input.prompt_group) if i not in kept_indices],
+                reason="terminal_infrastructure",
             )
-            if failures:
-                self._terminal_infra_failures.update(failures)
-                self._terminal_infra_total.update(failures)
-                # Report on group completion even when no usable training batch can be assembled.
-                tracking.log(self._args, {
-                    "infra/failed_draws": self._terminal_infra_total.total(),
-                    **{f"infra/by_type/{kind}": self._terminal_infra_total[kind] for kind in failures},
-                }, step_key="infra/failed_draws")
+            if not kept_indices:
+                self._metric_aborted_groups += 1
+                return False
+            input.partial = True
+            input.group = [input.group[i] for i in kept_indices]
+            input.prompt_group = [input.prompt_group[i] for i in kept_indices]
+
+        if not apply_aborted_filter(self._args, input.group).keep:
+            self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
             return False
 
@@ -228,6 +246,13 @@ class DefaultDataBuffer(DataBuffer):
             return False
         return True
 
+    def _batch_ready(self, num_groups: int) -> bool:
+        if len(self._buffer) < num_groups:
+            return False
+        if not any(entry.partial for entry in self._buffer[:num_groups]):
+            return True
+        return sum(len(entry.group) for entry in self._buffer) >= num_groups * self._args.n_samples_per_prompt
+
     async def get(self, *, num_groups: int, current_version: int | None = None, **_) -> list[DataBufferInput]:
         if current_version is not None:
             self._current_version = current_version
@@ -236,7 +261,7 @@ class DefaultDataBuffer(DataBuffer):
             while True:
                 # filters at retrieving sample: staleness filter
                 self._drop_stale(current_version)
-                if len(self._buffer) >= num_groups:
+                if self._batch_ready(num_groups):
                     break
                 if (remaining := deadline - time.monotonic()) <= 0:
                     logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
@@ -247,8 +272,23 @@ class DefaultDataBuffer(DataBuffer):
                 except asyncio.TimeoutError:
                     pass
 
-            entries = self._buffer[:num_groups]
-            del self._buffer[:num_groups]
+            count = num_groups
+            if any(entry.partial for entry in self._buffer[:count]):
+                remaining = num_groups * self._args.n_samples_per_prompt
+                for count, entry in enumerate(self._buffer, 1):
+                    if remaining <= len(entry.group):
+                        if remaining < len(entry.group):
+                            # Carry unused draws into the next batch, including their retry prompts.
+                            self._buffer.insert(count, DataBufferInput(
+                                entry.prompt_group[remaining:], entry.group[remaining:], partial=True,
+                            ))
+                            self._buffer[count - 1] = DataBufferInput(
+                                entry.prompt_group[:remaining], entry.group[:remaining], partial=True,
+                            )
+                        break
+                    remaining -= len(entry.group)
+            entries = self._buffer[:count]
+            del self._buffer[:count]
             self._cond.notify_all()  # wake producers blocked on a full buffer
             for entry in entries:
                 version_stats = group_weight_version_stats(entry.group)

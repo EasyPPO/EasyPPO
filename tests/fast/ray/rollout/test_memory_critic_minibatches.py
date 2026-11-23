@@ -344,6 +344,26 @@ async def test_all_truncated_batch_still_refuses_empty_actor_update_after_warmup
         await executor.get(30)
 
 
+@pytest.mark.asyncio
+async def test_full_detach_384_valid_trials_with_incomplete_prompt_groups(monkeypatch):
+    samples, _ = _samples()
+    # One missing draw from the first 32 prompts, replaced by a draw from prompt 33.
+    samples = [s for s in samples if 0 < s.index <= 384]
+    for sample in samples:
+        sample.group_index = sample.index // 12
+    executor = _executor(monkeypatch, mode="full_detach", dp_size=4, balance=True, samples=samples, fanout=12)
+    pack = await executor.get(0)
+    seen = []
+    for rank in range(4):
+        critic, result = process_rollout_data(
+            executor.args, pack.for_critic().data_ref, rank, _parallel(dp_size=4), witness_info=None
+        )
+        with result:
+            assert critic["num_rollouts"] == [96] * 4
+            seen.extend(set(critic["rollout_ids"]))
+    assert sorted(seen) == list(range(1001, 1385))
+
+
 @pytest.mark.parametrize(
     "groups,fanout,message",
     [

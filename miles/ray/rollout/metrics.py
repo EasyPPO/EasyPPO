@@ -49,31 +49,45 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
 
     log_dict = extra_metrics or {}
     for key in data.keys():
-        rewards = _episode_eval_rewards(data[key]["rewards"], data[key].get("samples"))
-        num_none = sum(1 for r in rewards if r is None)
-        log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
-        if num_none:
-            logger.warning(
-                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None (likely errored/aborted trials); treating as 0.0 for metrics."
-            )
-            rewards = [0.0 if r is None else r for r in rewards]
-        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
-        if (samples := data[key].get("samples")) is not None:
-            failures = Counter(
-                kind for sample in samples if (kind := (sample.metadata or {}).get("terminal_infra_failure_type"))
-            )
+        dataset = data[key]
+        samples = dataset.get("samples")
+        raw_rewards = dataset["rewards"]
+        truncated = dataset.get("truncated")
+        pass_rewards = None
+        if samples is not None:
+            kinds = [(s.metadata or {}).get("terminal_infra_failure_type") for s in samples]
+            failures = Counter(kind for kind in kinds if kind)
             log_dict[f"eval/{key}/terminal_infra_failures"] = failures.total()
             for kind, count in failures.items():
                 log_dict[f"eval/{key}/terminal_infra_failures/{kind}"] = count
+            if failures:
+                # Preserve the original prompt boundaries for pass@k. Only infra draws are ineligible.
+                pass_rewards = _episode_eval_rewards(
+                    [None if kind else (reward or 0.0) for reward, kind in zip(raw_rewards, kinds, strict=True)],
+                    samples,
+                )
+                raw_rewards = [r for r, kind in zip(raw_rewards, kinds, strict=True) if not kind]
+                samples = [s for s, kind in zip(samples, kinds, strict=True) if not kind]
+                if truncated is not None:
+                    truncated = [v for v, kind in zip(truncated, kinds, strict=True) if not kind]
+                if not samples:
+                    continue
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
-        if "truncated" in data[key]:
-            truncated = data[key]["truncated"]
+
+        rewards = _episode_eval_rewards(raw_rewards, samples)
+        num_none = sum(1 for r in rewards if r is None)
+        log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if rewards else 0.0
+        if num_none:
+            logger.warning(f"eval/{key}: treating {num_none}/{len(rewards)} missing rewards as zero")
+            rewards = [0.0 if r is None else r for r in rewards]
+        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if rewards else 0.0
+        if truncated:
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
         if args.log_passrate:
             log_dict |= dict_add_prefix(
                 compute_pass_rate(
-                    flat_rewards=rewards,
-                    group_size=args.n_samples_per_eval_prompt,
+                    flat_rewards=rewards if pass_rewards is None else pass_rewards,
+                    group_size=dataset.get("n_samples_per_eval_prompt", args.n_samples_per_eval_prompt),
                 ),
                 f"eval/{key}-",
             )

@@ -38,7 +38,7 @@ def strip_metrics_namespace(log_dict: dict[str, Any], *, trainer_model_id: str |
 
 
 def compute_pass_rate(
-    flat_rewards: list[float],
+    flat_rewards: list[float | None],
     group_size: int,
     num_groups: int | None = None,
 ):
@@ -51,14 +51,16 @@ def compute_pass_rate(
     pass_rate_name_list = [2**i for i in range(int(math.log2(group_size)) + 1)]
 
     assert len(flat_rewards) == num_groups * group_size, f"{len(flat_rewards)=} {num_groups=} {group_size=}"
-    rewards_of_group = np.array(flat_rewards).reshape(num_groups, group_size)
+    rewards_of_group = np.asarray(flat_rewards, dtype=float).reshape(num_groups, group_size)
 
+    num_correct = np.sum(rewards_of_group == 1, axis=1)
+    num_samples = np.sum(np.asarray([r is not None for r in flat_rewards]).reshape(num_groups, group_size), axis=1)
     log_dict = {}
     for k in pass_rate_name_list:
-        num_correct = np.sum(rewards_of_group == 1, axis=1)
-        num_samples = np.full(num_groups, group_size)
-
-        pass_k_estimates = _estimate_pass_at_k(num_samples, num_correct, k)
+        eligible = num_samples >= k
+        if not np.any(eligible):
+            continue
+        pass_k_estimates = _estimate_pass_at_k(num_samples[eligible], num_correct[eligible], k)
 
         pass_k = np.mean(pass_k_estimates)
         log_dict[f"pass@{k}"] = pass_k
