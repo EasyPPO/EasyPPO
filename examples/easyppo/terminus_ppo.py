@@ -41,8 +41,8 @@ class ScriptArgs(async_ppo.ScriptArgs):
     critic_max_tokens_per_gpu: int = 150 * 1024
     score_centering_recompute_loss: bool = False
     max_total_tokens: int = 100 * 1024
-    max_context_tokens: int = 63488
-    max_new_tokens: int = 16384
+    max_context_tokens: int = 16384
+    max_new_tokens: int = 8192
     max_steps: int = 120
     actor_lr: float = 3e-6
     weight_decay: float = 0

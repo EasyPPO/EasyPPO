@@ -373,8 +373,9 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                         "--sglang-attention-backend": flash, "--linear-attention-backend": "fla",
                         "--terminal-environment": "modal", "--terminal-agent-protocol": "terminus-2",
                         "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "102400",
-                        "--terminal-max-new-tokens": "16384", "--eval-max-response-len": "16384",
-                        "--rollout-max-response-len": "16384"}.items():
+                        "--terminal-max-context-tokens": "16384", "--rollout-max-context-len": "16384",
+                        "--terminal-max-new-tokens": "8192", "--eval-max-response-len": "8192",
+                        "--rollout-max-response-len": "8192"}.items():
         assert args[args.index(flag) + 1] == value
 
 @pytest.mark.parametrize("mode", ["actor-summary", "full_detach"])
