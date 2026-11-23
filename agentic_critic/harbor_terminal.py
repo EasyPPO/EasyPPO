@@ -18,8 +18,43 @@ from agentic_critic.task_integrity import protected_digests
 from agentic_critic.terminal_env import TerminalAgent, TerminalTrace
 
 
-class SandboxImageBuildError(RuntimeError):
-    """Modal could not build the task image before the agent started."""
+class SandboxInfrastructureFailure(RuntimeError):
+    def __init__(self, failure_type, message, *, retry_start=False):
+        super().__init__(message)
+        self.failure_type = failure_type
+        self.retry_start = retry_start
+
+
+def _modal_infrastructure_failure(result, trial_dir):
+    error = result.exception_info
+    kind, message = error.exception_type, error.exception_message
+    starting = result.environment_setup is not None and result.agent_setup is None and result.agent_execution is None
+    setup = result.agent_setup is not None and result.agent_execution is None
+    # Harbor serializes exceptions; distinguish the SDK's errors from application errors of the same name.
+    provider_error = kind in {
+        "ConnectionError", "InternalError", "InternalFailure", "ResourceExhaustedError",
+        "ServiceError", "SandboxTerminatedError", "SandboxTimeoutError", "TimeoutError",
+        "MountUploadTimeoutError", "VolumeUploadTimeoutError",
+    } and f"modal.exception.{kind}:" in getattr(error, "exception_traceback", "")
+    retry_start = False
+    if provider_error or (starting and kind == "EnvironmentStartTimeoutError"):
+        retry_start = starting
+    elif starting and kind == "ImageBuildError":
+        retry_start = any(text in message.lower() for text in (
+            "temporary failure resolving", "connection timed out", "connection reset",
+            "service unavailable", "too many requests", "gateway timeout",
+        ))
+    elif not (
+        kind in {"SandboxLikelyOutOfMemoryError", "VerifierTimeoutError", "DownloadVerifierDirError"}
+        or (setup and kind == "AgentSetupTimeoutError")
+        or (setup and kind == "RuntimeError" and message.startswith("Failed to start tmux session"))
+        or (starting and kind == "RuntimeError" and message.startswith((
+            "Docker daemon not ready after ", "Main container not running after ",
+            "docker compose build failed:", "docker compose up failed:",
+        )))
+    ):
+        return None
+    return SandboxInfrastructureFailure(kind, f"{trial_dir}: {message}", retry_start=retry_start)
 
 
 class MiniSweTerminalAgent(BaseAgent):
@@ -179,14 +214,10 @@ async def run_trial(
     trace = trial.agent.trace
     if result.exception_info is not None:
         error = result.exception_info
-        if (
-            environment == "modal"
-            and error.exception_type == "ImageBuildError"
-            and result.environment_setup is not None
-            and result.agent_setup is None
-            and result.agent_execution is None
-        ):
-            raise SandboxImageBuildError(f"{trial.paths.trial_dir}: {error.exception_message}")
+        if environment == "modal":
+            failure = _modal_infrastructure_failure(result, trial.paths.trial_dir)
+            if failure is not None:
+                raise failure
         # Harbor still verifies after an agent timeout. Preserve that outcome,
         # but do not silently treat setup or verifier failures as task failures.
         if error.exception_type == "AgentTimeoutError" and (terminus or result.verifier_result is not None):

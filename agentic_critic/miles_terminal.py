@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import math
+import random
 from copy import deepcopy
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
@@ -51,9 +52,21 @@ async def abort(args) -> None:
 async def _run_cancellable_trial(*, args, evaluation: bool, state=None, **kwargs):
     # Harbor is optional outside the online wrapper. Cancellation must reach
     # Trial.run(), which owns sandbox deletion, rather than only aborting decode.
-    from agentic_critic.harbor_terminal import SandboxImageBuildError, run_trial
+    from agentic_critic.harbor_terminal import SandboxInfrastructureFailure, run_trial
 
-    task = asyncio.create_task(run_trial(**kwargs))
+    async def run_with_start_retry():
+        try:
+            return await run_trial(**kwargs)
+        except SandboxInfrastructureFailure as exc:
+            if not exc.retry_start or _collector_aborted(state, evaluation=evaluation):
+                raise
+            logging.getLogger(__name__).warning("Retrying Modal startup once: %s", exc)
+        await asyncio.sleep(random.uniform(1, 3))
+        if _collector_aborted(state, evaluation=evaluation):
+            return None
+        return await run_trial(**kwargs)
+
+    task = asyncio.create_task(run_with_start_retry())
     active = _ActiveTrial(task=task, args=args, evaluation=evaluation)
     _ACTIVE_TRIALS[task] = active
     try:
@@ -77,9 +90,9 @@ async def _run_cancellable_trial(*, args, evaluation: bool, state=None, **kwargs
     except Exception as exc:
         if asyncio.current_task().cancelling():
             raise asyncio.CancelledError("Terminal rollout owner was cancelled") from exc
-        if not evaluation and isinstance(exc, SandboxImageBuildError):
-            logging.getLogger(__name__).warning("Discarding rollout after sandbox image build failure: %s", exc)
-            return _DiscardedTrial("ImageBuildError", str(exc))
+        if isinstance(exc, SandboxInfrastructureFailure):
+            logging.getLogger(__name__).warning("Discarding rollout after sandbox infrastructure failure: %s", exc)
+            return _DiscardedTrial(exc.failure_type, str(exc))
         if _collector_aborted(state, evaluation=evaluation):
             # Engine abort completes before the generic collector invokes our
             # hook. Its late decode/teardown error still belongs to this tail.
@@ -277,6 +290,10 @@ async def generate(input):
         sample = deepcopy(base)
         sample.status = Sample.Status.ABORTED
         sample.reward = None
+        if input.evaluation:
+            # Keep the scheduled evaluation denominator, including failed draws.
+            keys = {getattr(args, name, None) for name in ("reward_key", "eval_reward_key")} - {None, ""}
+            sample.reward = {key: 0.0 for key in keys} if keys else 0.0
         discarded = result or _DiscardedTrial("CancelledError", "Oversampling aborted terminal trial")
         sample.metadata = {
             **metadata,

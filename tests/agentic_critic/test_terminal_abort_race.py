@@ -185,17 +185,23 @@ async def test_external_cancellation_wins_over_collector_abort(monkeypatch, tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evaluation", [False, True])
-async def test_modal_image_build_failure_at_startup(monkeypatch, tmp_path, evaluation):
+@pytest.mark.parametrize("failure_type", ["ImageBuildError", "EnvironmentStartTimeoutError", "AgentSetupTimeoutError", "RuntimeError"])
+async def test_modal_failure_at_startup(monkeypatch, tmp_path, evaluation, failure_type):
     inp = _input(tmp_path, evaluation=evaluation)
     inp.args.terminal_environment = "modal"
-    message = "Image build for im-test failed"
+    in_setup = failure_type in ("RuntimeError", "AgentSetupTimeoutError")
+    message = "Failed to start tmux session" if failure_type == "RuntimeError" else f"Modal startup failed with {failure_type}"
     trial_dir = tmp_path / "trial"
 
+    attempts = []
+    monkeypatch.setattr(miles_terminal.random, "uniform", lambda *_: 0)
+
     async def create(config):
+        attempts.append(config.trial_name)
         async def run():
             return SimpleNamespace(
-                environment_setup=object(), agent_setup=None, agent_execution=None,
-                exception_info=SimpleNamespace(exception_type="ImageBuildError", exception_message=message),
+                environment_setup=object(), agent_setup=object() if in_setup else None, agent_execution=None,
+                exception_info=SimpleNamespace(exception_type=failure_type, exception_message=message),
             )
 
         return SimpleNamespace(
@@ -204,15 +210,45 @@ async def test_modal_image_build_failure_at_startup(monkeypatch, tmp_path, evalu
         )
 
     monkeypatch.setattr(harbor_terminal.Trial, "create", create)
-    if evaluation:
-        with pytest.raises(harbor_terminal.SandboxImageBuildError, match=message):
-            await miles_terminal.generate(inp)
-    else:
-        from miles.rollout.filter_hub.common_filters import apply_aborted_filter
+    from miles.rollout.filter_hub.common_filters import apply_aborted_filter
 
-        sample = (await miles_terminal.generate(inp)).samples
-        assert sample.status == Sample.Status.ABORTED
-        assert sample.reward is None
-        assert sample.metadata["terminal_abort_failure_type"] == "ImageBuildError"
-        assert str(trial_dir) in sample.metadata["terminal_abort_reason"]
-        assert not apply_aborted_filter(inp.args, [inp.sample, sample]).keep
+    sample = (await miles_terminal.generate(inp)).samples
+    assert sample.status == Sample.Status.ABORTED
+    assert sample.reward == (0.0 if evaluation else None)
+    assert sample.metadata["terminal_abort_failure_type"] == failure_type
+    assert str(trial_dir) in sample.metadata["terminal_abort_reason"]
+    assert len(attempts) == (2 if failure_type == "EnvironmentStartTimeoutError" else 1)
+    assert not apply_aborted_filter(inp.args, [inp.sample, sample]).keep
+
+
+@pytest.mark.asyncio
+async def test_transient_start_recovers_without_replaying_group(monkeypatch):
+    attempts = []
+    async def run(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise harbor_terminal.SandboxInfrastructureFailure("ServiceError", "unavailable", retry_start=True)
+        return "finished"
+
+    monkeypatch.setattr(miles_terminal.random, "uniform", lambda *_: 0)
+    monkeypatch.setattr(harbor_terminal, "run_trial", run)
+    result = await miles_terminal._run_cancellable_trial(args=object(), evaluation=False, task_path="task")
+    assert result == "finished" and attempts == [{"task_path": "task"}] * 2
+
+
+@pytest.mark.parametrize("kind,trace,start,expected", [
+    ("ServiceError", "modal.exception.ServiceError: unavailable", True, True),
+    ("ServiceError", "modal.exception.ServiceError: unavailable", False, False),
+    ("ConnectionError", "other.module.ConnectionError: decode failed", False, None),
+    ("AuthError", "modal.exception.AuthError: bad token", True, None),
+    ("SandboxLikelyOutOfMemoryError", "", False, False),
+    ("DownloadVerifierDirError", "", False, False),
+    ("VerifierTimeoutError", "", False, False),
+    ("AgentTimeoutError", "", False, None),
+])
+def test_trial_infrastructure_error_boundaries(tmp_path, kind, trace, start, expected):
+    result = SimpleNamespace(environment_setup=object(), agent_setup=None if start else object(),
+        agent_execution=None if start else object(), exception_info=SimpleNamespace(
+            exception_type=kind, exception_message="message", exception_traceback=trace))
+    error = harbor_terminal._modal_infrastructure_failure(result, tmp_path)
+    assert (error.retry_start if error else None) is expected

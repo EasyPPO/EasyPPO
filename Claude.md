@@ -120,6 +120,8 @@ produces 89 evaluation rows. Both launchers read these JSONL files.
 | Memory and kernels | Per-GPU microbatch limits are 122,880 input tokens for the actor and 153,600 for the critic. SGLang static memory fraction 0.92; dense attention uses Triton on Blackwell or FA3 with `--gpu-arch hopper`. Trainer linear attention uses FLA. |
 | Evaluation and checkpoints | Evaluate the base and every 15 rollout batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches and at the final batch. Keep the latest three complete actor, critic and rollout checkpoints. |
 
+Modal retries a transient image startup failure once in a fresh sandbox before agent execution. A recognized sandbox failure marks the training trial as aborted, and the default async collector drops its prompt group. Evaluation records the failed draw with zero reward and its infrastructure error in sample metadata.
+
 **Launch.** Set the allocation below and run the command for the desired critic.
 The full-detach critic reads chronological history with gradients detached at
 segment boundaries. The actor-summary critic reads the actor's summarized context.
