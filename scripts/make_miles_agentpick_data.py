@@ -1,11 +1,13 @@
-"""Prepare the selected csk4gby2 Harbor tasks under a shared terminal tasks directory."""
+"""Prepare AgentPick Harbor tasks from the historical subset or the published runbook release."""
 
 import argparse
+import base64
 import csv
 import hashlib
 import json
 import random
 import re
+import shutil
 import tarfile
 import tempfile
 from pathlib import Path
@@ -22,6 +24,38 @@ _ARCHIVES = {
     "clean": "4f705d011b5d8e47174d9176a951f3b496a6d3b6aa45c352acccd64e8d3d9298",
     "calibforge_clean": "57d806342919d0a8444392edc79c88657210048f310cccff81e3ac76e7bc40c8",
 }
+
+_RELEASE_REPO = "andylizf/TerminalWorld-Seeds-Clean"
+_RELEASE_REVISION = "05ae8e94386dacbda45d94c876c4510e1b34fe3b"
+_RELEASE_ID = "3c67194ede7c8a88dee4e21b42ad39c9b5365bcf70868c60f599e32d717c8876"
+_RELEASE_TAR_SHA256 = "1b432b47d59fca9625a2497c93edfcd7723dae467b5e7eab09613463ee2e9cdd"
+
+
+# csk4gby2 data release, torchtitan 9403e73.
+_AGENT_RUNTIME_BLOCK = """
+# harbor-agent-runtime: tmux is required by the terminal agent
+RUN ( if command -v tmux >/dev/null 2>&1; then \\
+        exit 0; \\
+      elif command -v apt-get >/dev/null 2>&1; then \\
+        apt-get update && apt-get install -y tmux \\
+        && rm -rf /var/lib/apt/lists/*; \\
+      elif command -v yum >/dev/null 2>&1; then \\
+        yum install -y tmux && yum clean all; \\
+      elif command -v dnf >/dev/null 2>&1; then \\
+        dnf install -y tmux && dnf clean all; \\
+      elif command -v microdnf >/dev/null 2>&1; then \\
+        microdnf install -y tmux && microdnf clean all; \\
+      elif command -v apk >/dev/null 2>&1; then \\
+        apk add --no-cache tmux; \\
+      elif command -v pacman >/dev/null 2>&1; then \\
+        pacman -Sy --noconfirm tmux; \\
+      elif command -v zypper >/dev/null 2>&1; then \\
+        zypper install -y tmux; \\
+      else \\
+        echo 'ERROR: no supported package manager to install tmux' >&2; exit 1; \\
+      fi ) \\
+    && tmux -V
+"""
 
 
 def selected_tasks():
@@ -62,7 +96,7 @@ def _extract(root, split, ids, archive_dir):
                 tar.extract(member, root, filter="data")
 
 
-def _configure_task(task, corpus, resources):
+def _configure_task(task, resources):
     # Harbor reads this staged file at rollout time; task_records also uses it for the JSONL prompt.
     instruction = task / "instruction.md"
     raw_instruction = instruction.read_text()
@@ -70,29 +104,33 @@ def _configure_task(task, corpus, resources):
     if removed:
         instruction.write_text(prompt)
 
+    dockerfile = task / "environment/Dockerfile"
+    image_recipe = dockerfile.read_text()
     if task.name == "tw_12315":
         # Buster's pip ignores Modal's HTTP index. This version supports the task's Python 3.7.
-        dockerfile = task / "environment/Dockerfile"
-        dockerfile.write_text(dockerfile.read_text().replace(
+        image_recipe = image_recipe.replace(
             "RUN pip install --no-cache-dir msgpack\n",
             "RUN pip install --index-url https://pypi.org/simple --no-cache-dir msgpack==1.0.5\n",
-        ))
+        )
+    dockerfile.write_text(image_recipe.rstrip("\n") + "\n" + _AGENT_RUNTIME_BLOCK)
 
+    _configure_harbor(task, resources)
+
+
+def _configure_harbor(task, resources, *, run_as_root=False):
     config = task / "task.toml"
-    # TMAX packages have no task.toml. REBENCH places environment keys at the root.
-    raw = config.read_text() if corpus != "TMAX" else ""
-    if corpus == "REBENCH":
-        raw = "[environment]\n" + raw
-    document = tomlkit.parse(raw)
+    document = tomlkit.parse(config.read_text() if config.exists() else "")
+    # SWE-Rebench packages publish resource fields at the TOML root.
+    if "cpus" in document and "environment" not in document:
+        document["environment"] = tomlkit.table()
+        for key in ("cpus", "memory", "storage", "docker_image"):
+            if key in document:
+                document["environment"][key] = document.pop(key)
     if "environment" not in document:
         document["environment"] = tomlkit.table()
     env = document["environment"]
-    if corpus == "TMAX":
-        first_line = (task / "environment/Dockerfile").read_text().splitlines()[0]
-        directive, image = first_line.split()
-        if directive != "FROM":
-            raise ValueError(f"Expected a prebuilt image for {task.name}")
-        env["docker_image"] = image
+    # Harbor must build the derived image even when the upstream task names a prebuilt image.
+    env.pop("docker_image", None)
 
     # The pinned split publishes the final allocations. Harbor rejects conflicting legacy units.
     env.pop("memory", None)
@@ -106,6 +144,14 @@ def _configure_task(task, corpus, resources):
         if phase not in document:
             document[phase] = tomlkit.table()
         document[phase]["timeout_sec"] = seconds
+        if run_as_root:
+            document[phase]["user"] = "root"
+    # Modal needs its outbound filter enabled when the sandbox is created to change it between phases.
+    if env.get("allow_internet") is False or env.get("network_mode") == "no-network":
+        env.pop("allow_internet", None)
+        env["network_mode"] = "public"
+        document["agent"]["network_mode"] = "no-network"
+    document["verifier"]["network_mode"] = "public"
     config.write_text(tomlkit.dumps(document))
 
 
@@ -127,7 +173,7 @@ def prepare(tasks_dir, archive_dir):
         for index, row in enumerate(selected):
             task = root / "tasks" / row["task_id"]
             settings = resources[row["split"], task.name]
-            _configure_task(task, row["corpus"], settings)
+            _configure_task(task, settings)
             (record,) = task_records(task, dataset=_DATASET, split="train", path_root=Path(staging))
             record["metadata"].update(
                 source_index=index,
@@ -150,21 +196,81 @@ def prepare(tasks_dir, archive_dir):
     print(f"Prepared {len(records)} tasks in {dest}")
 
 
+def prepare_release(tasks_dir, archive_dir):
+    archive = archive_dir / "release.tar" if archive_dir else Path(hf_hub_download(
+        _RELEASE_REPO, f"releases/{_RELEASE_ID}/release.tar", revision=_RELEASE_REVISION, repo_type="dataset"
+    ))
+    with archive.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != _RELEASE_TAR_SHA256:
+            raise ValueError("Unexpected runbook release archive digest")
+    dest = tasks_dir / "agentpick-802"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        raise FileExistsError(f"Output already exists: {dest}")
+    with tempfile.TemporaryDirectory(dir=tasks_dir) as staging:
+        root = Path(staging) / dest.name
+        release = root / "release"
+        with tarfile.open(archive) as tar:
+            tar.extractall(release, filter="data")
+        manifest = json.loads((release / "manifest.json").read_text())
+        if manifest["release_sha256"] != _RELEASE_ID:
+            raise ValueError("Unexpected AgentPick release")
+        records = []
+        for index, line in enumerate((release / "mix.jsonl").read_text().splitlines()):
+            row = json.loads(line)
+            metadata = row["metadata"]
+            task = root / "tasks" / row["label"]
+            source = release / "sources" / metadata["corpus"] / "tasks" / row["label"]
+            shutil.copytree(source, task, ignore=lambda directory, _: {"environment"} if Path(directory) == source else set())
+            environment = task / "environment"
+            environment.mkdir()
+            for relative_path, encoded in metadata.get("build_context", {}).items():
+                target = environment / relative_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(base64.b64decode(encoded, validate=True))
+            (task / "environment/Dockerfile").write_text(metadata["dockerfile"])
+            (task / "instruction.md").write_text(row["prompt"])
+            _configure_harbor(task, metadata["resource_inputs"], run_as_root=True)
+            (record,) = task_records(task, dataset=_RELEASE_REPO, split="train", path_root=Path(staging))
+            record["metadata"].update(
+                source_index=index,
+                source_task_id=row["label"],
+                corpus=metadata["corpus"],
+                source_revision=_RELEASE_REVISION,
+                agentpick_workdir=metadata["workdir"],
+            )
+            for key in ("protected_paths", "protected_cmds"):
+                if entries := metadata["tmax"].get(key):
+                    record["metadata"][key] = entries
+            if metadata.get("entrypoint"):
+                record["metadata"]["modal_task_entrypoint"] = metadata["entrypoint"].split()[0]
+            records.append(record)
+        if len(records) != manifest["rows"]:
+            raise ValueError("Published mix length differs from its manifest")
+        write_jsonl(root / "train.jsonl", records)
+        root.rename(dest)
+    print(f"Prepared {len(records)} tasks in {dest}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--tasks-dir", type=Path)
     mode.add_argument("--list-tasks", action="store_true", help="Print the 543 historical task metadata rows as JSONL.")
+    parser.add_argument("--published-release", action="store_true", help="Prepare the complete 802-task runbook release.")
     parser.add_argument("--seed", type=int, help="Shuffle seed for --list-tasks.")
     parser.add_argument(
-        "--archive-dir", type=Path, help="Read the two pinned task archives from this local directory."
+        "--archive-dir", type=Path, help="Read the selected release tar or the two historical split archives from this directory."
     )
     args = parser.parse_args()
     if args.list_tasks:
-        if args.archive_dir:
-            parser.error("--archive-dir requires --tasks-dir")
+        if args.archive_dir or args.published_release:
+            parser.error("--archive-dir and --published-release require --tasks-dir")
         list_tasks(args.seed)
     else:
         if args.seed is not None:
             parser.error("--seed requires --list-tasks")
-        prepare(args.tasks_dir, args.archive_dir)
+        if args.published_release:
+            prepare_release(args.tasks_dir, args.archive_dir)
+        else:
+            prepare(args.tasks_dir, args.archive_dir)

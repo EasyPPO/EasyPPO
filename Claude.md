@@ -95,24 +95,24 @@ under `$RUN_DIR/<run-id>/checkpoints` and `$RUN_DIR/<run-id>/checkpoints_critic`
 
 Configure Modal credentials on the rollout and evaluation workers. Prepare
 both datasets once on the shared mount, starting with a new
-`$DATA_DIR/harbor/agentpick-csk4gby2` directory path.
+`$DATA_DIR/harbor/agentpick-802` directory path.
 
 ```bash
 python -m pip install 'harbor[modal]==0.24.0'
-python scripts/make_miles_agentpick_data.py --tasks-dir "$DATA_DIR/harbor"
+python scripts/make_miles_agentpick_data.py --published-release --tasks-dir "$DATA_DIR/harbor"
 python scripts/make_miles_terminal_data.py --dataset terminal-bench-2.1 \
   --tasks-dir "$DATA_DIR/harbor" --out "$DATA_DIR"
-wc -l "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl" "$DATA_DIR/tb21.eval.jsonl"
+wc -l "$DATA_DIR/harbor/agentpick-802/train.jsonl" "$DATA_DIR/tb21.eval.jsonl"
 ```
 
-To update an existing dataset, prepare it in a fresh directory and point all workers at that directory. Preparation applies the pinned CPU, memory and disk quotas, sets agent and verifier timeouts to 2,400 and 600 seconds, and preserves task entrypoints and protected-file checks for the Modal runner. For training, a Modal task image that fails to build after Harbor’s two creation attempts produces an ABORTED sample. Miles drops that prompt group and continues collecting the batch. The pinned AgentPick split produces 543 training rows. Terminal-Bench 2.1
+To update an existing dataset, prepare it in a fresh directory and point all workers at that directory. Preparation records the pinned CPU, memory and disk allocations in the task configuration. The current Modal backend enforces CPU and memory and uses its own sandbox filesystem capacity. Preparation sets agent and verifier timeouts to 2,400 and 600 seconds, and preserves task entrypoints and protected-file checks for the Modal runner. The pinned runbook release produces 802 training rows. Each derived environment contains the published Dockerfile and its declared build files. AgentPick runs the agent and verifier as root and scores the fresh reward.txt produced by the task verifier. Harbor allows public egress during verification and retains the task network policy during agent execution. Terminal-Bench 2.1
 produces 89 evaluation rows. Both launchers read these JSONL files.
 
 **Configure.** The two launchers use the same asynchronous PPO recipe.
 
 | Setting | Default |
 |---|---|
-| GPU allocation | 2 nodes × 8 GPUs. Actor and critic share 6, training rollout uses 8, evaluation uses 2. The split scales as 3:4:1 for eight-GPU nodes. Trainer TP1, one GPU per rollout or eval engine. |
+| GPU allocation | 2 nodes × 8 GPUs. Actor and critic share 4, training rollout uses 10, evaluation uses 2. Trainer TP1, one GPU per rollout or eval engine. |
 | Async rollout | 32 prompts × 12 trajectories per batch. Concurrency cap 1,000 (996 in complete groups of 12), 512 requests per engine. Weight publication uses `in_place`; maximum weight staleness is 4 updates. |
 | Generation | Terminus-2 XML, 16,384-token context, up to 8,192 new tokens per action. Compact at 12,000 context tokens, up to 2,048 new tokens per summary. Each compaction replaces the actor history with the original task and the visible summary, including an empty summary. Episode budget 102,400 generated tokens including summaries, with one reminder at 51,200. |
 | Updates | 150 batches, first 30 critic-only. Four critic updates of 96 trajectories per batch (LR 5e-6, value clip 0.2, value loss coefficient 0.5). One actor update per subsequent batch (LR 3e-6, one warmup step). |
@@ -131,7 +131,7 @@ Reuse the same run ID and output directory to resume that mode.
 TB=(
   --num-nodes "${NUM_NODES:-2}" --num-gpus-per-node "${GPUS_PER_NODE:-8}"
   --tasks-dir "$DATA_DIR/harbor" --model-dir "$MODEL_DIR" --output-dir "$RUN_DIR"
-  --prompt-data "$DATA_DIR/harbor/agentpick-csk4gby2/train.jsonl"
+  --prompt-data "$DATA_DIR/harbor/agentpick-802/train.jsonl"
   --eval-data "$DATA_DIR/tb21.eval.jsonl"
 )
 ```

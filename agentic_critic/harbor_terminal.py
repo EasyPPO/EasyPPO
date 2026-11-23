@@ -8,7 +8,7 @@ import asyncio
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
-from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
+from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig, VerifierConfig
 from harbor.models.verifier.result import VerifierResult
 from harbor.trial.hooks import TrialEvent
 from harbor.trial.trial import Trial
@@ -166,12 +166,20 @@ async def run_trial(
     metadata = task_metadata or {}
     environment_kwargs = {}
     if environment == "modal" and metadata.get("modal_task_entrypoint"):
-        environment_kwargs["keepalive"] = [metadata["modal_task_entrypoint"], "sleep", "infinity"]
+        keepalive = [metadata["modal_task_entrypoint"], "sleep", "infinity"]
+        if "agentpick_workdir" in metadata:
+            keepalive = ["sh", "-c", 'cd "$1" 2>/dev/null || cd /; shift; exec "$@"',
+                         "entrypoint", metadata["agentpick_workdir"], *keepalive]
+        environment_kwargs["keepalive"] = keepalive
     trial = await Trial.create(
         TrialConfig(
             task=TaskConfig(path=task_path),
             trials_dir=trials_dir,
             agent=agent,
+            verifier=VerifierConfig(
+                import_path="agentic_critic.agentpick_verifier:AgentPickVerifier",
+                kwargs={"workdir": metadata["agentpick_workdir"]},
+            ) if "agentpick_workdir" in metadata else VerifierConfig(),
             environment=EnvironmentConfig(
                 type=environment,
                 override_memory_mb=memory_mb,

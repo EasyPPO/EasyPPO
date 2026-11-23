@@ -58,7 +58,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
         if self.eval_num_gpus is None:
             self.eval_num_gpus = max(1, total // 8)
         if self.trainer_num_nodes is None and self.trainer_gpus_per_node is None:
-            trainer_gpus = max(1, 3 * total // 8)
+            trainer_gpus = 4 if (self.num_nodes, self.num_gpus_per_node) == (2, 8) else max(1, 3 * total // 8)
             # Ray places one worker per slot. Express the trainer world as equal-sized groups.
             widths = range(1, min(trainer_gpus, self.num_gpus_per_node) + 1)
             self.trainer_gpus_per_node = max(width for width in widths if trainer_gpus % width == 0)

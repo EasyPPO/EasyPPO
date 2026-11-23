@@ -72,6 +72,23 @@ judge URL embedded during preparation. Direct submissions use the launch-time
 for endpoint and reachability settings. TMAX and Terminal-Bench use their task
 verifiers and rewards.
 
+## Runbook AgentPick release
+
+Prepare the 802-task release from the TorchTitan runbook and pass its task index to the terminal launcher:
+
+```bash
+python scripts/make_miles_agentpick_data.py --published-release --tasks-dir /data/harbor
+# Launcher arguments
+# --tasks-dir /data/harbor --prompt-data /data/harbor/agentpick-802/train.jsonl
+```
+
+The importer verifies the pinned HF archive and retains the original release under
+`agentpick-802/release/`. Harbor uses the published Dockerfiles, task resources and
+verifiers. The agent inherits each task’s network policy; grading uses
+`[verifier].network_mode = "public"` on the Modal single-container backend.
+To import an already downloaded archive, add `--archive-dir` pointing to the
+directory containing `release.tar`.
+
 ## csk4gby2 terminal training subset
 
 List the 543 historical task IDs, corpora and splits in shuffled order:
@@ -99,7 +116,7 @@ TMAX resource limits come from the same release’s `data/clean.parquet`.
 To reuse local archives, pass `--archive-dir` pointing to a directory containing
 `tasks-clean.tar` and `tasks-calibforge_clean.tar`. The command creates
 `agentpick-csk4gby2/` under the tasks directory and requires that output
-subdirectory to be new. The TMAX environments use their prebuilt images.
+subdirectory to be new. Each task builds its Dockerfile with the Terminus tmux layer.
 Workers need Docker access to the source images.
 
 Pass these arguments to the existing 9B terminal launcher:
