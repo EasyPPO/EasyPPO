@@ -754,10 +754,10 @@ class TestEvalMetrics:
         logged = log_eval_rollout_data(0, make_args(log_passrate=False), data)
         assert logged["eval/fcs/terminal_infra_failures"] == 1
         assert logged["eval/fcs/terminal_infra_failures/NewRemoteError"] == 1
-        assert logged["eval/fcs"] == pytest.approx((1.0 + 0.2) / 2)
+        assert logged["eval/fcs"] == pytest.approx((1.0 + 0.2) / 3)
         assert data["fcs"]["rewards"] == [1.0, 1.0, 1.0, 0.0, 0.2]
 
-    def test_infra_failures_exclude_only_ineligible_prompts_from_pass_at_k(self, monkeypatch):
+    def test_infra_failures_score_zero_and_count_toward_pass_at_k(self, monkeypatch):
         monkeypatch.setattr("miles.ray.rollout.metrics.tracking.log", lambda *a, **kw: None)
         samples = [make_sample(group_index=i // 2, index=i, rollout_id=i) for i in range(6)]
         rewards = [None, None, None, 1.0, 0.0, 0.0]
@@ -767,13 +767,13 @@ class TestEvalMetrics:
         data = {"tb": {"samples": samples, "rewards": rewards, "n_samples_per_eval_prompt": 2}}
         args = make_args(log_passrate=True, n_samples_per_eval_prompt=2)
         logged = log_eval_rollout_data(0, args, data)
-        assert logged["eval/tb"] == pytest.approx(1 / 3)
-        assert logged["eval/tb-pass@1"] == pytest.approx(0.5)
-        assert logged["eval/tb-pass@2"] == 0
+        assert logged["eval/tb"] == pytest.approx(1 / 6)
+        assert logged["eval/tb-pass@1"] == pytest.approx(1 / 6)
+        assert logged["eval/tb-pass@2"] == pytest.approx(1 / 3)
         assert logged["eval/tb/terminal_infra_failures"] == 3
         empty = {"tb": {"samples": samples[:2], "rewards": rewards[:2]}}
         logged = log_eval_rollout_data(1, args, empty)
-        assert "eval/tb" not in logged and "eval/tb-pass@1" not in logged
+        assert logged["eval/tb"] == logged["eval/tb-pass@1"] == logged["eval/tb-pass@2"] == 0
         assert logged["eval/tb/terminal_infra_failures"] == 2
 
     def test_eval_metrics_are_not_namespaced_by_policy(self, monkeypatch):

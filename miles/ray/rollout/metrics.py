@@ -53,25 +53,12 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
         samples = dataset.get("samples")
         raw_rewards = dataset["rewards"]
         truncated = dataset.get("truncated")
-        pass_rewards = None
         if samples is not None:
             kinds = [(s.metadata or {}).get("terminal_infra_failure_type") for s in samples]
             failures = Counter(kind for kind in kinds if kind)
             log_dict[f"eval/{key}/terminal_infra_failures"] = failures.total()
             for kind, count in failures.items():
                 log_dict[f"eval/{key}/terminal_infra_failures/{kind}"] = count
-            if failures:
-                # Preserve the original prompt boundaries for pass@k. Only infra draws are ineligible.
-                pass_rewards = _episode_eval_rewards(
-                    [None if kind else (reward or 0.0) for reward, kind in zip(raw_rewards, kinds, strict=True)],
-                    samples,
-                )
-                raw_rewards = [r for r, kind in zip(raw_rewards, kinds, strict=True) if not kind]
-                samples = [s for s, kind in zip(samples, kinds, strict=True) if not kind]
-                if truncated is not None:
-                    truncated = [v for v, kind in zip(truncated, kinds, strict=True) if not kind]
-                if not samples:
-                    continue
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
 
         rewards = _episode_eval_rewards(raw_rewards, samples)
@@ -86,7 +73,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
         if args.log_passrate:
             log_dict |= dict_add_prefix(
                 compute_pass_rate(
-                    flat_rewards=rewards if pass_rewards is None else pass_rewards,
+                    flat_rewards=rewards,
                     group_size=dataset.get("n_samples_per_eval_prompt", args.n_samples_per_eval_prompt),
                 ),
                 f"eval/{key}-",

@@ -292,7 +292,7 @@ async def generate(input):
         sample.status = Sample.Status.ABORTED
         sample.reward = None
         discarded = result or _DiscardedTrial("CancelledError", "Oversampling aborted terminal trial")
-        if input.evaluation and not discarded.infrastructure:
+        if input.evaluation:
             keys = {getattr(args, name, None) for name in ("reward_key", "eval_reward_key")} - {None, ""}
             sample.reward = {key: 0.0 for key in keys} if keys else 0.0
         sample.metadata = {
