@@ -106,7 +106,7 @@ wc -l "$DATA_DIR/harbor/agentpick-802/train.jsonl" "$DATA_DIR/tb21.eval.jsonl"
 ```
 
 To update an existing dataset, prepare it in a fresh directory and point all workers at that directory. Preparation records the pinned CPU, memory and disk allocations in the task configuration. The current Modal backend enforces CPU and memory and uses its own sandbox filesystem capacity. Preparation sets agent and verifier timeouts to 2,400 and 600 seconds, and preserves task entrypoints and protected-file checks for the Modal runner. The pinned runbook release produces 802 training rows. Each derived environment contains the published Dockerfile and its declared build files. AgentPick runs the agent and verifier as root and scores the fresh reward.txt produced by the task verifier. Harbor allows public egress during verification and retains the task network policy during agent execution. Terminal-Bench 2.1
-produces 89 evaluation rows. Both launchers read these JSONL files.
+produces 89 evaluation rows pointing to `harbor/terminal-bench-2-1-tmux`. Each evaluation image extends its official task image with tmux and checks `tmux -V` during the build. Rerun the evaluation preparation command above to update an existing `tb21.eval.jsonl`. Both launchers read these JSONL files.
 
 **Configure.** The two launchers use the same asynchronous PPO recipe.
 

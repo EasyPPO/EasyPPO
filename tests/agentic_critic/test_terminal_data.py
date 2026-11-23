@@ -82,7 +82,8 @@ def make_tasks(root, count):
         task = root / "terminal-bench-2-1" / f"task-{i:03}"
         (task / "environment").mkdir(parents=True)
         (task / "tests").mkdir()
-        (task / "task.toml").write_text("")
+        (task / "task.toml").write_text('[environment]\ndocker_image = "registry.example/task:fixed"\n')
+        (task / "environment/Dockerfile").write_text("FROM scratch\n")
         (task / "instruction.md").write_text(f"Task {i}")
 
 
@@ -104,6 +105,16 @@ def test_missing_dataset_downloads_pinned_version(monkeypatch, tmp_path):
     assert len(rows) == 89
     assert all(r["metadata"]["split"] == "test" for r in rows)
     assert all((tmp_path / r["metadata"]["task_path"] / "task.toml").is_file() for r in rows)
+    for row in rows:
+        task = tmp_path / row["metadata"]["task_path"]
+        recipe = (task / "environment/Dockerfile").read_text()
+        assert recipe.startswith("FROM registry.example/task:fixed\n")
+        assert recipe.count("&& tmux -V") == 1
+        assert "docker_image" not in (task / "task.toml").read_text()
+        source = tmp_path / "terminal-bench-2-1" / task.name
+        assert "docker_image" in (source / "task.toml").read_text()
+        assert (source / "environment/Dockerfile").read_text() == "FROM scratch\n"
+        assert row["metadata"]["task_id"].endswith(f"/terminal-bench-2-1/{task.name}")
     benchmark.prepare_tb21(tmp_path, tmp_path / "prepared")
     assert len(calls) == 1  # Reuse complete local tasks without network access.
 

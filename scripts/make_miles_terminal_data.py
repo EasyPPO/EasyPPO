@@ -8,13 +8,18 @@ are downloaded at fixed versions; the complete task root is needed by workers.
 """
 
 import argparse
+import errno
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from copy import deepcopy
 from pathlib import Path
+
+import tomlkit
 
 import agentic_critic
 
@@ -28,6 +33,33 @@ _DATASETS = {
         "terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
     ),
 }
+
+
+# csk4gby2 data release, torchtitan 9403e73.
+TERMINAL_RUNTIME_LAYER = """
+# harbor-agent-runtime: tmux is required by the terminal agent
+RUN ( if command -v tmux >/dev/null 2>&1; then \\
+        exit 0; \\
+      elif command -v apt-get >/dev/null 2>&1; then \\
+        apt-get update && apt-get install -y tmux \\
+        && rm -rf /var/lib/apt/lists/*; \\
+      elif command -v yum >/dev/null 2>&1; then \\
+        yum install -y tmux && yum clean all; \\
+      elif command -v dnf >/dev/null 2>&1; then \\
+        dnf install -y tmux && dnf clean all; \\
+      elif command -v microdnf >/dev/null 2>&1; then \\
+        microdnf install -y tmux && microdnf clean all; \\
+      elif command -v apk >/dev/null 2>&1; then \\
+        apk add --no-cache tmux; \\
+      elif command -v pacman >/dev/null 2>&1; then \\
+        pacman -Sy --noconfirm tmux; \\
+      elif command -v zypper >/dev/null 2>&1; then \\
+        zypper install -y tmux; \\
+      else \\
+        echo 'ERROR: no supported package manager to install tmux' >&2; exit 1; \\
+      fi ) \\
+    && tmux -V
+"""
 
 
 def task_records(
@@ -167,8 +199,39 @@ def prepare_tb21(tasks_dir: Path, out: Path) -> list[dict]:
     rows = task_records(source, dataset="terminal-bench-2.1", split="test", path_root=tasks_dir)
     if len(rows) != 89:
         raise ValueError(f"TB2.1 validation requires all 89 tasks; found {len(rows)} under {source}")
+    # Keep the registry download intact. Harbor normally prefers docker_image to the local Dockerfile.
+    prepared = tasks_dir / "terminal-bench-2-1-tmux"
+    if not prepared.exists():
+        with tempfile.TemporaryDirectory(dir=tasks_dir) as staging:
+            staged = Path(staging) / prepared.name
+            shutil.copytree(source, staged)
+            for row in rows:
+                relative = (tasks_dir / row["metadata"]["task_path"]).relative_to(source)
+                task = staged / relative
+                config_path = task / "task.toml"
+                config = tomlkit.parse(config_path.read_text())
+                dockerfile = task / "environment/Dockerfile"
+                image = config.get("environment", {}).pop("docker_image", None)
+                if image:
+                    recipe = f"FROM {image}"
+                    config_path.write_text(tomlkit.dumps(config))
+                else:
+                    recipe = dockerfile.read_text().rstrip()
+                dockerfile.write_text(recipe + "\n" + TERMINAL_RUNTIME_LAYER)
+            try:
+                staged.rename(prepared)
+            except OSError as exc:
+                if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not prepared.is_dir():
+                    raise
+
+    for row in rows:
+        relative = (tasks_dir / row["metadata"]["task_path"]).relative_to(source)
+        row["metadata"]["task_path"] = (Path(prepared.name) / relative).as_posix()
     out.mkdir(parents=True, exist_ok=True)
-    write_jsonl(out / "tb21.eval.jsonl", rows)
+    with tempfile.TemporaryDirectory(dir=out) as staging:
+        manifest = Path(staging) / "tb21.eval.jsonl"
+        write_jsonl(manifest, rows)
+        manifest.replace(out / manifest.name)
     return rows
 
 

@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 import tomlkit
 from huggingface_hub import hf_hub_download
 
-from make_miles_terminal_data import task_records, write_jsonl
+from make_miles_terminal_data import TERMINAL_RUNTIME_LAYER, task_records, write_jsonl
 
 _DATASET = "Fzz1/tb-training-mix-agentpick"
 _REVISION = "6e3e6c8a01d84f06b9f18f61782170f4801d5330"
@@ -29,33 +29,6 @@ _RELEASE_REPO = "andylizf/TerminalWorld-Seeds-Clean"
 _RELEASE_REVISION = "05ae8e94386dacbda45d94c876c4510e1b34fe3b"
 _RELEASE_ID = "3c67194ede7c8a88dee4e21b42ad39c9b5365bcf70868c60f599e32d717c8876"
 _RELEASE_TAR_SHA256 = "1b432b47d59fca9625a2497c93edfcd7723dae467b5e7eab09613463ee2e9cdd"
-
-
-# csk4gby2 data release, torchtitan 9403e73.
-_AGENT_RUNTIME_BLOCK = """
-# harbor-agent-runtime: tmux is required by the terminal agent
-RUN ( if command -v tmux >/dev/null 2>&1; then \\
-        exit 0; \\
-      elif command -v apt-get >/dev/null 2>&1; then \\
-        apt-get update && apt-get install -y tmux \\
-        && rm -rf /var/lib/apt/lists/*; \\
-      elif command -v yum >/dev/null 2>&1; then \\
-        yum install -y tmux && yum clean all; \\
-      elif command -v dnf >/dev/null 2>&1; then \\
-        dnf install -y tmux && dnf clean all; \\
-      elif command -v microdnf >/dev/null 2>&1; then \\
-        microdnf install -y tmux && microdnf clean all; \\
-      elif command -v apk >/dev/null 2>&1; then \\
-        apk add --no-cache tmux; \\
-      elif command -v pacman >/dev/null 2>&1; then \\
-        pacman -Sy --noconfirm tmux; \\
-      elif command -v zypper >/dev/null 2>&1; then \\
-        zypper install -y tmux; \\
-      else \\
-        echo 'ERROR: no supported package manager to install tmux' >&2; exit 1; \\
-      fi ) \\
-    && tmux -V
-"""
 
 
 def selected_tasks():
@@ -112,7 +85,7 @@ def _configure_task(task, resources):
             "RUN pip install --no-cache-dir msgpack\n",
             "RUN pip install --index-url https://pypi.org/simple --no-cache-dir msgpack==1.0.5\n",
         )
-    dockerfile.write_text(image_recipe.rstrip("\n") + "\n" + _AGENT_RUNTIME_BLOCK)
+    dockerfile.write_text(image_recipe.rstrip("\n") + "\n" + TERMINAL_RUNTIME_LAYER)
 
     _configure_harbor(task, resources)
 
