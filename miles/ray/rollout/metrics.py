@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from collections.abc import Callable
 from numbers import Number
 from typing import Any
@@ -58,6 +59,12 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
             rewards = [0.0 if r is None else r for r in rewards]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
+            failures = Counter(
+                kind for sample in samples if (kind := (sample.metadata or {}).get("terminal_infra_failure_type"))
+            )
+            log_dict[f"eval/{key}/terminal_infra_failures"] = failures.total()
+            for kind, count in failures.items():
+                log_dict[f"eval/{key}/terminal_infra_failures/{kind}"] = count
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]

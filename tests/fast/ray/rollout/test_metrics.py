@@ -749,8 +749,11 @@ class TestEvalMetrics:
             sample = make_sample(group_index=0, index=index, rollout_id=index)
             sample.metadata.update(segment=segment, harbor_rewards={"reward": rewards[len(samples)]})
             samples.append(sample)
+        samples[3].metadata["terminal_infra_failure_type"] = "NewRemoteError"
         data = {"fcs": {"samples": samples, "rewards": rewards}}
         logged = log_eval_rollout_data(0, make_args(log_passrate=False), data)
+        assert logged["eval/fcs/terminal_infra_failures"] == 1
+        assert logged["eval/fcs/terminal_infra_failures/NewRemoteError"] == 1
         assert logged["eval/fcs"] == pytest.approx((1.0 + 0.0 + 0.2) / 3)
         assert data["fcs"]["rewards"] == [1.0, 1.0, 1.0, 0.0, 0.2]
 

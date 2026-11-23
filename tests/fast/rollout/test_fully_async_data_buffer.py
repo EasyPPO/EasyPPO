@@ -511,16 +511,25 @@ class TestPutTimeFilters:
         assert under_test.unused == [(group, UnusedReason.ABORTED)]
         assert under_test.buffer.get_metrics()["rollout/fully_async/aborted_groups_filtered"] == 1
 
-    async def test_a_group_with_one_aborted_sample_among_finished_ones_is_refused_whole(self) -> None:
+    async def test_a_group_with_one_aborted_sample_among_finished_ones_is_refused_whole(self, monkeypatch) -> None:
         """The group is the training unit, so a partial one is not something the trainer can use."""
         under_test = _make_buffer()
         group = _make_finished_group(1)
         group[-1].status = Sample.Status.ABORTED
+        group[-1].metadata["terminal_infra_failure_type"] = "NewRemoteError"
+        logged = []
+        monkeypatch.setattr("miles.rollout.fully_async_data_buffer.tracking.log",
+                            lambda args, metrics, step_key: logged.append(metrics))
 
         await _put(under_test.buffer, group)
 
         assert under_test.unused == [(group, UnusedReason.ABORTED)]
-        assert under_test.buffer.get_metrics()["rollout/fully_async/queue_size"] == 0
+        metrics = under_test.buffer.get_metrics()
+        assert metrics["rollout/fully_async/queue_size"] == 0
+        assert metrics["rollout/fully_async/terminal_infra_failures"] == 1
+        assert metrics["rollout/fully_async/terminal_infra_failures/NewRemoteError"] == 1
+        assert logged == [{"infra/failed_draws": 1, "infra/by_type/NewRemoteError": 1}]
+        assert under_test.buffer.get_metrics()["rollout/fully_async/terminal_infra_failures"] == 0
 
     async def test_a_group_rejected_by_the_dynamic_filter_never_reaches_the_unused_handler(self) -> None:
         """A filtered group carries no usable gradient signal, so regenerating it would only burn rollout."""

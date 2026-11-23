@@ -5,11 +5,12 @@ in-process episode; no global registry or external agent server is needed.
 """
 
 import asyncio
-import re
+import logging
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig, VerifierConfig
+from harbor.models.trial.result import ExceptionInfo
 from harbor.models.verifier.result import VerifierResult
 from harbor.trial.hooks import TrialEvent
 from harbor.trial.trial import Trial
@@ -26,60 +27,32 @@ class SandboxInfrastructureFailure(RuntimeError):
         self.retry_start = retry_start
 
 
-# Harbor 0.24 serializes the traceback and emits plain RuntimeError from its
-# sandbox operations. Match the raising frame, not caller frames around an SDK error.
-_MODAL_OPERATION_FRAME = re.compile(
-    r'^  File "([^"]+)", line [0-9]+, in ([^\n]+)$', re.MULTILINE
-)
-_MODAL_SANDBOX_OPERATIONS = {
-    "start", "attach", "is_dir", "is_file", "_apply_network_policy",
-    "_wait_for_docker_daemon", "_wait_for_main_container", "_sdk_exec",
-    "_sdk_upload_file", "_sdk_upload_dir", "_sdk_download_file", "_sdk_download_dir",
-}
+_MODEL_ERROR_NOTE = "Miles model decode callback failed (outside sandbox isolation)"
 
 
-def _raised_by_modal_sandbox(error):
-    if error.exception_type != "RuntimeError":
-        return False
-    frames = _MODAL_OPERATION_FRAME.findall(getattr(error, "exception_traceback", ""))
-    if not frames:
-        return False
-    path, function = frames[-1]
-    return path.endswith("/harbor/environments/modal.py") and function in _MODAL_SANDBOX_OPERATIONS
-
-
-def _modal_infrastructure_failure(result, trial_dir):
-    error = result.exception_info
-    kind, message = error.exception_type, error.exception_message
-    starting = result.environment_setup is not None and result.agent_setup is None and result.agent_execution is None
-    setup = result.agent_setup is not None and result.agent_execution is None
-    # Harbor serializes exceptions; distinguish the SDK's errors from application errors of the same name.
-    provider_error = kind in {
-        "ConnectionError", "InternalError", "InternalFailure", "ResourceExhaustedError",
-        "ServiceError", "SandboxTerminatedError", "SandboxTimeoutError", "TimeoutError",
-        "MountUploadTimeoutError", "VolumeUploadTimeoutError",
-    } and f"modal.exception.{kind}:" in getattr(error, "exception_traceback", "")
-    retry_start = False
-    if provider_error or (starting and kind == "EnvironmentStartTimeoutError"):
-        retry_start = starting
-    elif starting and kind == "ImageBuildError":
-        retry_start = any(text in message.lower() for text in (
+def _modal_trial_failure(error, location, *, starting):
+    kind = error.exception_type
+    message = error.exception_message
+    trace = getattr(error, "exception_traceback", "")
+    # Global failures must reach the owner even if Harbor serialized or wrapped them.
+    if _MODEL_ERROR_NOTE in trace or kind in {
+        "AuthError", "PermissionDeniedError", "MissingExtraError", "ModuleNotFoundError",
+        "VersionError", "CancelledError", "KeyboardInterrupt", "SystemExit",
+    } or any(f"modal.exception.{name}:" in trace for name in ("AuthError", "PermissionDeniedError")):
+        return None
+    # The allowlist controls only whether a fresh sandbox is worth trying.
+    transient = kind == "EnvironmentStartTimeoutError" or (
+        kind in {"ConnectionError", "InternalError", "InternalFailure", "ResourceExhaustedError",
+                 "ServiceError", "SandboxTerminatedError", "SandboxTimeoutError", "TimeoutError",
+                 "MountUploadTimeoutError", "VolumeUploadTimeoutError"}
+        and f"modal.exception.{kind}:" in trace
+    )
+    if kind == "ImageBuildError":
+        transient = any(text in message.lower() for text in (
             "temporary failure resolving", "connection timed out", "connection reset",
             "service unavailable", "too many requests", "gateway timeout",
         ))
-    elif not (
-        kind in {"SandboxLikelyOutOfMemoryError", "VerifierTimeoutError", "DownloadVerifierDirError",
-                 TaskIntegrityCheckError.__name__}
-        or _raised_by_modal_sandbox(error)
-        or (setup and kind == "AgentSetupTimeoutError")
-        or (setup and kind == "RuntimeError" and message.startswith("Failed to start tmux session"))
-        or (starting and kind == "RuntimeError" and message.startswith((
-            "Docker daemon not ready after ", "Main container not running after ",
-            "docker compose build failed:", "docker compose up failed:",
-        )))
-    ):
-        return None
-    return SandboxInfrastructureFailure(kind, f"{trial_dir}: {message}", retry_start=retry_start)
+    return SandboxInfrastructureFailure(kind, f"{location}: {message}", retry_start=starting and transient)
 
 
 class MiniSweTerminalAgent(BaseAgent):
@@ -196,24 +169,39 @@ async def run_trial(
             keepalive = ["sh", "-c", 'cd "$1" 2>/dev/null || cd /; shift; exec "$@"',
                          "entrypoint", metadata["agentpick_workdir"], *keepalive]
         environment_kwargs["keepalive"] = keepalive
-    trial = await Trial.create(
-        TrialConfig(
-            task=TaskConfig(path=task_path),
-            trials_dir=trials_dir,
-            agent=agent,
-            verifier=VerifierConfig(
-                import_path="agentic_critic.agentpick_verifier:AgentPickVerifier",
-                kwargs={"workdir": metadata["agentpick_workdir"]},
-            ) if "agentpick_workdir" in metadata else VerifierConfig(),
-            environment=EnvironmentConfig(
-                type=environment,
-                override_memory_mb=memory_mb,
-                kwargs=environment_kwargs,
-                extra_docker_compose=[Path(path) for path in docker_compose],
-            ),
-        )
+    trial_config = TrialConfig(
+        task=TaskConfig(path=task_path),
+        trials_dir=trials_dir,
+        agent=agent,
+        verifier=VerifierConfig(
+            import_path="agentic_critic.agentpick_verifier:AgentPickVerifier",
+            kwargs={"workdir": metadata["agentpick_workdir"]},
+        ) if "agentpick_workdir" in metadata else VerifierConfig(),
+        environment=EnvironmentConfig(
+            type=environment,
+            override_memory_mb=memory_mb,
+            kwargs=environment_kwargs,
+            extra_docker_compose=[Path(path) for path in docker_compose],
+        ),
     )
-    trial.agent.bind(tokenizer=tokenizer, decode=decode, config=config)
+    try:
+        trial = await Trial.create(trial_config)
+    except Exception as exc:
+        if environment == "modal":
+            failure = _modal_trial_failure(ExceptionInfo.from_exception(exc), task_path, starting=False)
+            if failure is not None:
+                logging.getLogger(__name__).exception("Could not initialize Modal trial for %s", task_path)
+                raise failure from exc
+        raise
+
+    async def model_decode(*args, **kwargs):
+        try:
+            return await decode(*args, **kwargs)
+        except Exception as exc:
+            exc.add_note(_MODEL_ERROR_NOTE)
+            raise
+
+    trial.agent.bind(tokenizer=tokenizer, decode=model_decode if environment == "modal" else decode, config=config)
     if agent_protocol == "fcs-submit":
         trial.agent.bind_judge(
             verifier_env=trial.task.config.verifier.env,
@@ -243,25 +231,35 @@ async def run_trial(
 
         trial.add_hook(TrialEvent.AGENT_START, capture_baseline)
         trial.add_hook(TrialEvent.AGENT_END, check_baseline)
-    result = await trial.run()
+    try:
+        result = await trial.run()
+    except Exception as exc:
+        if environment == "modal":
+            failure = _modal_trial_failure(ExceptionInfo.from_exception(exc), trial.paths.trial_dir, starting=False)
+            if failure is not None:
+                logging.getLogger(__name__).exception("Modal trial failed at %s", trial.paths.trial_dir)
+                raise failure from exc
+        raise
     trace = trial.agent.trace
     if result.exception_info is not None:
         error = result.exception_info
-        if environment == "modal":
-            failure = _modal_infrastructure_failure(result, trial.paths.trial_dir)
-            if failure is not None:
-                raise failure
-        # Harbor still verifies after an agent timeout. Preserve that outcome,
-        # but do not silently treat setup or verifier failures as task failures.
         if error.exception_type == "AgentTimeoutError" and (terminus or result.verifier_result is not None):
             trace.exit_status = "AgentTimeoutError"
             trace.truncated = True
         else:
+            if environment == "modal":
+                starting = result.environment_setup is not None and result.agent_setup is None and result.agent_execution is None
+                failure = _modal_trial_failure(error, trial.paths.trial_dir, starting=starting)
+                if failure is not None:
+                    raise failure
             raise RuntimeError(
                 f"Harbor trial {trial.config.trial_name}: {error.exception_type}: {error.exception_message}"
             )
     if terminus and trace.exit_status != "Submitted":
         return trace, {}, str(trial.paths.trial_dir)
     if result.verifier_result is None or result.verifier_result.rewards is None:
-        raise RuntimeError(f"Harbor trial {trial.config.trial_name} returned no verifier reward")
+        message = f"Harbor trial {trial.paths.trial_dir} returned no verifier reward"
+        if environment == "modal":
+            raise SandboxInfrastructureFailure("MissingVerifierReward", message)
+        raise RuntimeError(message)
     return trace, result.verifier_result.rewards, str(trial.paths.trial_dir)

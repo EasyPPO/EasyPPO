@@ -28,6 +28,7 @@ _ACTIVE_TRIALS: dict[asyncio.Task, _ActiveTrial] = {}
 class _DiscardedTrial:
     failure_type: str
     reason: str
+    infrastructure: bool = False
 
 
 def _collector_aborted(state, *, evaluation: bool) -> bool:
@@ -92,7 +93,7 @@ async def _run_cancellable_trial(*, args, evaluation: bool, state=None, **kwargs
             raise asyncio.CancelledError("Terminal rollout owner was cancelled") from exc
         if isinstance(exc, SandboxInfrastructureFailure):
             logging.getLogger(__name__).warning("Discarding rollout after sandbox infrastructure failure: %s", exc)
-            return _DiscardedTrial(exc.failure_type, str(exc))
+            return _DiscardedTrial(exc.failure_type, str(exc), infrastructure=True)
         if _collector_aborted(state, evaluation=evaluation):
             # Engine abort completes before the generic collector invokes our
             # hook. Its late decode/teardown error still belongs to this tail.
@@ -300,6 +301,8 @@ async def generate(input):
             "terminal_abort_failure_type": discarded.failure_type,
             "terminal_abort_reason": discarded.reason,
         }
+        if discarded.infrastructure:
+            sample.metadata["terminal_infra_failure_type"] = discarded.failure_type
         return GenerateFnOutput(samples=sample)
     trace, rewards, trial_dir = result
     if agent_protocol in ("terminus-2", "terminus-2-etl") and trace.exit_status != "Submitted":

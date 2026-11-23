@@ -12,6 +12,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -28,6 +29,7 @@ from miles.rollout.filter_hub.common_filters import (
 )
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
+from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -167,6 +169,8 @@ class DefaultDataBuffer(DataBuffer):
         self._current_version: int | None = None
 
         self._metric_gatherer = MetricGatherer()
+        self._terminal_infra_failures: Counter[str] = Counter()
+        self._terminal_infra_total: Counter[str] = Counter()
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
@@ -191,6 +195,18 @@ class DefaultDataBuffer(DataBuffer):
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
+            failures = Counter(
+                kind for sample in iter_samples(input.group)
+                if (kind := (sample.metadata or {}).get("terminal_infra_failure_type"))
+            )
+            if failures:
+                self._terminal_infra_failures.update(failures)
+                self._terminal_infra_total.update(failures)
+                # Report on group completion even when no usable training batch can be assembled.
+                tracking.log(self._args, {
+                    "infra/failed_draws": self._terminal_infra_total.total(),
+                    **{f"infra/by_type/{kind}": self._terminal_infra_total[kind] for kind in failures},
+                }, step_key="infra/failed_draws")
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
             return False
 
@@ -287,6 +303,8 @@ class DefaultDataBuffer(DataBuffer):
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         metrics = {
+            f"{prefix}terminal_infra_failures": self._terminal_infra_failures.total(),
+            **{f"{prefix}terminal_infra_failures/{kind}": n for kind, n in self._terminal_infra_failures.items()},
             f"{prefix}queue_size": len(self._buffer),
             f"{prefix}aborted_groups_filtered": self._metric_aborted_groups,
             f"{prefix}stale_groups_filtered": self._metric_stale_groups,
@@ -324,6 +342,7 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_tokens = 0
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
+        self._terminal_infra_failures.clear()
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
 

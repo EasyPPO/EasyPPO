@@ -239,24 +239,25 @@ async def test_transient_start_recovers_without_replaying_group(monkeypatch):
 @pytest.mark.parametrize("kind,trace,start,expected", [
     ("ServiceError", "modal.exception.ServiceError: unavailable", True, True),
     ("ServiceError", "modal.exception.ServiceError: unavailable", False, False),
-    ("ConnectionError", "other.module.ConnectionError: decode failed", False, None),
+    ("ConnectionError", harbor_terminal._MODEL_ERROR_NOTE, False, None),
     ("AuthError", "modal.exception.AuthError: bad token", True, None),
     ("SandboxLikelyOutOfMemoryError", "", False, False),
     ("DownloadVerifierDirError", "", False, False),
     ("VerifierTimeoutError", "", False, False),
-    ("AgentTimeoutError", "", False, None),
+    ("PreviouslyUnknownFailure", "", False, False),
 ])
 def test_trial_infrastructure_error_boundaries(tmp_path, kind, trace, start, expected):
     result = SimpleNamespace(environment_setup=object(), agent_setup=None if start else object(),
         agent_execution=None if start else object(), exception_info=SimpleNamespace(
             exception_type=kind, exception_message="message", exception_traceback=trace))
-    error = harbor_terminal._modal_infrastructure_failure(result, tmp_path)
+    error = harbor_terminal._modal_trial_failure(result.exception_info, tmp_path, starting=start)
     assert (error.retry_start if error else None) is expected
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evaluation", [False, True])
 @pytest.mark.parametrize("kind, frame", [
+    ("NeverBeforeSeenError", "new_remote_method"),
     ("RuntimeError", "_sdk_exec"),
     ("RuntimeError", "_sdk_upload_dir"),
     ("RuntimeError", "_sdk_download_dir"),
@@ -284,8 +285,39 @@ async def test_task_environment_failure_isolated_after_start(monkeypatch, tmp_pa
     assert not apply_aborted_filter(inp.args, [inp.sample, sample]).keep
 
 
-def test_modal_caller_does_not_hide_unrelated_failure():
-    trace = ('  File "/lib/harbor/environments/modal.py", line 1, in _sdk_exec\n'
-             '  File "/app/model.py", line 2, in decode\n')
-    error = SimpleNamespace(exception_type="RuntimeError", exception_traceback=trace)
-    assert not harbor_terminal._raised_by_modal_sandbox(error)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["create", "run", "model"])
+async def test_new_modal_error_boundary(monkeypatch, tmp_path, phase):
+    class PreviouslyUnseenError(Exception):
+        pass
+
+    inp = _input(tmp_path)
+    inp.args.terminal_environment = "modal"
+
+    async def fail(*args, **kwargs):
+        raise PreviouslyUnseenError("new error")
+
+    async def create(config):
+        if phase == "create":
+            return await fail()
+        bound = {}
+        async def run():
+            if phase == "run":
+                return await fail()
+            try:
+                await bound["decode"]([1], 2)
+            except Exception as exc:
+                return SimpleNamespace(environment_setup=object(), agent_setup=object(), agent_execution=object(),
+                                       exception_info=harbor_terminal.ExceptionInfo.from_exception(exc))
+        return SimpleNamespace(config=config, agent=SimpleNamespace(bind=lambda **kw: bound.update(kw), trace=None),
+                               add_hook=lambda *a: None, run=run, paths=SimpleNamespace(trial_dir=tmp_path))
+
+    monkeypatch.setattr(harbor_terminal.Trial, "create", create)
+    monkeypatch.setattr(http_utils, "post", fail)
+    if phase == "model":
+        with pytest.raises(RuntimeError, match="PreviouslyUnseenError"):
+            await miles_terminal.generate(inp)
+    else:
+        sample = (await miles_terminal.generate(inp)).samples
+        assert sample.status == Sample.Status.ABORTED and sample.reward is None
+        assert sample.metadata["terminal_infra_failure_type"] == "PreviouslyUnseenError"
