@@ -93,6 +93,8 @@ def main(default_mode=None):
     parser.add_argument("--tensor-model-parallel-size", type=int, default=ScriptArgs.tensor_model_parallel_size)
     parser.add_argument("--eval-num-gpus", type=int, default=ScriptArgs.eval_num_gpus)
     parser.add_argument("--async-max-concurrent-samples", type=int, default=ScriptArgs.async_max_concurrent_samples)
+    parser.add_argument("--use-distributed-post", action=argparse.BooleanOptionalAction, default=True,
+                        help="Dispatch rollout HTTP POSTs through Ray actors.")
     parser.add_argument("--ray-hostfile", default=ScriptArgs.ray_hostfile)
     parser.add_argument("--run-id", help="Reuse the same ID and output directory to resume.")
     parser.add_argument("--model-dir", required=True)
@@ -139,6 +141,7 @@ def main(default_mode=None):
         script_path=__file__,
         extra_args=(
             "--fully-async",
+            *(("--use-distributed-post",) if opts.use_distributed_post else ()),
             "--max-keep", "3",
             "--use-checkpoint-opt-param-scheduler",
             "--critic-max-tokens-per-gpu", str(args.critic_max_tokens_per_gpu),

@@ -351,6 +351,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     invocation, = backend.training
     args = shlex.split(invocation["train_args"])
     assert invocation["train_script"] == "train_async.py"
+    assert args.count("--use-distributed-post") == 1
     assert "--colocate" not in args and "--offload-rollout" not in args
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
     assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
@@ -385,12 +386,13 @@ def test_terminus_score_centering(monkeypatch, tmp_path, mode, enabled):
 
     backend = _recording_backend(monkeypatch, _recipe)
     monkeypatch.setattr(sys, "argv", [
-        "run", "--score-centering" if enabled else "--no-score-centering", "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
+        "run", "--no-use-distributed-post", "--score-centering" if enabled else "--no-score-centering", "--tasks-dir", str(tmp_path), "--model-dir", str(tmp_path),
         "--output-dir", str(tmp_path), "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl",
     ])
     terminus_ppo.main(mode)
     invocation, = backend.training
     args = shlex.split(invocation["train_args"])
+    assert "--use-distributed-post" not in args
     if not enabled:
         assert "--score-centering-is" not in args and "--rollout-top-logprobs-num" not in args
         return
