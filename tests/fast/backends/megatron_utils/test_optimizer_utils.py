@@ -266,3 +266,74 @@ class TestWhatAResetRefusesToWalk:
             optimizer_utils.reset_optimizer_state(
                 optimizer, stream_optimizer_state_to_disk=False, chunked_optimizer_state_offload=False
             )
+
+
+@pytest.mark.parametrize("initial_steps", [0, 2])
+def test_cpu_adam_checkpoint_before_next_update(monkeypatch, tmp_path, initial_steps):
+    utils = pytest.importorskip("miles.backends.megatron_utils.optimizer_utils")
+    mcore = pytest.importorskip("megatron.core.optimizer.distrib_optimizer")
+    # CPU-only shards need neither a CUDA stream nor the GPU copy-back hook.
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: None)
+    monkeypatch.setattr(mcore.HybridDeviceOptimizer, "_register_param_copy_back_gpu_hook", lambda self: None)
+
+    def make_optimizer():
+        param = torch.tensor([1.0, 2.0], dtype=torch.bfloat16)
+        group = dict(params=[param], wd_mult=1, lr_mult=1, is_expert_parallel=False, is_decoupled_lr=False)
+        inner = mcore.HybridDeviceOptimizer(
+            [group],
+            cpu_optimizer_cls=torch.optim.AdamW,
+            param_update_in_fp32=True,
+            overlap_cpu_optimizer_d2h_h2d=False,
+            lr=0.01,
+            weight_decay=0.1,
+            fused=True,
+        )
+        dist_opt = mcore.DistributedOptimizer.__new__(mcore.DistributedOptimizer)
+        dist_opt.optimizer = inner
+        dist_opt.model_param_group_index_map = {param: (0, 0)}
+        dist_opt.gbuf_ranges = [{param.dtype: [{"param_map": {param: {"gbuf_local": mcore.Range(0, 2)}}}]}]
+        dist_opt.per_bucket_numel = dist_opt.per_bucket_numel_unpadded = [2]
+        dist_opt.config = SimpleNamespace(use_precision_aware_optimizer_no_fp8_or_ds_fp8=True, fp16=False, low_memory_resume=False)
+        dist_opt.ddp_config = SimpleNamespace(use_megatron_fsdp=False)
+        dist_opt.grad_scaler = dist_opt._optimizer_state_offloader = None
+        return dist_opt, param
+
+    def update(member, param):
+        inner = member.optimizer
+        master = inner.param_to_inner_param[param]
+        master.grad = torch.tensor([0.25, -0.5])
+        inner.cpu_optimizers[0].step()
+        inner.cpu_optimizers[0].zero_grad()
+        inner._sync_sub_optimizers_state_to_hdo()
+        return master
+
+    source, param = make_optimizer()
+    (inner,) = utils.cpu_adam_checkpoint_optimizers(source)
+    master = inner.param_to_inner_param[param]
+    master.add_(0.000123)  # Ensure a bf16 model copy cannot recreate the exact master.
+    for _ in range(initial_steps):
+        update(source, param)
+    before = master.clone()
+    utils.prepare_cpu_adam_checkpoint(inner)
+    torch.testing.assert_close(before, master, rtol=0, atol=0)
+    assert master.grad is None and inner.state[param]["step"].item() == initial_steps
+    saved = source.state_dict()
+    saved.update(param_state=source.get_parameter_state_dp_reshardable(), param_state_sharding_type="dp_reshardable")
+    path = tmp_path / "optimizer.pt"
+    torch.save(saved, path)
+    target, target_param = make_optimizer()
+    utils.prepare_cpu_adam_checkpoint(target.optimizer)
+    target.load_state_dict(torch.load(path, weights_only=False))
+    utils.restore_cpu_adam_masters(target.optimizer)
+    torch.testing.assert_close(target.optimizer.param_to_inner_param[target_param], before, rtol=0, atol=0)
+    if not initial_steps:
+        baseline = before.clone()
+        expected = torch.optim.AdamW([baseline], lr=0.01, weight_decay=0.1, fused=True)
+        baseline.grad = torch.tensor([0.25, -0.5])
+        expected.step()
+    actual = update(target, target_param)
+    torch.testing.assert_close(actual, update(source, param), rtol=0, atol=0)
+    if not initial_steps:
+        torch.testing.assert_close(actual, baseline, rtol=0, atol=0)
+    for key in ("exp_avg", "exp_avg_sq", "step"):
+        torch.testing.assert_close(target.optimizer.state[target_param][key], inner.state[param][key], rtol=0, atol=0)

@@ -17,6 +17,11 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.global_vars import get_args
 
 from miles.backends.megatron_utils.megatron_config import has_hf_checkpoint
+from miles.backends.megatron_utils.optimizer_utils import (
+    cpu_adam_checkpoint_optimizers,
+    prepare_cpu_adam_checkpoint,
+    restore_cpu_adam_masters,
+)
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
@@ -149,6 +154,13 @@ def load_checkpoint(
         # Use the existing pretrained-load exclusion for the native format as
         # well: an actor vocabulary projection is not a critic value head.
         head_context = _hide_critic_value_head(ddp_model) if initialize_value_head else nullcontext()
+        hybrid_optimizers = ()
+        if getattr(args, "optimizer_cpu_offload", False) and not (
+            args.finetune or args.no_load_optim or skip_load_to_model_and_opt
+        ):
+            hybrid_optimizers = tuple(cpu_adam_checkpoint_optimizers(optimizer))
+            for inner in hybrid_optimizers:
+                prepare_cpu_adam_checkpoint(inner)
         with head_context:
             result_iteration, _ = _load_checkpoint_megatron(
                 ddp_model=ddp_model,
@@ -157,6 +169,8 @@ def load_checkpoint(
                 checkpointing_context=checkpointing_context,
                 skip_load_to_model_and_opt=skip_load_to_model_and_opt,
             )
+        for inner in hybrid_optimizers:
+            restore_cpu_adam_masters(inner)
         if ckpt_step is not None and not args.finetune and result_iteration != ckpt_step:
             raise ValueError(f"Requested checkpoint step {ckpt_step}, but Megatron loaded step {result_iteration}")
     else:
