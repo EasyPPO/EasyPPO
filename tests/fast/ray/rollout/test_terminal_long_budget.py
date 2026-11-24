@@ -264,3 +264,39 @@ async def test_terminus_observations_preserve_tmux_output(tmp_path):
         assert same == "Current Terminal Screen:\n" + tmux("capture-pane", "-p", "-t", target)
     finally:
         tmux("kill-server")
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_terminus_writes_final_harbor_trajectory_once(monkeypatch, tmp_path, cancelled):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from harbor.agents.terminus_2.terminus_2 import Terminus2
+    from harbor.models.agent.context import AgentContext
+    from harbor.models.trajectories import Step
+
+    from agentic_critic.harbor_terminus import MilesTerminus2
+
+    async def two_turns(self, **kwargs):
+        for turn in (2, 3):
+            self._trajectory_steps.append(Step(step_id=turn, source="agent", message=f"turn {turn}"))
+            self._dump_trajectory()
+            assert not (tmp_path / "trajectory.json").exists()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(Terminus2, "_run_agent_loop", two_turns)
+    agent = MilesTerminus2(logs_dir=tmp_path, model_name="Qwen/Qwen3.5-9B", parser_name="xml")
+    agent.bind(tokenizer=Tokenizer(), decode=None, config=TerminalConfig())
+    agent._session = SimpleNamespace(get_incremental_output=AsyncMock(return_value="$"))
+    run = agent.run("task", None, AgentContext())
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await run
+    else:
+        await run
+    steps = json.loads((tmp_path / "trajectory.json").read_text())["steps"]
+    assert [s["message"] for s in steps[1:]] == ["turn 2", "turn 3"]
+    assert (tmp_path / "easyppo-trajectory.json").exists()

@@ -207,6 +207,18 @@ fi
         label = "New Terminal Output" if mode == "new" else "Current Terminal Screen"
         return f"{label}:\n{output}"
 
+    async def _run_agent_loop(self, *args, **kwargs):
+        # Harbor's run() also dumps the complete trajectory in its finally block.
+        self._in_agent_loop = True
+        try:
+            return await super()._run_agent_loop(*args, **kwargs)
+        finally:
+            self._in_agent_loop = False
+
+    def _dump_trajectory(self):
+        if not getattr(self, "_in_agent_loop", False):
+            super()._dump_trajectory()
+
     async def _query_llm(self, chat, prompt, original_instruction="", session=None):
         query = Terminus2._query_llm
         # Episode budgets are terminal. Keep Harbor's transport retries and XML recovery.
