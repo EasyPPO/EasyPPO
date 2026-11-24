@@ -73,26 +73,7 @@ class MilesTerminalLLM(BaseLLM):
         self._vocab = tokenizer.get_vocab()
         self._last_request = None
         self._prepared_request = None
-        self._context_tokens = 0
-        self._warned = False
         self._episode_budget_notified = False
-
-    def context_notice(self):
-        used, capacity = self._context_tokens, self.get_model_context_limit()
-        if used < capacity * 0.5:
-            return ""
-        remaining = max(0, capacity - used)
-        pct = min(100, round(100 * used / capacity))
-        if self._warned:
-            return f"[Context: {pct}% used, about {remaining:,} tokens remain]"
-        self._warned = True
-        return (
-            f"WARNING: You have used {pct}% of your context window "
-            f"({used:,} of {capacity:,} tokens); about {remaining:,} tokens remain. "
-            "If it runs out, the episode ends before you can submit and the task counts as failed. "
-            "Avoid commands that print large output, finish the essential work, verify it, "
-            "and mark the task complete."
-        )
 
     def get_model_context_limit(self):
         return self.session.options.max_context_tokens
@@ -163,11 +144,10 @@ class MilesTerminalLLM(BaseLLM):
         self._prepared_request = None
         visible, reasoning = self._response_parts(result.tokens)
         recorded = session.trace.calls[-1]
-        self._context_tokens = recorded["prompt_tokens"] + len(result.tokens)
         if result.finish_reason == "length":
             if session.trace.generated_tokens >= session.options.max_total_tokens:
                 raise EpisodeLimit("EpisodeTokenLimit")
-            if self._context_tokens >= self.get_model_context_limit() - 64:
+            if recorded["prompt_tokens"] + len(result.tokens) >= self.get_model_context_limit() - 64:
                 raise ContextLengthExceededError("Turn reached the context limit")
             raise OutputLengthExceededError("Turn reached the output limit", truncated_response=visible)
         return LLMResponse(
@@ -220,9 +200,7 @@ fi
         history, cursor, alternate, pane = header.split()
         self._previous_pane = (int(history), int(cursor), int(alternate), pane)
         label = "New Terminal Output" if mode == "new" else "Current Terminal Screen"
-        observation = f"{label}:\n{output}"
-        notice = self._llm.context_notice()
-        return f"{observation.rstrip()}\n\n{notice}\n" if notice else observation
+        return f"{label}:\n{output}"
 
     async def _query_llm(self, chat, prompt, original_instruction="", session=None):
         query = Terminus2._query_llm
