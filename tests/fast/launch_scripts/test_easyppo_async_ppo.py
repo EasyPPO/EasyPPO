@@ -372,8 +372,8 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     for flag, value in {"--critic-context-mode": mode, "--critic-num-steps-per-rollout": "4",
                         "--sglang-attention-backend": flash, "--linear-attention-backend": "fla",
                         "--terminal-environment": "modal", "--terminal-agent-protocol": "terminus-2",
-                        "--terminal-compact-threshold": "12000", "--terminal-max-total-tokens": "102400",
-                        "--terminal-max-context-tokens": "16384", "--rollout-max-context-len": "16384",
+                        "--terminal-compact-threshold": "16384", "--terminal-max-total-tokens": "102400",
+                        "--terminal-max-context-tokens": "32768", "--rollout-max-context-len": "32768",
                         "--terminal-max-new-tokens": "8192", "--eval-max-response-len": "8192",
                         "--rollout-max-response-len": "8192"}.items():
         assert args[args.index(flag) + 1] == value

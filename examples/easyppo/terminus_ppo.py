@@ -36,12 +36,12 @@ class ScriptArgs(async_ppo.ScriptArgs):
     save_interval: int = 5
     actor_lr_warmup_iters: int = 1
     use_rollout_logprobs: bool = True
-    compact_threshold: int = 12000
+    compact_threshold: int = 16384
     max_tokens_per_gpu: int = 120 * 1024
     critic_max_tokens_per_gpu: int = 150 * 1024
     score_centering_recompute_loss: bool = False
     max_total_tokens: int = 100 * 1024
-    max_context_tokens: int = 16384
+    max_context_tokens: int = 32768
     max_new_tokens: int = 8192
     max_steps: int = 120
     actor_lr: float = 3e-6
