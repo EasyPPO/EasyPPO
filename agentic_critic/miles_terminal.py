@@ -256,6 +256,8 @@ async def generate(input):
             raise RuntimeError("Terminal context limit disagrees with Miles request budget")
         if candidate_count:
             _validate_topk_sampling(payload["sampling_params"])
+            payload["return_flat_raw_output_top_logprobs"] = True
+            payload["return_flat_raw_top_logprobs_b64"] = True
         output = await post(url, payload, headers=compute_routing_headers(args, base))
         if _collector_aborted(input.state, evaluation=input.evaluation):
             # Aborted SGLang replies can omit token/candidate side channels.

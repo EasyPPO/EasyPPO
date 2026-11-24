@@ -18,6 +18,7 @@ from miles.rollout.generate_utils import rollout_topk_logprobs
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils import http_utils
 from miles.utils.types import Sample
+from tests.fast.fixtures.score_centering_fixtures import _flat_output_top_logprobs
 
 
 class _Tokenizer:
@@ -98,7 +99,8 @@ def _assert_candidates(sample: Sample, k: int = 3):
 
 
 @pytest.mark.asyncio
-async def test_topk_survives_real_wrapper_summary_and_masked_glue(monkeypatch, tmp_path):
+@pytest.mark.parametrize("flat_response", [True, False])
+async def test_topk_survives_real_wrapper_summary_and_masked_glue(monkeypatch, tmp_path, flat_response):
     _task(tmp_path)
     monkeypatch.setattr(
         rollout_topk_logprobs,
@@ -114,7 +116,13 @@ async def test_topk_survives_real_wrapper_summary_and_masked_glue(monkeypatch, t
 
     async def post(url, payload, **kwargs):
         requests.append(payload)
-        return _metadata(next(pending))
+        assert payload["return_flat_raw_output_top_logprobs"] and payload["return_flat_raw_top_logprobs_b64"]
+        output = _metadata(next(pending))
+        if flat_response:
+            meta = output["meta_info"]
+            rows = [row + [(-np.inf, 0, None)] for row in meta.pop("output_top_logprobs")]
+            meta.update(_flat_output_top_logprobs(rows))
+        return output
 
     async def trial(**kwargs):
         async def execute(command, timeout):
@@ -194,6 +202,8 @@ async def test_evaluation_and_feature_off_do_not_request_or_require_candidates(
     )
     assert len(result.samples) == 1
     assert "top_logprobs_num" not in requests[0] and "sampling_logprobs_mode" not in requests[0]
+    assert "return_flat_raw_output_top_logprobs" not in requests[0]
+    assert "return_flat_raw_top_logprobs_b64" not in requests[0]
     assert requests[0]["sampling_params"] == params
     assert result.samples[0].rollout_topk_token_ids is None and result.samples[0].rollout_topk_log_probs is None
 
