@@ -5,7 +5,9 @@ See Claude.md, Terminal Bench, for cluster setup and both critic commands.
 """
 
 import argparse
+import os
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +50,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     weight_decay: float = 0
     seed: int = 42
     sglang_mem_fraction_static: float = 0.92
+    eval_trials_per_gpu: int = 64
     sglang_server_concurrency: int = 512
     async_max_concurrent_samples: int = 1000
 
@@ -69,7 +72,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
 
 
 def main(default_mode=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--critic-context-mode", required=default_mode is None, default=default_mode, choices=["full_detach", "actor-summary"])
     parser.add_argument("--score-centering", action=argparse.BooleanOptionalAction, default=ScriptArgs.score_centering, help="Use the Miles score-centering actor loss with PPO critic advantages.")
     parser.add_argument("--prepare-model-only", action="store_true", help="Download the pinned base model and convert its Miles checkpoint.")
@@ -100,7 +103,15 @@ def main(default_mode=None):
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--gpu-arch", choices=["blackwell", "hopper"], default="blackwell")
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--launch-modal", action="store_true", help="Provision the training nodes on Modal.")
+    parser.add_argument("--modal-volume", help="Existing Modal volume with the model, datasets and run directory.")
+    parser.add_argument("--modal-mount", default="/shared/easyppo", help="Mount point for the training volume.")
+    parser.add_argument("--modal-sandbox-secret", help="Modal secret holding Harbor sandbox credentials.")
     opts = parser.parse_args()
+    if opts.modal_volume and not opts.launch_modal and os.environ.get("EASYPPO_MODAL_VOLUME") != opts.modal_volume:
+        parser.error("Use --launch-modal when requesting a Modal volume")
+    if opts.launch_modal and opts.prepare_model_only:
+        parser.error("--launch-modal runs training with an already prepared model")
     if opts.prepare_model_only:
         args = ScriptArgs(model_dir=opts.model_dir)
         model = str(Path(args.model_dir) / args.model_name)
@@ -135,12 +146,26 @@ def main(default_mode=None):
         num_critic_only_steps=opts.num_critic_only_steps,
         **({"run_id": opts.run_id} if opts.run_id else {}),
     )
+    if opts.launch_modal:
+        from modal_launchers.terminus import launch
+
+        if not opts.modal_volume:
+            parser.error("--launch-modal requires --modal-volume")
+        async_ppo._validate_dataset(args, dataset="tmax")
+        async_ppo._validate(args)
+        launch(opts, args, [arg for arg in sys.argv[1:] if arg != "--launch-modal"])
+        return
     async_ppo._execute(
         args,
         dataset="tmax",
         script_path=__file__,
         extra_args=(
             "--fully-async",
+            *(("--checkpoint-commit-hook", "modal_launchers.runtime.commit_volume") if opts.modal_volume else ()),
+            "--terminal-train-workers-per-node", "32",
+            "--terminal-eval-workers-per-node", "4",
+            "--eval-max-concurrent-trials-per-gpu", str(args.eval_trials_per_gpu),
+            *(("--eval-sglang-max-running-requests", str(args.eval_trials_per_gpu)) if args.eval_num_gpus else ()),
             *(("--use-distributed-post",) if opts.use_distributed_post else ()),
             "--max-keep", "3",
             "--use-checkpoint-opt-param-scheduler",

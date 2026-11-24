@@ -231,3 +231,98 @@ def test_node_environment_binds_private_interface_and_preserves_rdma(monkeypatch
     assert env["NCCL_IB_HCA"] == "mlx5_0"
     assert env["RAY_ADDRESS"] == "10.0.0.1:6379" and env["MASTER_ADDR"] == "10.0.0.1"
     assert env["EASYPPO_MODAL_NODES"] == "2" and env["MILES_SCRIPT_EXTERNAL_RAY"] == "1"
+
+
+@pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+def test_terminus_allocates_and_runs_same_recipe_on_64_cpu_nodes(monkeypatch, mode):
+    import sys
+    from examples.easyppo import terminus_ppo
+    from modal_launchers import terminus
+
+    functions, clusters, launches = [], [], []
+
+    class App:
+        def __init__(self, name):
+            pass
+
+        def function(self, **resources):
+            functions.append(resources)
+            return lambda fn: SimpleNamespace(remote=fn)
+
+        def run(self):
+            return nullcontext()
+
+    fake = SimpleNamespace(
+        App=App, enable_output=nullcontext,
+        Volume=SimpleNamespace(from_name=lambda name, create_if_missing: name),
+        Secret=SimpleNamespace(from_name=lambda name, required_keys: name),
+        Cluster=SimpleNamespace(from_context=lambda: object()),
+        clustered=lambda **kwargs: (clusters.append(kwargs) or (lambda fn: fn)),
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake)
+    monkeypatch.setattr(terminus, "_training_image", lambda modal, config: object())
+    monkeypatch.setattr(terminus, "_secrets", lambda modal: [])
+    monkeypatch.setattr(terminus, "run_node", lambda *a, **kw: launches.append((a, kw)))
+    monkeypatch.setattr(sys, "argv", [
+        "run", "--launch-modal", "--modal-volume", "data", "--modal-sandbox-secret", "harbor",
+        "--model-dir", "/shared/easyppo/models", "--output-dir", "/shared/easyppo/runs",
+        "--tasks-dir", "/shared/easyppo/tasks", "--prompt-data", "/shared/easyppo/train.jsonl",
+        "--eval-data", "/shared/easyppo/eval.jsonl", "--run-id", "resume-me",
+    ])
+    terminus_ppo.main(mode)
+    assert clusters == [{"size": 2, "rdma": True}]
+    assert len(functions) == len(launches) == 1
+    assert (functions[0]["cpu"], functions[0]["gpu"], functions[0]["secrets"]) == (64, "B200:8", ["harbor"])
+    (_, config, volume, _, _), options = launches[0]
+    assert volume == "data" and config.output == "/shared/easyppo/runs/resume-me"
+    assert options["cpus"] == 64
+    for rank in (0, 1):
+        start = multinode._ray_command(config, rank=rank, addresses=["10.0.0.1", "10.0.0.2"], cpus=options["cpus"])
+        assert "--num-cpus=64" in start
+    command = options["train_command"]
+    assert command[:3] == ["python3", "-m", "examples.easyppo.terminus_" + mode.replace("-", "_")]
+    assert "--launch-modal" not in command and command.count("--run-id") == 1
+    # The head invokes the normal recipe, including checkpoint and async PPO settings.
+    monkeypatch.setenv("EASYPPO_MODAL_VOLUME", volume)
+    monkeypatch.setattr(sys, "argv", ["run", *command[3:]])
+    recorded = []
+    monkeypatch.setattr(terminus_ppo.async_ppo, "_execute", lambda args, **kw: recorded.append((args, kw)))
+    terminus_ppo.main(mode)
+    args, kw = recorded[0]
+    assert args.critic_context_mode == mode and args.run_id == "resume-me"
+    assert kw["extra_args"][kw["extra_args"].index("--checkpoint-commit-hook") + 1] == "modal_launchers.runtime.commit_volume"
+
+
+def test_terminal_workers_pin_and_reserve_each_node_before_dispatch(monkeypatch):
+    from agentic_critic import terminal_workers
+
+    requests = []
+    nodes = [
+        {"NodeID": node_id, "Alive": True, "Resources": {"GPU": 8, "CPU": 64}}
+        for node_id in ["a" * 56, "b" * 56]
+    ]
+    monkeypatch.setattr(terminal_workers.ray, "nodes", lambda: nodes)
+    monkeypatch.setattr(terminal_workers, "distributed_post_actors", lambda: ("shared-poster",))
+
+    def options(*, scheduling_strategy, runtime_env):
+        assert not scheduling_strategy.soft
+        assert set(runtime_env["env_vars"].values()) == {"1"}
+        def remote(args, *, evaluation, post_actors):
+            assert post_actors == ("shared-poster",)
+            requests.append((scheduling_strategy.node_id, evaluation))
+            return object()
+        return SimpleNamespace(remote=remote)
+
+    # Inspect Ray's class resource declaration as well as each placement request.
+    assert terminal_workers.TerminalWorker._default_options["num_cpus"] == 1
+    assert terminal_workers.TerminalWorker._default_options["num_gpus"] == 0
+    monkeypatch.setattr(terminal_workers.TerminalWorker, "options", options)
+    args = SimpleNamespace(terminal_train_workers_per_node=32, terminal_eval_workers_per_node=4, num_gpus_per_node=8)
+    for evaluation, count in [(False, 32), (True, 4)]:
+        pool = terminal_workers.TerminalWorkers(args, count=count, evaluation=evaluation)
+        assert len(pool.workers) == 2 * count
+        assert all(requests.count((node["NodeID"], evaluation)) == count for node in nodes)
+    nodes[1]["Resources"]["CPU"] = 36
+    with pytest.raises(ValueError, match="b" * 56):
+        terminal_workers.TerminalWorkers(args, count=32, evaluation=False)
+    assert len(requests) == 72

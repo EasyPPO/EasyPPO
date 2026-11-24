@@ -321,3 +321,49 @@ async def test_new_modal_error_boundary(monkeypatch, tmp_path, phase):
         sample = (await miles_terminal.generate(inp)).samples
         assert sample.status == Sample.Status.ABORTED and sample.reward is None
         assert sample.metadata["terminal_infra_failure_type"] == "PreviouslyUnseenError"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("external", [False, True])
+async def test_dispatched_train_cancel_awaits_teardown_and_preserves_eval(tmp_path, external):
+    inp = _input(tmp_path)
+    events = [asyncio.Event() for _ in range(4)]
+    started, cleaning, cleaned, eval_done = events
+
+    class Train:
+        async def run(self, *a):
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await cleaned.wait()
+
+    class Eval:
+        async def run(self, *a):
+            await eval_done.wait()
+            return "eval-result"
+
+    inp.args.terminal_train_workers_per_node = inp.args.terminal_eval_workers_per_node = 1
+    inp.state.terminal_train_workers, inp.state.terminal_eval_workers = Train(), Eval()
+    ev = SimpleNamespace(**(vars(inp) | {"evaluation": True}))
+    train = asyncio.create_task(miles_terminal.generate(inp))
+    evaluation = asyncio.create_task(miles_terminal.generate(ev))
+    await started.wait()
+    if external:
+        train.cancel()
+    else:
+        abort = asyncio.create_task(miles_terminal.abort(inp.args))
+    await cleaning.wait()
+    assert not train.done() and not evaluation.done()
+    cleaned.set()
+    if external:
+        with pytest.raises(asyncio.CancelledError):
+            await train
+    else:
+        await abort
+        sample = (await train).samples
+        assert sample.status is Sample.Status.ABORTED and sample.reward is None
+    eval_done.set()
+    assert await evaluation == "eval-result"
+    assert not miles_terminal._ACTIVE_TRIALS

@@ -358,6 +358,9 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880, "--critic-max-tokens-per-gpu": 153600,
                 "--global-batch-size": 384, "--rollout-batch-size": 32, "--n-samples-per-prompt": 12,
                 "--async-max-concurrent-samples": 1000, "--max-weight-staleness": 4,
+                "--terminal-train-workers-per-node": 32, "--terminal-eval-workers-per-node": 4,
+                "--eval-max-concurrent-trials-per-gpu": 64, "--eval-sglang-max-running-requests": 64,
+                "--sglang-max-running-requests": 512,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
                 "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
                 "--rollout-num-gpus": rollout, "--eval-num-gpus": nodes, "--eval-interval": 15, "--save-interval": 5, "--max-keep": 3}

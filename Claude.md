@@ -109,6 +109,10 @@ To update an existing dataset, prepare it in a fresh directory and point all wor
 produces 89 evaluation rows pointing to `harbor/terminal-bench-2-1-tmux`. Each evaluation image extends its official task image with tmux and checks `tmux -V` during the build. Rerun the evaluation preparation command above to update an existing `tb21.eval.jsonl`. Both launchers read these JSONL files.
 
 **Configure.** The two launchers use the same asynchronous PPO recipe.
+Each allocated node runs 32 persistent training trial workers and 4 separate
+evaluation trial workers, each reserving one Ray CPU. Allocate 64 CPUs per
+training node. Dedicated evaluation admits 64 in-flight trials per evaluation
+GPU (128 on the default two) and each TP1 eval engine runs at most 64 requests.
 
 | Setting | Default |
 |---|---|
@@ -147,3 +151,10 @@ python -m examples.easyppo.terminus_actor_summary "${TB[@]}" --run-id tb21-9b-ac
 Override training capacity with `--trainer-num-nodes`, `--trainer-gpus-per-node`
 and `--eval-num-gpus`. Set `--max-tokens-per-gpu` for actor packs, `--critic-max-tokens-per-gpu` for critic packs
 and `--async-max-concurrent-samples` for the rollout concurrency cap.
+
+To provision the default two B200 nodes through Modal, add `--launch-modal`
+to either training command above, plus `--modal-volume NAME --modal-mount "$TB_ROOT"`.
+Use the existing volume containing the prepared model and both datasets.
+Pass `--modal-sandbox-secret NAME` with `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`
+for Harbor, or export those two variables before launch. The launcher requests
+64 CPUs and 1 TiB RAM per node and registers 64 CPUs with each Ray raylet.

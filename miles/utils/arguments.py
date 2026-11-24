@@ -1579,6 +1579,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--eval-max-concurrent-trials-per-gpu",
+                type=int,
+                default=None,
+                help="Limit active eval trials across the inference fleet to this value times its GPU count.",
+            )
+            parser.add_argument(
                 "--eval-max-in-flight",
                 type=int,
                 default=2,

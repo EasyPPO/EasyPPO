@@ -46,6 +46,76 @@ def test_retarget_args_swaps_router_and_sizing():
     assert args.rollout_num_gpus == 4
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eval_gpus", [1, 2])
+async def test_terminal_eval_workers_share_fleet_admission_across_445_draws(monkeypatch, eval_gpus):
+    from agentic_critic import miles_terminal, terminal_workers
+    from miles.rollout.base_types import GenerateFnOutput
+    from miles.rollout.inference_rollout import inference_rollout_common as common
+    from miles.utils.types import Sample
+
+    args = make_args(
+        sglang_server_concurrency=100,
+        eval_max_concurrent_trials_per_gpu=64,
+        terminal_train_workers_per_node=32,
+        terminal_eval_workers_per_node=4,
+        hf_checkpoint="test",
+        chat_template_path=None,
+        rollout_temperature=1,
+        rollout_top_p=1,
+        rollout_top_k=-1,
+        rollout_max_response_len=100,
+        custom_generate_function_path=None,
+        partial_rollout=False,
+        group_rm=False,
+    )
+    monkeypatch.setattr(common, "load_tokenizer", lambda *a, **kw: None)
+    monkeypatch.setattr(common, "load_processor", lambda *a, **kw: None)
+    monkeypatch.setattr(common, "compute_sampling_params", lambda *a, **kw: {})
+    state = common.GenerateState(retarget_args(args, "eval-router", 39000, eval_gpus, 1))
+    state.generate_function = miles_terminal.generate
+    active = peak = 0
+    pools = []
+    at_capacity, release_eval = asyncio.Event(), asyncio.Event()
+
+    class Workers:
+        def __init__(self, args, *, count, evaluation):
+            assert args.sglang_router_ip == "eval-router"
+            self.evaluation = evaluation
+            pools.append((count, evaluation))
+
+        async def run(self, sample, sampling_params):
+            nonlocal active, peak
+            if self.evaluation:
+                active += 1
+                peak = max(peak, active)
+                if active == 64 * eval_gpus:
+                    at_capacity.set()
+                try:
+                    await release_eval.wait()
+                    await asyncio.sleep(0)
+                finally:
+                    active -= 1
+            sample.reward = 1
+            return GenerateFnOutput(samples=sample)
+
+    monkeypatch.setattr(terminal_workers, "TerminalWorkers", Workers)
+    batch = asyncio.gather(
+        *(common.generate_and_rm(state, Sample(index=i), {}, evaluation=True) for i in range(445))
+    )
+    try:
+        await asyncio.wait_for(at_capacity.wait(), timeout=5)
+        # Even on a shared state a saturated eval queue must leave training capacity usable.
+        train = await asyncio.wait_for(common.generate_and_rm(state, Sample(index=445), {}), timeout=5)
+        assert train.reward == 1 and active == 64 * eval_gpus
+    finally:
+        release_eval.set()
+        samples = await batch
+    assert (peak, active) == (64 * eval_gpus, 0)
+    assert pools == [(4, True), (32, False)]
+    assert [s.index for s in samples] == list(range(445))
+
+
 # ---------------- RolloutManager._eval_checkpoint (the single snapshot path) ----------------
 
 

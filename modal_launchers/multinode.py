@@ -109,13 +109,13 @@ def _node_environment(config, *, rank, addresses, judge_token):
     raise RuntimeError(f"No interface for Modal cluster IPv4 address {node_ip}")
 
 
-def _ray_command(config, *, rank, addresses):
+def _ray_command(config, *, rank, addresses, cpus=32):
     command = [
         "ray",
         "start",
         f"--node-ip-address={addresses[rank]}",
         f"--num-gpus={config.gpus}",
-        "--num-cpus=32",
+        f"--num-cpus={cpus}",
         "--disable-usage-stats",
         "--block",
     ]
@@ -180,7 +180,7 @@ def _stop_process(process):
             process.wait(timeout=15)
 
 
-def _run_head(store, process, volume, config, addresses, judge_url, judge_token):
+def _run_head(store, process, volume, config, addresses, judge_url, judge_token, train_command=None):
     import ray
     from modal_launchers.runtime import train
 
@@ -194,7 +194,10 @@ def _run_head(store, process, volume, config, addresses, judge_url, judge_token)
             env = dict(os.environ, RAY_ADDRESS=f"http://{addresses[0]}:{DASHBOARD_PORT}")
             subprocess.run(command, cwd=config.source, env=env, check=check)
 
-        train(config, judge_url, judge_token, run_command=run_command)
+        if train_command is None:
+            train(config, judge_url, judge_token, run_command=run_command)
+        else:
+            run_command(train_command, check=True)
         _commit_all(store, volume, config.nodes, uuid4().hex)
         store.set("finished", "1")
         keys = [f"finished/{rank}" for rank in range(1, config.nodes)]
@@ -203,7 +206,7 @@ def _run_head(store, process, volume, config, addresses, judge_url, judge_token)
         ray.shutdown()
 
 
-def run_node(cluster, config, volume, judge_url, judge_token):
+def run_node(cluster, config, volume, judge_url, judge_token, *, cpus=32, train_command=None):
     addresses = list(cluster.container_ips(family="ipv4"))
     rank = cluster.container_rank()
     if len(addresses) != config.nodes or len(set(addresses)) != config.nodes or not 0 <= rank < config.nodes:
@@ -231,11 +234,11 @@ def run_node(cluster, config, volume, judge_url, judge_token):
             raise RuntimeError("Modal nodes have different NCCL interface names")
         if rank:
             _wait(store, lambda: store.check(["head_started"]), None, config.nodes, "Ray head")
-        process = subprocess.Popen(_ray_command(config, rank=rank, addresses=addresses))
+        process = subprocess.Popen(_ray_command(config, rank=rank, addresses=addresses, cpus=cpus))
         if rank == 0:
             _wait(store, lambda: _port_ready(addresses[0], DASHBOARD_PORT), process, config.nodes, "Ray Jobs API")
             store.set("head_started", "1")
-            _run_head(store, process, volume, config, addresses, judge_url, judge_token)
+            _run_head(store, process, volume, config, addresses, judge_url, judge_token, train_command)
         else:
             _worker_loop(store, process, volume, rank=rank, nodes=config.nodes)
     except BaseException as error:

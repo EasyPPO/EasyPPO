@@ -3,6 +3,7 @@ import logging
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
+from contextlib import nullcontext
 from copy import deepcopy
 from typing import Any
 
@@ -41,6 +42,11 @@ class GenerateState:
         self.generate_fn_semaphore = asyncio.Semaphore(
             args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
         )
+        eval_limit = getattr(args, "eval_max_concurrent_trials_per_gpu", None)
+        if eval_limit is not None:
+            if eval_limit < 1:
+                raise ValueError("--eval-max-concurrent-trials-per-gpu must be positive")
+            self.eval_trial_semaphore = asyncio.Semaphore(eval_limit * args.rollout_num_gpus)
         self.sampling_params: dict[str, Any] = compute_sampling_params(
             args,
             temperature=args.rollout_temperature,
@@ -86,7 +92,10 @@ async def generate_and_rm(
     log_prefix = f"[sample={getattr(sample, 'index', '?')}]"
     logger.debug(f"{log_prefix} Waiting for semaphore...")
     try:
-        async with state.generate_fn_semaphore:
+        # Dedicated eval states carry the eval fleet's GPU count. For shared engines,
+        # keep the ordinary generation gate too so aggregate admission stays bounded.
+        eval_gate = getattr(state, "eval_trial_semaphore", None) if evaluation else None
+        async with eval_gate or nullcontext(), state.generate_fn_semaphore:
             if state.aborted:
                 sample.status = Sample.Status.ABORTED
                 return sample

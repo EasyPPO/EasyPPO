@@ -327,6 +327,17 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
         raise httpx.ReadError(str(exc)) from exc
 
 
+def distributed_post_actors() -> tuple:
+    """Handles for rollout children that share the executor's distributed POST pool."""
+    return tuple(_post_actors) if _distributed_post_enabled else ()
+
+
+def use_post_actors(actors: tuple) -> None:
+    global _post_actors, _distributed_post_enabled
+    _post_actors = list(actors)
+    _distributed_post_enabled = bool(actors)
+
+
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _client_concurrency, _distributed_post_enabled

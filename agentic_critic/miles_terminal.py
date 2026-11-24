@@ -67,7 +67,13 @@ async def _run_cancellable_trial(*, args, evaluation: bool, state=None, **kwargs
             return None
         return await run_trial(**kwargs)
 
-    task = asyncio.create_task(run_with_start_retry())
+    return await _track_trial(run_with_start_retry(), args=args, evaluation=evaluation, state=state)
+
+
+async def _track_trial(coro, *, args, evaluation, state):
+    from agentic_critic.harbor_terminal import SandboxInfrastructureFailure
+
+    task = asyncio.create_task(coro)
     active = _ActiveTrial(task=task, args=args, evaluation=evaluation)
     _ACTIVE_TRIALS[task] = active
     try:
@@ -218,6 +224,32 @@ def _reward(args, metadata: dict, rewards: dict) -> tuple[float, dict]:
 
 
 async def generate(input):
+    role = "eval" if input.evaluation else "train"
+    count = getattr(input.args, f"terminal_{role}_workers_per_node", 0)
+    if not count:
+        return await _generate(input)
+
+    from agentic_critic.terminal_workers import TerminalWorkers
+
+    state = input.state
+    pool_attr = f"terminal_{role}_workers"
+    workers = getattr(state, pool_attr, None)
+    if workers is None:
+        workers = TerminalWorkers(input.args, count=count, evaluation=input.evaluation)
+        setattr(state, pool_attr, workers)
+
+    if input.evaluation:
+        return await workers.run(input.sample, input.sampling_params)
+
+    result = await _track_trial(
+        workers.run(input.sample, input.sampling_params), args=input.args, evaluation=False, state=state
+    )
+    if result is None or isinstance(result, _DiscardedTrial):
+        return _discarded_output(input, result, input.sample.metadata or {})
+    return result
+
+
+async def _generate(input):
     # Optional Miles/Harbor dependencies are only needed by the online wrapper.
     from miles.rollout.base_types import GenerateFnOutput
     from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, compute_routing_headers
@@ -290,21 +322,7 @@ async def generate(input):
         fcs_max_turns=getattr(args, "fcs_max_turns", DEFAULT_MAX_TURNS),
     )
     if result is None or isinstance(result, _DiscardedTrial):
-        sample = deepcopy(base)
-        sample.status = Sample.Status.ABORTED
-        sample.reward = None
-        discarded = result or _DiscardedTrial("CancelledError", "Oversampling aborted terminal trial")
-        if input.evaluation:
-            keys = {getattr(args, name, None) for name in ("reward_key", "eval_reward_key")} - {None, ""}
-            sample.reward = {key: 0.0 for key in keys} if keys else 0.0
-        sample.metadata = {
-            **metadata,
-            "terminal_abort_failure_type": discarded.failure_type,
-            "terminal_abort_reason": discarded.reason,
-        }
-        if discarded.infrastructure:
-            sample.metadata["terminal_infra_failure_type"] = discarded.failure_type
-        return GenerateFnOutput(samples=sample)
+        return _discarded_output(input, result, metadata)
     trace, rewards, trial_dir = result
     if agent_protocol in ("terminus-2", "terminus-2-etl") and trace.exit_status != "Submitted":
         reward, reward_metadata = 0.0, {"reward_mode": "native", "reward_fallback": "unsubmitted"}
@@ -356,7 +374,30 @@ async def generate(input):
     return GenerateFnOutput(samples=samples)
 
 
+def _discarded_output(input, result, metadata):
+    from miles.rollout.base_types import GenerateFnOutput
+    from miles.utils.types import Sample
+
+    sample = deepcopy(input.sample)
+    sample.status = Sample.Status.ABORTED
+    sample.reward = None
+    discarded = result or _DiscardedTrial("CancelledError", "Oversampling aborted terminal trial")
+    if input.evaluation:
+        keys = {getattr(input.args, name, None) for name in ("reward_key", "eval_reward_key")} - {None, ""}
+        sample.reward = {key: 0.0 for key in keys} if keys else 0.0
+    sample.metadata = {
+        **metadata,
+        "terminal_abort_failure_type": discarded.failure_type,
+        "terminal_abort_reason": discarded.reason,
+    }
+    if discarded.infrastructure:
+        sample.metadata["terminal_infra_failure_type"] = discarded.failure_type
+    return GenerateFnOutput(samples=sample)
+
+
 def _add_arguments(parser):
+    parser.add_argument("--terminal-train-workers-per-node", type=int, default=0)
+    parser.add_argument("--terminal-eval-workers-per-node", type=int, default=0)
     defaults = TerminalConfig()
     for f in fields(TerminalConfig):
         default = getattr(defaults, f.name)
