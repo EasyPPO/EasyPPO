@@ -7,6 +7,7 @@ The decoder returns the actual sampled token IDs and log probabilities.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from dataclasses import asdict, dataclass, field, replace
@@ -128,6 +129,29 @@ class Completion:
 class _CompletedPrefix:
     canonical: list[int]
     sampled: list[int]
+
+
+async def finish_write(write):
+    # Cancellation must drain the worker thread before the rollout owner can exit.
+    task = asyncio.create_task(write)
+    cancellation = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+        except Exception:
+            # Read the worker exception below, after resolving any owner cancellation.
+            break
+    try:
+        result = task.result()
+    except Exception as exc:
+        if cancellation is not None:
+            raise cancellation from exc
+        raise
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 
 @dataclass

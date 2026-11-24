@@ -15,6 +15,7 @@ from harbor.models.task.task import Task
 
 from agentic_critic.fcs_judge import judge_feedback
 from agentic_critic.fcs_terminal import FcsSubmissionAgent
+from agentic_critic.terminal_env import finish_write
 from miles.utils.http_utils import GeneralHttpClientProvider
 from scripts.frontiersmith_verifier import write_submission_rewards
 
@@ -61,29 +62,6 @@ def _persist_episode(
         return write_submission_rewards(verdicts, verifier_dir)
     (verifier_dir / "judge-result.json").write_text(json.dumps(verdicts))
     return None
-
-
-async def _finish_write(write):
-    # Cancellation must drain the worker thread before the rollout owner can exit.
-    task = asyncio.create_task(write)
-    cancellation = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            cancellation = exc
-        except Exception:
-            # Read the worker exception below, after resolving any owner cancellation.
-            break
-    try:
-        result = task.result()
-    except Exception as exc:
-        if cancellation is not None:
-            raise cancellation from exc
-        raise
-    if cancellation is not None:
-        raise cancellation
-    return result
 
 
 async def run_shared_judge_episode(
@@ -177,5 +155,5 @@ async def run_shared_judge_episode(
             },
             verified=agent.trace.exit_status not in ("AgentError", "Cancelled"),
         )
-        rewards = await _finish_write(write)
+        rewards = await finish_write(write)
     return agent.trace, rewards, str(trial_dir)

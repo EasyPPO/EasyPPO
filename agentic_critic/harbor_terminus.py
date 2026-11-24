@@ -1,5 +1,6 @@
 """Harbor Terminus-2 terminal protocol with EasyPPO's token-exact episode recorder."""
 
+import asyncio
 import re
 import shlex
 from dataclasses import replace
@@ -11,7 +12,7 @@ from harbor.agents.terminus_2.terminus_xml_plain_parser import TerminusXMLPlainP
 from harbor.llms.base import BaseLLM, ContextLengthExceededError, LLMResponse, OutputLengthExceededError
 from harbor.models.metric import UsageInfo
 
-from agentic_critic.terminal_env import EpisodeLimit, TerminalAgent
+from agentic_critic.terminal_env import EpisodeLimit, TerminalAgent, finish_write
 
 
 ETL_SMOKE_TASK_ID = "task_002307_b945c419"
@@ -70,7 +71,11 @@ class MilesTerminalLLM(BaseLLM):
         self.session = _TerminusSession(
             tokenizer=tokenizer, decode=decode, execute=None, config=replace(config, continue_on_length=True)
         )
-        self._vocab = tokenizer.get_vocab()
+        # HF fast tokenizers look up a single ID without exporting the full vocabulary.
+        backend = getattr(tokenizer, "backend_tokenizer", None)
+        lookup = backend.token_to_id if backend is not None else tokenizer.get_vocab().get
+        markers = ("<|im_end|>", "<|endoftext|>", "<think>", "</think>", "<tool_call>")
+        self._marker_ids = {marker: lookup(marker) for marker in markers}
         self._last_request = None
         self._prepared_request = None
         self._episode_budget_notified = False
@@ -84,7 +89,7 @@ class MilesTerminalLLM(BaseLLM):
     def _response_parts(self, tokens):
         # Match parse_qwen35 in PrimeIntellect-ai/renderers@2a7e77eb.
         # Harbor consumes the text block. The recorder keeps every sampled ID.
-        vocab = self._vocab
+        vocab = self._marker_ids
         stop_ids = {vocab.get("<|im_end|>"), vocab.get("<|endoftext|>")}
         stop = next((i for i, token in enumerate(tokens) if token in stop_ids), len(tokens))
         ids = tokens[:stop]
@@ -241,4 +246,4 @@ fi
         finally:
             context.n_input_tokens = sum(call["prompt_tokens"] for call in self.trace.calls)
             context.n_output_tokens = self.trace.generated_tokens
-            self.trace.write_trajectory(self._llm.session.messages, self.logs_dir)
+            await finish_write(asyncio.to_thread(self.trace.write_trajectory, self._llm.session.messages, self.logs_dir))

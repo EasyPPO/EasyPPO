@@ -202,9 +202,14 @@ async def test_terminus_retries_transport_only(tmp_path):
 def test_terminus_visible_completion_uses_sampled_qwen_markers(tmp_path):
     from agentic_critic.harbor_terminus import MilesTerminus2
 
+    from tokenizers import Tokenizer as BackendTokenizer
+    from tokenizers.models import WordLevel
+
     class MarkerTokenizer(Tokenizer):
+        backend_tokenizer = BackendTokenizer(WordLevel({"<think>": 1, "</think>": 2, "<|im_end|>": 3, "<tool_call>": 4}))
+
         def get_vocab(self):
-            return {"<think>": 1, "</think>": 2, "<|im_end|>": 3, "<tool_call>": 4}
+            raise AssertionError("Binding a fast tokenizer exported its vocabulary")
 
     agent = MilesTerminus2(logs_dir=tmp_path, model_name="Qwen/Qwen3.5-9B", parser_name="xml")
     agent.bind(tokenizer=MarkerTokenizer(), decode=None, config=TerminalConfig())
