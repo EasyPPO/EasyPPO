@@ -59,9 +59,9 @@ class ScriptArgs(async_ppo.ScriptArgs):
             raise ValueError("Node and per-node GPU counts must be positive")
         total = self.num_nodes * self.num_gpus_per_node
         if self.eval_num_gpus is None:
-            self.eval_num_gpus = max(1, total // 8)
+            self.eval_num_gpus = 1 if (self.num_nodes, self.num_gpus_per_node) == (2, 8) else max(1, total // 8)
         if self.trainer_num_nodes is None and self.trainer_gpus_per_node is None:
-            trainer_gpus = 4 if (self.num_nodes, self.num_gpus_per_node) == (2, 8) else max(1, 3 * total // 8)
+            trainer_gpus = max(1, 3 * total // 8)
             # Ray places one worker per slot. Express the trainer world as equal-sized groups.
             widths = range(1, min(trainer_gpus, self.num_gpus_per_node) + 1)
             self.trainer_gpus_per_node = max(width for width in widths if trainer_gpus % width == 0)
@@ -176,6 +176,8 @@ def main(default_mode=None):
             "in_place",
             "--async-max-concurrent-samples",
             str(args.async_max_concurrent_samples),
+            "--async-data-buffer-capacity-factor",
+            "4",
             "--max-weight-staleness",
             "4",
             "--sglang-max-running-requests",

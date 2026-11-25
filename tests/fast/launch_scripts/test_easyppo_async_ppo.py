@@ -337,8 +337,8 @@ def test_nondivisible_episode_batches_still_fail(launcher, overrides, message):
 
 
 @pytest.mark.parametrize(("mode", "arch", "flash"), [("full_detach", "blackwell", "triton"), ("actor-summary", "hopper", "fa3")])
-@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout"), [(1, 1, 3, 4), (2, 1, 4, 10), (4, 2, 6, 16), (8, 3, 8, 32)])
-def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_nodes, trainer_gpus, rollout):
+@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout", "eval_gpus"), [(1, 1, 3, 4, 1), (2, 1, 6, 9, 1), (4, 2, 6, 16, 4), (8, 3, 8, 32, 8)])
+def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_nodes, trainer_gpus, rollout, eval_gpus):
     from examples.easyppo import terminus_ppo
 
     backend = _recording_backend(monkeypatch, _recipe)
@@ -357,13 +357,13 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
     expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880, "--critic-max-tokens-per-gpu": 153600,
                 "--global-batch-size": 384, "--rollout-batch-size": 32, "--n-samples-per-prompt": 12,
-                "--async-max-concurrent-samples": 1000, "--max-weight-staleness": 4,
+                "--async-max-concurrent-samples": 1000, "--async-data-buffer-capacity-factor": 4, "--max-weight-staleness": 4,
                 "--terminal-train-workers-per-node": 32, "--terminal-eval-workers-per-node": 4,
                 "--eval-max-concurrent-trials-per-gpu": 64, "--eval-sglang-max-running-requests": 64,
                 "--sglang-max-running-requests": 512,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
                 "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
-                "--rollout-num-gpus": rollout, "--eval-num-gpus": nodes, "--eval-interval": 15, "--save-interval": 5, "--max-keep": 3}
+                "--rollout-num-gpus": rollout, "--eval-num-gpus": eval_gpus, "--eval-interval": 15, "--save-interval": 5, "--max-keep": 3}
     assert "--use-checkpoint-opt-param-scheduler" in args
     for flag, value in expected.items():
         assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(value)
