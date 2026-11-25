@@ -302,23 +302,11 @@ class TerminalTrace:
         return samples
 
     def write_trajectory(self, messages: list[dict], logs_dir: Path) -> None:
-        # Avoid asdict() deep-copying potentially large top-k arrays. Persist them
-        # losslessly in a compact sidecar and keep only field references in JSON.
+        # Top-k candidates are training state, not diagnostic logs. They remain
+        # in Sample and the async checkpoint; avoid copying or persisting them here.
         payload = asdict(replace(self, topk_token_ids=None, topk_log_probs=None))
         payload.pop("topk_token_ids")
         payload.pop("topk_log_probs")
-        if self.topk_token_ids is not None:
-            # NumPy is only needed when the optional candidate feature is active.
-            import numpy as np
-
-            archive, segments = {}, []
-            for i, (ids, logps) in enumerate(zip(self.topk_token_ids, self.topk_log_probs, strict=True)):
-                ids_key, logps_key = f"segment_{i}_token_ids", f"segment_{i}_log_probs"
-                archive[ids_key], archive[logps_key] = ids, logps
-                segments.append({"token_ids": ids_key, "log_probs": logps_key, "shape": list(ids.shape)})
-            path = logs_dir / "easyppo-topk.npz"
-            np.savez_compressed(path, **archive)
-            payload["topk_candidates"] = {"path": path.name, "segments": segments}
         (logs_dir / "easyppo-trajectory.json").write_text(
             json.dumps({"trace": payload, "messages": messages}, ensure_ascii=False)
         )

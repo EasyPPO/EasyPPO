@@ -33,10 +33,15 @@ async def run_eval_datasets(
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
-    return await collect_eval_datasets(
-        eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace)
-        for dataset_cfg in args.eval_datasets
-    )
+    try:
+        return await collect_eval_datasets(
+            eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace)
+            for dataset_cfg in args.eval_datasets
+        )
+    finally:
+        if getattr(args, "terminal_archive_trials", False):
+            if (pool := getattr(state, "terminal_eval_workers", None)) is not None:
+                await pool.flush_archives()
 
 
 @asynccontextmanager
