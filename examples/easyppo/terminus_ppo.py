@@ -164,6 +164,7 @@ def main(default_mode=None):
             *(("--checkpoint-commit-hook", "modal_launchers.runtime.commit_volume") if opts.modal_volume else ()),
             "--terminal-train-workers-per-node", "32",
             "--terminal-eval-workers-per-node", "4",
+            "--terminal-archive-trials",
             "--eval-max-concurrent-trials-per-gpu", str(args.eval_trials_per_gpu),
             *(("--eval-sglang-max-running-requests", str(args.eval_trials_per_gpu)) if args.eval_num_gpus else ()),
             *(("--use-distributed-post",) if opts.use_distributed_post else ()),

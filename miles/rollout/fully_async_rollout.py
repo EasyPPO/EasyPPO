@@ -121,6 +121,15 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         if (worker := self._worker) is None:
             return
         await _end_worker(worker)
+        if getattr(self.args, "terminal_archive_trials", False):
+            # Stop oversampled trial owners before flushing the final archive tail.
+            tasks = [entry.task for entry in self._running_tasks]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if (pool := getattr(self.state, "terminal_train_workers", None)) is not None:
+                await pool.flush_archives()
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:

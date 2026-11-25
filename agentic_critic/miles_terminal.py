@@ -227,6 +227,8 @@ async def generate(input):
     role = "eval" if input.evaluation else "train"
     count = getattr(input.args, f"terminal_{role}_workers_per_node", 0)
     if not count:
+        if getattr(input.args, "terminal_archive_trials", False):
+            raise ValueError("Trial archiving requires terminal workers on every generation node")
         return await _generate(input)
 
     from agentic_critic.terminal_workers import TerminalWorkers
@@ -309,7 +311,7 @@ async def _generate(input):
         state=input.state,
         task_path=task_path,
         task_metadata=metadata,
-        trials_dir=Path(args.terminal_trials_dir),
+        trials_dir=Path(getattr(input.state, "terminal_trial_root", args.terminal_trials_dir)),
         environment=args.terminal_environment,
         judge_url=getattr(args, "fcs_judge_url", None),
         memory_mb=getattr(args, "terminal_memory_mb", None),
@@ -412,6 +414,10 @@ def _add_arguments(parser):
     parser.add_argument("--fcs-max-submissions", type=int, default=DEFAULT_MAX_SUBMISSIONS)
     parser.add_argument("--fcs-max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--terminal-trials-dir", default="terminal-trials")
+    parser.add_argument(
+        "--terminal-archive-trials", action="store_true",
+        help="Stage trial logs on local disk and batch into immutable archives",
+    )
     parser.add_argument(
         "--terminal-environment", choices=("docker", "daytona", "modal", "shared-judge"), default="docker"
     )

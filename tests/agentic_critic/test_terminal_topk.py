@@ -455,7 +455,7 @@ async def test_noncanonical_sampled_ids_and_eos_preserve_candidate_alignment(_bp
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_harbor_persists_candidates_losslessly_in_npz_only(tmp_path, enabled):
+def test_harbor_does_not_persist_candidates(tmp_path, enabled):
     reply = _reply("x")
     if enabled:
         reply = miles_terminal._completion_from_output(_metadata(reply), candidate_count=3)
@@ -464,18 +464,13 @@ def test_harbor_persists_candidates_losslessly_in_npz_only(tmp_path, enabled):
     trace.write_trajectory([{"role": "assistant", "content": "x"}], tmp_path)
     raw = (tmp_path / "easyppo-trajectory.json").read_text()
     payload = json.loads(raw)["trace"]
-    assert "topk_token_ids" not in payload and "topk_log_probs" not in payload
+    expected = asdict(trace)
+    expected.pop("topk_token_ids")
+    expected.pop("topk_log_probs")
+    assert payload == expected
+    assert "topk_candidates" not in payload and "Infinity" not in raw
+    assert not (tmp_path / "easyppo-topk.npz").exists()
     if enabled:
-        assert "Infinity" not in raw
-        reference = payload["topk_candidates"]
-        assert reference["path"] == "easyppo-topk.npz"
-        with np.load(tmp_path / reference["path"], allow_pickle=False) as archive:
-            segment = reference["segments"][0]
-            np.testing.assert_array_equal(archive[segment["token_ids"]], trace.topk_token_ids[0])
-            np.testing.assert_array_equal(archive[segment["log_probs"]], trace.topk_log_probs[0])
-            assert segment["shape"] == list(trace.topk_token_ids[0].shape)
-    else:
-        expected = asdict(trace)
-        expected.pop("topk_token_ids")
-        expected.pop("topk_log_probs")
-        assert payload == expected and not (tmp_path / "easyppo-topk.npz").exists()
+        sample = trace.sample_fields()[0]
+        np.testing.assert_array_equal(sample["rollout_topk_token_ids"], trace.topk_token_ids[0])
+        np.testing.assert_array_equal(sample["rollout_topk_log_probs"], trace.topk_log_probs[0])

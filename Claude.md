@@ -93,6 +93,18 @@ under `$RUN_DIR/<run-id>/checkpoints` and `$RUN_DIR/<run-id>/checkpoints_critic`
 
 ### Prepare the training and evaluation data
 
+**Mandatory storage cleanup for Terminal Bench-only allocations.** Before
+launching or resuming, inspect the shared data mount and confirm no active FCS
+or FrontierSmith job uses it. Delete the obsolete prepared FCS/FrontierSmith
+task directories (`$DATA_DIR/harbor/frontier-cs` and
+`$DATA_DIR/harbor/frontiersmith`) and their obsolete generated JSONL/manifest
+files. Do not prepare either dataset for Terminal Bench runs. Do not delete
+the active AgentPick or TB2.1 task directories, model files, or checkpoints.
+Use `du --inodes --max-depth=3 "$DATA_DIR"` to verify the reclaimed inode
+count. If FCS training is needed again, regenerate its prepared data with the
+FCS instructions above; do not delete the tracked Frontier-CS source checkout.
+
+
 Configure Modal credentials on the rollout and evaluation workers. Prepare
 both datasets once on the shared mount, starting with a new
 `$DATA_DIR/harbor/agentpick-802` directory path.
@@ -125,6 +137,18 @@ GPU (64 on the default allocation) and each TP1 eval engine runs at most 64 requ
 | Evaluation and checkpoints | Evaluate the base and every 15 rollout batches, 89 tasks × 5 trials at temperature 0.7 and top-p 0.95. Save every 5 batches and at the final batch. Keep the latest three complete actor, critic and rollout checkpoints. |
 
 Modal retries a transient image startup failure once in a fresh sandbox before agent execution. An unexpected error inside a task's Harbor trial aborts that draw. The fully async collector keeps successful siblings, skips empty groups, and fills each training batch with valid draws. Each evaluation trial with an infrastructure failure scores zero and counts toward the mean reward and pass@k. Model decode errors, authentication failures, and explicit cancellation propagate. W&B updates the running training count `infra/failed_draws` and `infra/by_type/<exception>` when groups with failed draws finish, even while the trainer waits for a batch. It also reports failed draws by exception type under `rollout/fully_async/terminal_infra_failures` (since the last metrics collection) and `eval/tb21/terminal_infra_failures` (per evaluation).
+
+**Trial diagnostics.** Terminus launchers stage each trial under node-local
+`/tmp` and hand only completed or torn-down trial directories to one archive
+writer per node and role. Writers publish immutable `archives/train` and
+`archives/eval` tar.zst shards (128 trial roots or 30 seconds; zstd level 1),
+then remove the staged files. Backpressure bounds the completed staging queue;
+flush the remaining archives on graceful shutdown or completion of evaluation.
+Top-128 candidates stay in Sample and the existing resume checkpoint, not
+in diagnostic NPZ files. A hard kill can lose unflushed diagnostic logs but
+does not change the checkpoint resume contract. Old persisted trial trees
+are not migrated automatically; archive or remove obsolete historical logs
+after verifying they are no longer used.
 
 **Launch.** Set the allocation below and run the command for the desired critic.
 The full-detach critic reads chronological history with gradients detached at
