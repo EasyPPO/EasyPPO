@@ -19,19 +19,26 @@ from tests.agentic_critic.test_terminal_env import Tokenizer, action
 
 
 @pytest.mark.asyncio
-async def test_native_harbor_trial_constructs_custom_agent(tmp_path):
+@pytest.mark.parametrize("build_multiplier", [None, 6.0])
+async def test_native_harbor_trial_constructs_custom_agent(tmp_path, build_multiplier):
     task = make_task(tmp_path / "tasks")
     trial = await Trial.create(
         TrialConfig(
             task=TaskConfig(path=task),
             trials_dir=tmp_path / "trials",
             agent=AgentConfig(import_path="agentic_critic.harbor_terminal:MiniSweTerminalAgent"),
+            environment_build_timeout_multiplier=build_multiplier,
         )
     )
     try:
         assert isinstance(trial.agent, MiniSweTerminalAgent)
         assert trial.task.instruction == "Create the requested artifact."
         assert trial.config.environment.delete
+        assert trial._environment_build_timeout_sec == (
+            trial.task.config.environment.build_timeout_sec * (build_multiplier or 1.0)
+        )
+        assert trial._agent_timeout_sec == trial.task.config.agent.timeout_sec
+        assert trial._verifier_timeout_sec == trial.task.config.verifier.timeout_sec
     finally:
         trial._close_logger_handler()
 
@@ -57,6 +64,7 @@ async def test_adapter_uses_real_mini_parser_and_writes_trace(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["docker", "modal"])
 @pytest.mark.parametrize(
     "error,has_reward,raises",
     [
@@ -67,11 +75,15 @@ async def test_adapter_uses_real_mini_parser_and_writes_trace(tmp_path):
         ("AgentTimeoutError", True, False),
     ],
 )
-async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, has_reward, raises):
+async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, has_reward, raises, environment):
     from agentic_critic import harbor_terminal
+    monkeypatch.setenv("EASYPPO_TERMINAL_MODAL_APP", "easyppo-test-run")
 
     trace = TerminalTrace()
     result = SimpleNamespace(
+        environment_setup=object(),
+        agent_setup=None if error == "EnvironmentStartTimeoutError" else object(),
+        agent_execution=None if error == "EnvironmentStartTimeoutError" else object(),
         exception_info=SimpleNamespace(exception_type=error, exception_message="failure") if error else None,
         verifier_result=SimpleNamespace(rewards={"reward": 0.5}) if has_reward else None,
     )
@@ -81,6 +93,20 @@ async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, h
 
     async def create(config):
         assert config.environment.delete and not config.verifier.disable
+        assert config.environment_build_timeout_multiplier == (6.0 if environment == "modal" else None)
+        assert config.timeout_multiplier == 1.0
+        assert config.agent_timeout_multiplier is None
+        assert config.verifier_timeout_multiplier is None
+        assert config.environment.env == ({"COMPOSE_BAKE": "false"} if environment == "modal" else {})
+        assert config.environment.kwargs == (
+            {"modal_vm_runtime": True, "app_name": "easyppo-test-run"} if environment == "modal" else {}
+        )
+        if environment == "modal":
+            assert config.environment.import_path == "agentic_critic.harbor_modal:TerminalModalEnvironment"
+            assert config.environment.type is None
+        else:
+            assert config.environment.type == "docker"
+            assert config.environment.import_path is None
         return SimpleNamespace(
             config=config,
             agent=SimpleNamespace(bind=lambda **kw: None, trace=trace),
@@ -92,7 +118,7 @@ async def test_trial_failure_and_reward_contract(monkeypatch, tmp_path, error, h
     kwargs = dict(
         task_path=tmp_path,
         trials_dir=tmp_path,
-        environment="docker",
+        environment=environment,
         tokenizer=Tokenizer(),
         decode=None,
         config=TerminalConfig(),

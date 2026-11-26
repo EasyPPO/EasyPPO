@@ -6,6 +6,7 @@ from miles.backends.training_utils.checkpoint.joint_checkpoint import (
     add_checkpoint_arguments,
     finalize_checkpoint,
     prepare_checkpoint_retention,
+    prepare_rollout_checkpoint,
 )
 from miles.ray.placement_group import (
     create_rollout_components,
@@ -61,7 +62,7 @@ async def train(args, *, disposer: Disposer):
         await inference_controller.onload_kv()
 
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
-    disposer.add(eval_dispatcher.drain)
+    disposer.add_exit(eval_dispatcher.close)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
@@ -138,12 +139,18 @@ async def train(args, *, disposer: Disposer):
             args.num_rollout,
         ):
             force_sync = external_save or rollout_id == args.num_rollout - 1 or max_keep > 0
+            # Joint retention publishes rollout state before either model's
+            # tracker advances. Keep the existing save order for other runs.
+            if max_keep > 0:
+                prepare_rollout_checkpoint(args)
+                await rollout_executor.save(rollout_id)
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_executor.save(rollout_id)
-            if max_keep:
+            if max_keep > 0:
                 finalize_checkpoint(args, rollout_id, max_keep)
+            else:
+                await rollout_executor.save(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 

@@ -36,6 +36,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     eval_temperature: float = 0.7
     eval_top_p: float = 0.95
     save_interval: int = 5
+    max_keep: int = 3
     actor_lr_warmup_iters: int = 1
     use_rollout_logprobs: bool = True
     compact_threshold: int = 16384
@@ -100,6 +101,10 @@ def main(default_mode=None):
                         help="Dispatch rollout HTTP POSTs through Ray actors.")
     parser.add_argument("--ray-hostfile", default=ScriptArgs.ray_hostfile)
     parser.add_argument("--run-id", help="Reuse the same ID and output directory to resume.")
+    parser.add_argument("--max-keep", type=int, default=ScriptArgs.max_keep, help="Keep this many complete PPO checkpoints; 0 keeps all.")
+    parser.add_argument("--save-interval", type=int, default=ScriptArgs.save_interval, help="Rollout batches between complete checkpoints.")
+    parser.add_argument("--checkpoint-commit-hook", help="Commit shared checkpoint and eval snapshot storage.")
+    parser.add_argument("--trials-dir", default="", help="Optional separate location for live trial logs.")
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--gpu-arch", choices=["blackwell", "hopper"], default="blackwell")
     parser.add_argument("--output-dir", type=Path)
@@ -139,11 +144,13 @@ def main(default_mode=None):
         prompt_data=str(opts.prompt_data),
         eval_data=str(opts.eval_data),
         critic_context_mode=opts.critic_context_mode,
+        trials_dir=opts.trials_dir,
         score_centering=opts.score_centering,
         max_tokens_per_gpu=opts.max_tokens_per_gpu,
         critic_max_tokens_per_gpu=opts.critic_max_tokens_per_gpu,
         num_rollout=opts.num_rollout,
         num_critic_only_steps=opts.num_critic_only_steps,
+        save_interval=opts.save_interval,
         **({"run_id": opts.run_id} if opts.run_id else {}),
     )
     if opts.launch_modal:
@@ -161,6 +168,9 @@ def main(default_mode=None):
         script_path=__file__,
         extra_args=(
             "--fully-async",
+            # Reloadable storage requires cross-node readers to acquire their
+            # lease on the head, which the platform quiesces before its peers.
+            *(("--pin-rollout-manager-to-head",) if os.environ.get("MILES_VOLUME_IO_LOCK") else ()),
             *(("--checkpoint-commit-hook", "modal_launchers.runtime.commit_volume") if opts.modal_volume else ()),
             "--terminal-train-workers-per-node", "32",
             "--terminal-eval-workers-per-node", "4",
@@ -168,8 +178,9 @@ def main(default_mode=None):
             "--eval-max-concurrent-trials-per-gpu", str(args.eval_trials_per_gpu),
             *(("--eval-sglang-max-running-requests", str(args.eval_trials_per_gpu)) if args.eval_num_gpus else ()),
             *(("--use-distributed-post",) if opts.use_distributed_post else ()),
-            "--max-keep", "3",
+            "--max-keep", str(opts.max_keep),
             "--use-checkpoint-opt-param-scheduler",
+            *(("--checkpoint-commit-hook", opts.checkpoint_commit_hook) if opts.checkpoint_commit_hook else ()),
             "--critic-max-tokens-per-gpu", str(args.critic_max_tokens_per_gpu),
             "--ppo-prompt-mean",
             *(("--log-probs-backend", "fused") if args.score_centering else ()),

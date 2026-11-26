@@ -49,6 +49,9 @@ class Config:
     critic_steps_per_rollout: int = 4
     model_size: str = "27b"
     tensor_model_parallel_size: int | None = None
+    save_interval: int = 5
+    wandb_secret: str = ""
+    wandb_entity: str = ""
 
     def __post_init__(self):
         if self.model_size not in ("9b", "27b"):
@@ -81,6 +84,8 @@ class Config:
             raise ValueError("Resources and concurrency must be positive")
         if self.max_restarts < 0:
             raise ValueError("max-restarts must be non-negative")
+        if self.save_interval < 1:
+            raise ValueError("save-interval must be positive")
         if self.eval_samples_per_prompt < 1:
             raise ValueError("Evaluation sample count must be positive")
         if self.eval_max_tasks < 0:
@@ -172,7 +177,7 @@ class Config:
             "--eval-samples-per-prompt",
             str(self.eval_samples_per_prompt),
             "--save-interval",
-            "5",
+            str(self.save_interval),
             "--max-keep",
             "2",
             "--max-context-tokens",
@@ -212,8 +217,8 @@ def parse_args(argv=None):
     parser.add_argument("--run-id", default="sync-fs-full-detach-001")
     parser.add_argument("--action", choices=("train", "prepare", "cpu-smoke"), default="train")
     parser.add_argument("--launch", action="store_true", help="Allocate the resources printed in the plan")
-    for name in ("image", "volume", "gpu"):
-        parser.add_argument(f"--{name}", default=getattr(Config, name))
+    for name in ("image", "volume", "gpu", "wandb_secret", "wandb_entity"):
+        parser.add_argument(f"--{name.replace('_', '-')}", default=getattr(Config, name))
     for name in (
         "gpus",
         "tensor_model_parallel_size",
@@ -232,6 +237,7 @@ def parse_args(argv=None):
         "rollout_batch_size",
         "samples_per_prompt",
         "critic_steps_per_rollout",
+        "save_interval",
     ):
         parser.add_argument(f"--{name.replace('_', '-')}", type=int, default=getattr(Config, name))
     for name in ("skip_eval_before_train",):
@@ -262,6 +268,7 @@ def check_manifest(config, *, wandb_project, wandb_entity):
         actual.setdefault("terminal_environment", "docker")
         if actual["terminal_environment"] == "docker":
             actual.setdefault("terminal_memory_mb", DOCKER_MEMORY_MB)
+        actual.setdefault("save_interval", 5)  # Previously fixed by the Modal launcher.
         # Old manifests predate these controls. Their recipe values match the
         # defaults; the new resource defaults also apply to them.
         for name in (
@@ -274,6 +281,8 @@ def check_manifest(config, *, wandb_project, wandb_entity):
             "critic_steps_per_rollout",
         ):
             actual.setdefault(name, getattr(Config, name))
+        actual.setdefault("wandb_secret", "")
+        actual.setdefault("wandb_entity", "")
         if actual != expected:
             raise ValueError(f"Run configuration differs from {path}; use the original settings or a new run ID")
         # Persist the normalized identity so later default changes cannot

@@ -9,6 +9,33 @@ from miles.utils.tracking_utils.tracking import BACKEND_REGISTRY
 from miles.utils.workers.types import ClusterBackend
 
 
+@pytest.mark.parametrize("fail", [False, True])
+async def test_wandb_receives_the_driver_exit_status(monkeypatch, fail):
+    import wandb
+    from miles.utils.async_utils import Disposer
+    from miles.utils.tracking_utils import tracking
+    from miles.utils.tracking_utils.base import WandbBackend
+
+    codes = []
+    manager = TrackingManager({})
+    manager._backends = [WandbBackend()]
+    monkeypatch.setattr(tracking, "_manager", manager)
+    monkeypatch.setattr(wandb, "finish", lambda *, exit_code: codes.append(exit_code))
+
+    async def run():
+        async with Disposer() as disposer:
+            disposer.add_exit(tracking.finish_tracking_on_exit)
+            if fail:
+                raise RuntimeError("training failed")
+
+    if fail:
+        with pytest.raises(RuntimeError, match="training failed"):
+            await run()
+    else:
+        await run()
+    assert codes == [int(fail)]
+
+
 class _RecordingBackend(TrackingBackend):
     inits: list[Any] = []
     logs: list[dict[str, Any]] = []

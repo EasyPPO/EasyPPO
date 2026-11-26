@@ -1,4 +1,6 @@
+import argparse
 import asyncio
+import runpy
 from functools import partial
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +22,26 @@ from miles.ray import wiring
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
 from miles.utils.data import RolloutDataPack
+
+
+def test_async_entrypoint_accepts_joint_checkpoint_flags(monkeypatch):
+    from miles.utils import arguments
+
+    parsed = []
+
+    def parse_cli(add_custom_arguments=None):
+        parser = argparse.ArgumentParser()
+        if add_custom_arguments is not None:
+            parser = add_custom_arguments(parser)
+        args = parser.parse_args(["--max-keep", "2", "--checkpoint-commit-hook", "modal_launchers.runtime.commit_volume"])
+        parsed.append(args)
+        return args
+
+    monkeypatch.setattr(arguments, "parse_args", parse_cli)
+    monkeypatch.setattr(asyncio, "run", lambda coroutine: coroutine.close())
+    runpy.run_path(train_async_driver.__file__, run_name="__main__")
+    assert parsed[0].max_keep == 2
+    assert parsed[0].checkpoint_commit_hook == "modal_launchers.runtime.commit_volume"
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -128,6 +150,61 @@ class TestApiServer:
         await with_disposer(train_async_driver.train, args)
 
         assert components.api_server_calls == []
+
+
+async def test_fatal_training_error_cancels_pending_eval(monkeypatch):
+    events = []
+    args = _make_args(num_rollout=1, eval_interval=1, hf_checkpoint="base", skip_eval_before_train=False)
+    components = _install_driver_fakes(monkeypatch, args, events)
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def evaluate(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def fail(*args, **kwargs):
+        await started.wait()
+        raise RuntimeError("fatal optimizer failure")
+
+    monkeypatch.setattr(components.rollout_executor, "eval", evaluate)
+    monkeypatch.setattr(components.actor_model, "train", fail)
+    with pytest.raises(RuntimeError, match="fatal optimizer failure"):
+        await asyncio.wait_for(with_disposer(train_async_driver.train, args), timeout=2)
+    assert cancelled.is_set()
+
+
+@pytest.mark.parametrize("fail_at", [None, "actor", "critic"])
+async def test_async_checkpoint_publishes_only_after_complete_synchronous_saves(monkeypatch, tmp_path, fail_at):
+    events = []
+    args = _make_args(num_rollout=2, debug_exit_after_rollout=1, use_critic=True, keep_old_actor=True,
+                      num_critic_only_steps=2, save_interval=1, max_keep=2,
+                      save=str(tmp_path / "actor"), critic_save=str(tmp_path / "critic"))
+    components = _install_driver_fakes(monkeypatch, args, events)
+    monkeypatch.setattr(train_async_driver, "remove_train_output_refs", lambda *_: None)
+    monkeypatch.setattr(train_async_driver, "prepare_rollout_checkpoint", lambda *_: events.append("refresh_events"))
+
+    def save(role):
+        async def callback(rollout_id, force_sync):
+            assert force_sync and rollout_id == 0
+            events.append(f"{role}_save")
+            if fail_at == role:
+                raise RuntimeError("incomplete checkpoint")
+        return callback
+
+    monkeypatch.setattr(components.actor_model, "save_model", save("actor"))
+    monkeypatch.setattr(components.critic_model, "save_model", save("critic"))
+    monkeypatch.setattr(train_async_driver, "finalize_checkpoint", lambda *_: events.append("published"))
+    if fail_at:
+        with pytest.raises(RuntimeError, match="incomplete checkpoint"):
+            await with_disposer(train_async_driver.train, args)
+        assert "published" not in events
+    else:
+        await with_disposer(train_async_driver.train, args)
+        assert events.index("refresh_events") < events.index("executor_save:0") < events.index("actor_save") < events.index("critic_save") < events.index("published")
+        assert components.actor_model.trained == []
 
 
 class TestWeightEqualityCheck:

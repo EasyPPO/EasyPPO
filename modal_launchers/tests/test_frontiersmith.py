@@ -1,13 +1,40 @@
 import json
+import sys
 from contextlib import nullcontext
 from dataclasses import replace
-from types import SimpleNamespace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-
 from modal_launchers import frontiersmith as launcher
 from modal_launchers.config import Config, check_manifest, parse_args
+
+
+@pytest.mark.parametrize("saved_version", [None, "old", "current"])
+@pytest.mark.parametrize("model_size", ["9b", "27b"])
+def test_preflight_rejects_incompatible_checkpoint_layout(tmp_path, monkeypatch, saved_version, model_size):
+    from modal_launchers.runtime import check_models
+
+    version_owner = ModuleType("miles.utils.external_utils.command_utils.base_backend")
+    version_owner.CONVERSION_VERSION = "current"
+    version_owner.CONVERSION_VERSION_FILE = "test_conversion_version.txt"
+    monkeypatch.setitem(sys.modules, version_owner.__name__, version_owner)
+    config = Config(mode="full_detach", run_id="test", mount=str(tmp_path), model_size=model_size)
+    model = Path(config.models) / config.generation.model_name
+    model.mkdir(parents=True)
+    for name in ("config.json", "tokenizer_config.json", "model.safetensors"):
+        (model / name).touch()
+    converted = Path(config.models) / f"{config.generation.model_name}_torch_dist"
+    (converted / "release").mkdir(parents=True)
+    (converted / "latest_checkpointed_iteration.txt").write_text("release")
+    if saved_version is not None:
+        (converted / version_owner.CONVERSION_VERSION_FILE).write_text(saved_version)
+    if saved_version == "current":
+        check_models(config)
+    else:
+        with pytest.raises(ValueError, match="incompatible conversion layout"):
+            check_models(config)
 
 
 @pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
@@ -89,6 +116,8 @@ def test_one_round_smoke_plan_reaches_actor_update_without_startup_eval():
             "32768",
             "--concurrency",
             "1",
+            "--save-interval",
+            "1",
         ]
     )
     assert not args.launch
@@ -102,6 +131,7 @@ def test_one_round_smoke_plan_reaches_actor_update_without_startup_eval():
         "--eval-max-tasks": "2",
         "--eval-samples-per-prompt": "1",
         "--terminal-memory-mb": "32768",
+        "--save-interval": "1",
     }.items():
         assert command[command.index(flag) + 1] == value
     assert "--skip-eval-before-train" in command
@@ -146,6 +176,7 @@ def test_legacy_run_accepts_original_controls_and_pins_them(tmp_path):
         check_manifest(config, wandb_project="test", wandb_entity=None)
     legacy = dict(current)
     legacy.pop("tensor_model_parallel_size")
+    legacy.pop("save_interval")
     for name in (
         "terminal_environment",
         "terminal_memory_mb",
@@ -171,7 +202,7 @@ def test_legacy_run_accepts_original_controls_and_pins_them(tmp_path):
         check_manifest(replace(config, eval_max_tasks=2), wandb_project="test", wandb_entity=None)
 
 
-@pytest.mark.parametrize("change", [{"run_id": "../escape"}, {"gpus": 32}, {"max_restarts": -1}])
+@pytest.mark.parametrize("change", [{"run_id": "../escape"}, {"gpus": 32}, {"max_restarts": -1}, {"save_interval": 0}])
 def test_invalid_plan_rejected(change):
     with pytest.raises(ValueError):
         replace(Config(mode="full_detach", run_id="test"), **change)
@@ -258,3 +289,25 @@ def test_restart_policy(monkeypatch, failure, expected_error, expected_spawns):
         assert str(caught.value.__context__) == "training failed"
     assert training.spawn.call_count == expected_spawns
     assert events == (["cancel", "terminate"] * expected_spawns if expected_spawns else ["terminate"])
+
+
+
+
+def test_named_wandb_secret_excludes_local_account_and_explicit_entity_wins(monkeypatch):
+    monkeypatch.setenv("WANDB_API_KEY", "fake-company-key")
+    monkeypatch.setenv("WANDB_ENTITY", "company")
+    monkeypatch.setenv("WANDB_BASE_URL", "https://company.example")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    modal = SimpleNamespace(
+        Secret=SimpleNamespace(
+            from_dict=lambda values: ("dict", values),
+            from_local_environ=lambda keys: ("local", keys),
+            from_name=lambda name, **kwargs: ("named", name, kwargs),
+        )
+    )
+    config = Config(mode="full_detach", run_id="test", wandb_secret="personal", wandb_entity="personal-team")
+    secrets = launcher._secrets(modal, config)
+    assert secrets == [
+        ("named", "personal", {"required_keys": ["WANDB_API_KEY"]}),
+        ("dict", {"WANDB_ENTITY": "personal-team"}),
+    ]

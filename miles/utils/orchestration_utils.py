@@ -3,6 +3,7 @@ from functools import partial
 
 from ray.actor import ActorHandle
 
+from miles.backends.training_utils.checkpoint.joint_checkpoint import prepare_rollout_checkpoint
 from miles.ray.wiring import launch_worker_manager, shutdown_worker_manager
 from miles.utils import object_store
 from miles.utils.async_utils import Disposer
@@ -13,14 +14,17 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookOwner
-from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
+from miles.utils.tracking_utils.tracking import finish_tracking_on_exit, init_tracking
 
 
 def init_orchestration_script(args: Namespace, *, disposer: Disposer) -> ActorHandle | None:
     event_logger_checkpoint.restore(args)
+    # Other mounts must see the rewound logs before their writers start, or a
+    # resume could append to and republish the abandoned post-checkpoint tail.
+    prepare_rollout_checkpoint(args)
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
     maybe_start_periodic_pyspy_dump()
-    disposer.add(finish_tracking)
+    disposer.add_exit(finish_tracking_on_exit)
     init_tracking(args)
     worker_manager = launch_worker_manager(args)
     disposer.add(partial(shutdown_worker_manager, worker_manager))

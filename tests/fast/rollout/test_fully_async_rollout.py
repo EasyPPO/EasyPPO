@@ -563,7 +563,7 @@ async def test_a_dying_worker_cancels_the_step_and_is_logged(monkeypatch, caplog
     caplog.set_level(logging.ERROR, logger=fully_async.__name__)
     step = asyncio.create_task(fn(train_input(rollout_id=0)))
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(RuntimeError, match="generation exploded"):
         await step
 
     assert "generation exploded" in caplog.text
@@ -604,7 +604,7 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
     watch_worker(fn, worker)
     await asyncio.wait({worker})
 
-    with pytest.raises(AssertionError, match="worker has ended"):
+    with pytest.raises(RuntimeError, match="generation exploded"):
         await fn(train_input(rollout_id=0))
 
 
@@ -1351,8 +1351,9 @@ class TestDeadWorkerEndsTheWait:
 
         release.set()
 
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(RuntimeError, match="producer exploded"):
             await asyncio.wait_for(drain, timeout=5)
+        assert fn._worker_error_cancel_targets == set()
         [record] = worker_errors(caplog)
         assert str(record.exc_info[1]) == "producer exploded"
 
@@ -1420,7 +1421,7 @@ class TestDeadWorkerEndsTheWait:
         watch_worker(fn, worker)
         await asyncio.wait({worker})
 
-        with pytest.raises(AssertionError, match="worker has ended"):
+        with pytest.raises(RuntimeError, match="producer exploded"):
             await asyncio.wait_for(fn._drain(train_input(rollout_id=0)), timeout=5)
 
     async def test_a_worker_that_died_earlier_fails_the_next_wait(self, monkeypatch):

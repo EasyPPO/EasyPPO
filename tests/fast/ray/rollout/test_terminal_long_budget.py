@@ -300,3 +300,59 @@ async def test_terminus_writes_final_harbor_trajectory_once(monkeypatch, tmp_pat
     steps = json.loads((tmp_path / "trajectory.json").read_text())["steps"]
     assert [s["message"] for s in steps[1:]] == ["turn 2", "turn 3"]
     assert (tmp_path / "easyppo-trajectory.json").exists()
+
+
+@pytest.mark.parametrize(
+    "failure,probe_code,probe_error,ended",
+    [
+        ("failed to send non-blocking keys: no server running on /tmp/tmux-0/default", 1,
+         "no server running on /tmp/tmux-0/default\n", True),
+        ("Terminus could not observe tmux: can't find pane: terminus-2", 1,
+         "can't find session: terminus-2\n", True),
+        ("failed to send non-blocking keys: no server running on /tmp/tmux-0/default", 0, "", False),
+        ("failed to send non-blocking keys: no server running on /tmp/tmux-0/default", 137, "", False),
+        ("Container connection lost", None, "", False),
+        ("cancelled", None, "", False),
+    ],
+)
+async def test_terminus_terminal_exit_preserves_episode_and_infrastructure_failures(
+    monkeypatch, tmp_path, failure, probe_code, probe_error, ended
+):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from harbor.agents.terminus_2.terminus_2 import Terminus2
+    from harbor.llms.chat import Chat
+    from harbor.models.agent.context import AgentContext
+
+    from agentic_critic.harbor_terminus import MilesTerminus2
+
+    error = asyncio.CancelledError() if failure == "cancelled" else RuntimeError(failure)
+    monkeypatch.setattr(Terminus2, "_execute_commands", AsyncMock(side_effect=error))
+    probe = AsyncMock(return_value=SimpleNamespace(return_code=probe_code, stdout="", stderr=probe_error))
+    session = SimpleNamespace(environment=SimpleNamespace(exec=probe), _session_name="terminus-2", _user=None)
+
+    async def run(self, instruction, environment, context):
+        await Chat(self._llm).chat(instruction)
+        await self._execute_commands([], session)
+
+    async def decode(prompt, limit):
+        return completion('<response><commands><keystrokes duration="0.1">C-d</keystrokes></commands></response>')
+
+    monkeypatch.setattr(Terminus2, "run", run)
+    agent = MilesTerminus2(logs_dir=tmp_path, model_name="Qwen/Qwen3.5-9B", parser_name="xml")
+    agent.bind(tokenizer=Tokenizer(), decode=decode, config=TerminalConfig())
+    context = AgentContext()
+    if ended:
+        await agent.run("task", session.environment, context)
+        assert agent.trace.exit_status == "SessionEnded" and agent.trace.truncated
+    else:
+        with pytest.raises(type(error)) as raised:
+            await agent.run("task", session.environment, context)
+        assert raised.value is error
+    assert probe.await_count == int(probe_code is not None)
+    recorded = json.loads((tmp_path / "easyppo-trajectory.json").read_text())
+    assert recorded["trace"]["generated_tokens"] == context.n_output_tokens > 0
+    assert sum(sum(part.loss_mask) for part in agent.trace.segments) == context.n_output_tokens

@@ -12,6 +12,8 @@ from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
+from miles.utils.volume_io import volume_access
+
 RAY_PORT = 6379
 DASHBOARD_PORT = 8265
 CONTROL_PORT = 29599
@@ -45,16 +47,32 @@ def _wait(store, predicate, process, nodes, description):
 
 
 def _commit_all(store, volume, nodes, generation):
-    # All commits finish before any reload. Workers acknowledge reloading before
-    # the driver may resume training or publish the next completion marker.
-    store.set("commit", generation)
-    volume.commit()
-    keys = [f"committed/{rank}/{generation}" for rank in range(1, nodes)]
-    _wait(store, lambda: store.check(keys), None, nodes, "checkpoint commits")
-    store.set("reload", generation)
-    volume.reload()
-    keys = [f"reloaded/{rank}/{generation}" for rank in range(1, nodes)]
-    _wait(store, lambda: store.check(keys), None, nodes, "checkpoint reloads")
+    try:
+        _commit_all_guarded(store, volume, nodes, generation)
+    except BaseException as error:
+        # Release peers out of their barrier before the driver's teardown asks
+        # those same workers to shut down. Waiting for run_node to report this
+        # would deadlock cleanup behind the workers' exclusive volume leases.
+        store.set("error/0", f"{type(error).__name__}: {error}")
+        raise
+
+
+def _commit_all_guarded(store, volume, nodes, generation):
+    # Acquire the head first: cross-node readers hold shared access there for
+    # the entire remote read. Then quiesce writers on every node before reload.
+    with volume_access(exclusive=True):
+        store.set("commit", generation)
+        volume.commit()
+        keys = [f"committed/{rank}/{generation}" for rank in range(1, nodes)]
+        _wait(store, lambda: store.check(keys), None, nodes, "checkpoint commits")
+        store.set("reload", generation)
+        volume.reload()
+        keys = [f"reloaded/{rank}/{generation}" for rank in range(1, nodes)]
+        _wait(store, lambda: store.check(keys), None, nodes, "checkpoint reloads")
+        # No reader may resume while even one peer still has an empty mount.
+        store.set("release", generation)
+    keys = [f"released/{rank}/{generation}" for rank in range(1, nodes)]
+    _wait(store, lambda: store.check(keys), None, nodes, "volume access release")
 
 
 def commit_cluster_volume(volume, *, nodes, head_ip):
@@ -69,17 +87,26 @@ def _worker_loop(store, process, volume, *, rank, nodes):
         if store.check(["commit"]):
             requested = store.get("commit").decode()
             if requested != generation:
-                volume.commit()
-                store.set(f"committed/{rank}/{requested}", "1")
-                _wait(
-                    store,
-                    lambda target=requested: store.check(["reload"]) and store.get("reload").decode() == target,
-                    process,
-                    nodes,
-                    "reload barrier",
-                )
-                volume.reload()
-                store.set(f"reloaded/{rank}/{requested}", "1")
+                with volume_access(exclusive=True):
+                    volume.commit()
+                    store.set(f"committed/{rank}/{requested}", "1")
+                    _wait(
+                        store,
+                        lambda target=requested: store.check(["reload"]) and store.get("reload").decode() == target,
+                        process,
+                        nodes,
+                        "reload barrier",
+                    )
+                    volume.reload()
+                    store.set(f"reloaded/{rank}/{requested}", "1")
+                    _wait(
+                        store,
+                        lambda target=requested: store.check(["release"]) and store.get("release").decode() == target,
+                        process,
+                        nodes,
+                        "volume access release",
+                    )
+                store.set(f"released/{rank}/{requested}", "1")
                 generation = requested
         time.sleep(0.2)
     store.set(f"finished/{rank}", "1")
@@ -101,6 +128,13 @@ def _node_environment(config, *, rank, addresses, judge_token):
         WANDB_RUN_ID=config.run_id,
         WANDB_RESUME="allow",
     )
+    # The Terminal launcher separates live third-party logs from checkpoints.
+    # Its remaining volume users participate in the explicit access protocol.
+    if hasattr(config, "output_mount"):
+        env.update(
+            MILES_VOLUME_IO_ROOT=config.output_mount,
+            MILES_VOLUME_IO_LOCK=f"/tmp/easyppo-volume-{config.run_id}.lock",
+        )
     for interface, items in psutil.net_if_addrs().items():
         if any(item.family == socket.AF_INET and item.address == node_ip for item in items):
             env["NCCL_SOCKET_IFNAME"] = f"={interface}"
@@ -180,7 +214,7 @@ def _stop_process(process):
             process.wait(timeout=15)
 
 
-def _run_head(store, process, volume, config, addresses, judge_url, judge_token, train_command=None):
+def _run_head(store, process, volume, config, addresses, judge_url, judge_token, train_command=None, *, train_fn=None):
     import ray
     from modal_launchers.runtime import train
 
@@ -195,7 +229,7 @@ def _run_head(store, process, volume, config, addresses, judge_url, judge_token,
             subprocess.run(command, cwd=config.source, env=env, check=check)
 
         if train_command is None:
-            train(config, judge_url, judge_token, run_command=run_command)
+            (train_fn or train)(config, judge_url, judge_token, run_command=run_command)
         else:
             run_command(train_command, check=True)
         _commit_all(store, volume, config.nodes, uuid4().hex)
@@ -206,7 +240,7 @@ def _run_head(store, process, volume, config, addresses, judge_url, judge_token,
         ray.shutdown()
 
 
-def run_node(cluster, config, volume, judge_url, judge_token, *, cpus=32, train_command=None):
+def run_node(cluster, config, volume, judge_url, judge_token, *, cpus=32, train_command=None, train_fn=None):
     addresses = list(cluster.container_ips(family="ipv4"))
     rank = cluster.container_rank()
     if len(addresses) != config.nodes or len(set(addresses)) != config.nodes or not 0 <= rank < config.nodes:
@@ -238,7 +272,9 @@ def run_node(cluster, config, volume, judge_url, judge_token, *, cpus=32, train_
         if rank == 0:
             _wait(store, lambda: _port_ready(addresses[0], DASHBOARD_PORT), process, config.nodes, "Ray Jobs API")
             store.set("head_started", "1")
-            _run_head(store, process, volume, config, addresses, judge_url, judge_token, train_command)
+            _run_head(
+                store, process, volume, config, addresses, judge_url, judge_token, train_command, train_fn=train_fn
+            )
         else:
             _worker_loop(store, process, volume, rank=rank, nodes=config.nodes)
     except BaseException as error:

@@ -3487,6 +3487,8 @@ def validate_log_probs_backend_args(args) -> None:
 
 
 def _resolve_event_logging(args: argparse.Namespace) -> None:
+    if os.environ.get("MILES_VOLUME_IO_LOCK") and not args.pin_rollout_manager_to_head:
+        raise ValueError("Reloadable volume storage requires --pin-rollout-manager-to-head")
     event_directory_was_requested = args.save_debug_event_data is not None
 
     if args.dump_details is not None:

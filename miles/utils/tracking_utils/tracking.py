@@ -54,3 +54,7 @@ def log(args, metrics, step_key: str):
 
 def finish_tracking():
     _manager.finish()
+
+
+def finish_tracking_on_exit(exc_type, exc, traceback):
+    _manager.finish(exit_code=0 if exc_type is None else 1)

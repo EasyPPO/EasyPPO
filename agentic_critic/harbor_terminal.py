@@ -6,6 +6,7 @@ in-process episode; no global registry or external agent server is needed.
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
@@ -169,6 +170,10 @@ async def run_trial(
             keepalive = ["sh", "-c", 'cd "$1" 2>/dev/null || cd /; shift; exec "$@"',
                          "entrypoint", metadata["agentpick_workdir"], *keepalive]
         environment_kwargs["keepalive"] = keepalive
+    if environment == "modal":
+        environment_kwargs["modal_vm_runtime"] = True
+        if "EASYPPO_TERMINAL_MODAL_APP" in os.environ:
+            environment_kwargs["app_name"] = os.environ["EASYPPO_TERMINAL_MODAL_APP"]
     trial_config = TrialConfig(
         task=TaskConfig(path=task_path),
         trials_dir=trials_dir,
@@ -177,8 +182,14 @@ async def run_trial(
             import_path="agentic_critic.agentpick_verifier:AgentPickVerifier",
             kwargs={"workdir": metadata["agentpick_workdir"]},
         ) if "agentpick_workdir" in metadata else VerifierConfig(),
+        # Concurrent Modal VM provisioning needs headroom beyond local builds.
+        # Keep the agent and verifier execution budgets at the task defaults.
+        environment_build_timeout_multiplier=6.0 if environment == "modal" else None,
         environment=EnvironmentConfig(
-            type=environment,
+            type=environment if environment != "modal" else None,
+            import_path="agentic_critic.harbor_modal:TerminalModalEnvironment" if environment == "modal" else None,
+            # Keep the optional Modal backend's validated DinD transport.
+            env={"COMPOSE_BAKE": "false"} if environment == "modal" else {},
             override_memory_mb=memory_mb,
             kwargs=environment_kwargs,
             extra_docker_compose=[Path(path) for path in docker_compose],
