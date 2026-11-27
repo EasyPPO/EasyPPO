@@ -15,7 +15,7 @@ from miles.ray.placement_group import (
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
-from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
+from miles.utils.async_utils import Disposer, eager_create_task
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.misc import should_run_periodic_action
@@ -83,8 +83,12 @@ async def train(args, *, disposer: Disposer):
             await actor_model.clear_memory()
 
     async def prepare_and_generate(rollout_id):
-        await inference_controller.prepare_rollout(rollout_id)
-        return await rollout_executor.get(rollout_id)
+        try:
+            await inference_controller.prepare_rollout(rollout_id)
+            return await rollout_executor.get(rollout_id)
+        except Exception as exc:
+            exc.add_note(f"Preparing or collecting rollout {rollout_id}")
+            raise
 
     # async train loop.
     if args.start_rollout_id >= args.num_rollout:
@@ -187,6 +191,15 @@ async def train(args, *, disposer: Disposer):
             break
 
 
+async def run_training(args):
+    async with Disposer() as disposer:
+        try:
+            await train(args, disposer=disposer)
+        except (Exception, asyncio.CancelledError):
+            logger.exception("Async training driver exiting before worker cleanup")
+            raise
+
+
 if __name__ == "__main__":
     args = parse_args(add_custom_arguments=add_checkpoint_arguments)
-    asyncio.run(with_disposer(train, args))
+    asyncio.run(run_training(args))
