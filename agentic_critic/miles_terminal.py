@@ -253,10 +253,9 @@ async def generate(input):
 
 async def _generate(input):
     # Optional Miles/Harbor dependencies are only needed by the online wrapper.
-    from miles.rollout.base_types import GenerateFnOutput
     from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, compute_routing_headers
     from miles.utils.http_utils import post
-    from miles.utils.types import Sample, WeightVersionsPerCall
+    from miles.utils.types import WeightVersionsPerCall
 
     args, base = input.args, input.sample
     _validate_runtime(args, evaluation=input.evaluation)
@@ -330,6 +329,30 @@ async def _generate(input):
         reward, reward_metadata = 0.0, {"reward_mode": "native", "reward_fallback": "unsubmitted"}
     else:
         reward, reward_metadata = _reward(args, metadata, rewards)
+    rollout_id = base.rollout_id if base.rollout_id is not None else base.index
+    if rollout_id is None:
+        raise ValueError("Terminal rollouts require a sample index or rollout_id")
+    try:
+        return _samples_from_trace(
+            input, trace, trial_dir, metadata, agent_protocol, rewards, reward, reward_metadata, rollout_id
+        )
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        logging.getLogger(__name__).exception("Discarding invalid terminal trace: task=%s trial=%s", task_path, trial_dir)
+        failure = _DiscardedTrial("InvalidTrialTrace", str(exc), infrastructure=True)
+        return _discarded_output(input, failure, {**metadata, "trial_dir": trial_dir})
+
+
+def _samples_from_trace(input, trace, trial_dir, metadata, agent_protocol, rewards, reward, reward_metadata, rollout_id):
+    from miles.rollout.base_types import GenerateFnOutput
+    from miles.utils.types import Sample, WeightVersionsPerCall
+
+    if (
+        not input.evaluation
+        and getattr(input.args, "critic_context_mode", None) == "full_detach"
+        and not trace.critic_memory_exact
+    ):
+        raise ValueError("full_detach requires an exact critic history")
+
     versions_by_segment = [[] for _ in trace.segments]
     for call in trace.calls:
         if "weight_versions" in call:
@@ -337,10 +360,8 @@ async def _generate(input):
     samples = []
     for i, sample_fields in enumerate(trace.sample_fields()):
         segment_metadata = trace.segment_metadata(i)
-        sample = deepcopy(base)
-        sample.rollout_id = base.rollout_id if base.rollout_id is not None else base.index
-        if sample.rollout_id is None:
-            raise ValueError("Terminal rollouts require a sample index or rollout_id")
+        sample = deepcopy(input.sample)
+        sample.rollout_id = rollout_id
         for name, value in sample_fields.items():
             setattr(sample, name, value)
         sample.weight_versions = versions_by_segment[i]
@@ -372,7 +393,7 @@ async def _generate(input):
         samples.append(sample)
     if not samples:
         # An oversized initial instruction is not a valid zero-token training sample.
-        raise ValueError(f"Terminal episode produced no actor tokens: {trace.exit_status}; task={task_path}")
+        raise ValueError(f"Terminal episode produced no actor tokens: {trace.exit_status}")
     return GenerateFnOutput(samples=samples)
 
 

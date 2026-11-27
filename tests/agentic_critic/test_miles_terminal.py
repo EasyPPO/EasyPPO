@@ -284,3 +284,32 @@ async def test_abort_preserves_evaluation_and_other_rollout_owner(monkeypatch):
     finish.set()
     assert await asyncio.gather(*tasks[1:]) == ["evaluation", "other"]
     assert not miles_terminal._ACTIVE_TRIALS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evaluation", [False, True])
+@pytest.mark.parametrize("duplicate_summary", [False, True])
+async def test_invalid_trial_trace_discards_only_its_draw(monkeypatch, tmp_path, evaluation, duplicate_summary):
+    from agentic_critic.terminal_env import TerminalTrace
+
+    make_task(tmp_path)
+    trace = TerminalTrace()
+    if duplicate_summary:
+        trace.record([1], completion("first"), kind="summary")
+        trace.record(trace.segments[-1].tokens + [2], completion("second"), kind="summary")
+
+    async def trial(**kwargs):
+        return trace, {}, "/trial"
+
+    monkeypatch.setattr(harbor_terminal, "run_trial", trial)
+    args = args_for(tmp_path)
+    args.terminal_agent_protocol = "terminus-2"
+    base = Sample(index=9, prompt="task", metadata={"task_path": "task"})
+    result = await miles_terminal.generate(SimpleNamespace(
+        args=args, sample=base, evaluation=evaluation, state=SimpleNamespace(tokenizer=Tokenizer()),
+        sampling_params={},
+    ))
+    assert result.samples.status == Sample.Status.ABORTED
+    assert result.samples.metadata["terminal_infra_failure_type"] == "InvalidTrialTrace"
+    assert result.samples.metadata["trial_dir"] == "/trial"
+    assert result.samples.reward == (0.0 if evaluation else None)
