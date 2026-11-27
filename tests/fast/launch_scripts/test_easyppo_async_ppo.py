@@ -407,7 +407,8 @@ def test_terminus_score_centering(monkeypatch, tmp_path, mode, enabled):
         assert "--score-centering-is" not in args and "--rollout-top-logprobs-num" not in args
         return
     for flag, value in {"--loss-type": "score_centering", "--log-probs-backend": "fused", "--advantage-estimator": "ppo",
-                        "--rollout-top-logprobs-num": "128", "--score-centering-is": "tis",
+                        "--rollout-top-logprobs-num": "32", "--score-centering-is": "tis",
+                        "--log-probs-chunk-size": "128",
                         "--max-weight-staleness": "4", "--pause-generation-mode": "in_place"}.items():
         assert args[args.index(flag) + 1] == value
 
