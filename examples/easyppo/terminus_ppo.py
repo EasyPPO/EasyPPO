@@ -103,6 +103,7 @@ def main(default_mode=None):
     parser.add_argument("--run-id", help="Reuse the same ID and output directory to resume.")
     parser.add_argument("--max-keep", type=int, default=ScriptArgs.max_keep, help="Keep this many complete PPO checkpoints; 0 keeps all.")
     parser.add_argument("--save-interval", type=int, default=ScriptArgs.save_interval, help="Rollout batches between complete checkpoints.")
+    parser.add_argument("--async-save", action="store_true", help="Use Megatron background checkpoint writers.")
     parser.add_argument("--checkpoint-commit-hook", help="Commit shared checkpoint and eval snapshot storage.")
     parser.add_argument("--trials-dir", default="", help="Optional separate location for live trial logs.")
     parser.add_argument("--model-dir", required=True)
@@ -180,6 +181,7 @@ def main(default_mode=None):
             *(("--use-distributed-post",) if opts.use_distributed_post else ()),
             "--max-keep", str(opts.max_keep),
             "--use-checkpoint-opt-param-scheduler",
+            *(("--async-save", "--use-persistent-ckpt-worker") if opts.async_save else ()),
             *(("--checkpoint-commit-hook", opts.checkpoint_commit_hook) if opts.checkpoint_commit_hook else ()),
             "--critic-max-tokens-per-gpu", str(args.critic_max_tokens_per_gpu),
             "--ppo-prompt-mean",

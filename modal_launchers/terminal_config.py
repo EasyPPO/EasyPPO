@@ -121,6 +121,7 @@ class TerminalConfig:
             "blackwell" if self.gpu == "B200" else "hopper",
             "--max-keep",
             str(self.max_keep),
+            "--async-save",
             "--save-interval",
             str(self.save_interval),
             "--checkpoint-commit-hook",

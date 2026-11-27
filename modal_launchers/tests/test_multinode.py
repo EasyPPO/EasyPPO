@@ -305,7 +305,7 @@ def test_terminus_allocates_and_runs_same_recipe_on_64_cpu_nodes(monkeypatch, mo
     monkeypatch.setattr(terminus, "_secrets", lambda modal: [])
     monkeypatch.setattr(terminus, "run_node", lambda *a, **kw: launches.append((a, kw)))
     monkeypatch.setattr(sys, "argv", [
-        "run", "--launch-modal", "--modal-volume", "data", "--modal-sandbox-secret", "harbor",
+        "run", "--async-save", "--launch-modal", "--modal-volume", "data", "--modal-sandbox-secret", "harbor",
         "--model-dir", "/shared/easyppo/models", "--output-dir", "/shared/easyppo/runs",
         "--tasks-dir", "/shared/easyppo/tasks", "--prompt-data", "/shared/easyppo/train.jsonl",
         "--eval-data", "/shared/easyppo/eval.jsonl", "--run-id", "resume-me",
@@ -331,6 +331,7 @@ def test_terminus_allocates_and_runs_same_recipe_on_64_cpu_nodes(monkeypatch, mo
     terminus_ppo.main(mode)
     args, kw = recorded[0]
     assert args.critic_context_mode == mode and args.run_id == "resume-me"
+    assert {"--async-save", "--use-persistent-ckpt-worker"} <= set(kw["extra_args"])
     assert kw["extra_args"][kw["extra_args"].index("--checkpoint-commit-hook") + 1] == "modal_launchers.runtime.commit_volume"
 
 
@@ -468,6 +469,7 @@ def test_terminal_storage_uses_v2_and_default_gpu_preemption(monkeypatch):
             assert options["gpu"] == "B200:8" and options["max_containers"] == 2
             assert options["retries"] == 0
     command = config.command()
+    assert "--async-save" in command
     assert command[command.index("--save-interval") + 1] == "1"
     assert command[command.index("--max-keep") + 1] == "3"
 
