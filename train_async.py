@@ -68,12 +68,22 @@ async def train(args, *, disposer: Disposer):
         await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
-    async def save_training_model(model, rollout_id, force_sync):
+    async def save_training_model(model, rollout_id, force_sync, defer):
         if args.use_critic and args.offload_train:
             await model.onload()
-        await model.save_model(rollout_id, force_sync=force_sync)
+        cell = None
+        if defer:
+            cell = await model.start_async_checkpoint(rollout_id)
+        else:
+            await model.save_model(rollout_id, force_sync=force_sync)
         if args.use_critic and args.offload_train:
             await model.offload()
+        return cell
+
+    async def publish_pending(rollout_id, cells):
+        for model, cell in zip((actor_model, critic_model), cells, strict=True):
+            await model.finish_async_checkpoint(*cell)
+        finalize_checkpoint(args, rollout_id, max_keep)
 
     async def offload_train():
         if args.use_critic:
@@ -100,6 +110,7 @@ async def train(args, *, disposer: Disposer):
             await eval_dispatcher.dispatch(args.num_rollout - 1, force=True)
         return
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
+    pending_checkpoint = None
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -122,6 +133,12 @@ async def train(args, *, disposer: Disposer):
             if has_next_rollout and not defer_next_drain:
                 rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
+        # The async writer may still reference CPU Adam tensors. Let the next
+        # rollout overlap disk I/O, then drain before training mutates them.
+        if pending_checkpoint is not None and getattr(args, "optimizer_cpu_offload", False):
+            await publish_pending(*pending_checkpoint)
+            pending_checkpoint = None
+
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref.for_critic())
             if args.offload_train:
@@ -135,6 +152,22 @@ async def train(args, *, disposer: Disposer):
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
 
+        # The previous snapshot's CPU writers ran during rollout and training.
+        # Finish their collectives before another save or a Volume commit/reload.
+        if pending_checkpoint is not None:
+            await publish_pending(*pending_checkpoint)
+            pending_checkpoint = None
+
+        eval_due = should_run_periodic_action(
+            rollout_id,
+            args.eval_interval,
+            num_rollout_per_epoch if getattr(args, "eval_on_epoch", True) else None,
+            args.num_rollout,
+        )
+        debug_exit_due = (
+            args.debug_exit_after_rollout is not None
+            and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
+        )
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
             rollout_id,
@@ -142,16 +175,32 @@ async def train(args, *, disposer: Disposer):
             num_rollout_per_epoch if getattr(args, "save_on_epoch", True) else None,
             args.num_rollout,
         ):
-            force_sync = external_save or rollout_id == args.num_rollout - 1 or max_keep > 0
+            force_sync = external_save or not has_next_rollout
+            defer = (
+                max_keep > 0
+                and getattr(args, "async_save", False)
+                and args.train_backend == "megatron"
+                and not debug_exit_due
+                and not force_sync
+                and not (
+                    eval_due
+                    and args.eval_uses_snapshots
+                    and args.eval_hf_dir is not None
+                    and getattr(args, "checkpoint_commit_hook", None)
+                )
+            )
+            force_sync = force_sync or (max_keep > 0 and not defer)
             # Joint retention publishes rollout state before either model's
             # tracker advances. Keep the existing save order for other runs.
             if max_keep > 0:
                 prepare_rollout_checkpoint(args)
                 await rollout_executor.save(rollout_id)
-            await save_training_model(actor_model, rollout_id, force_sync)
+            actor_cell = await save_training_model(actor_model, rollout_id, force_sync, defer)
             if args.use_critic:
-                await save_training_model(critic_model, rollout_id, force_sync)
-            if max_keep > 0:
+                critic_cell = await save_training_model(critic_model, rollout_id, force_sync, defer)
+            if defer:
+                pending_checkpoint = (rollout_id, (actor_cell, critic_cell))
+            elif max_keep > 0:
                 finalize_checkpoint(args, rollout_id, max_keep)
             else:
                 await rollout_executor.save(rollout_id)
@@ -177,19 +226,11 @@ async def train(args, *, disposer: Disposer):
             if rollout_id + 1 < args.num_rollout:
                 rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
-        if should_run_periodic_action(
-            rollout_id,
-            args.eval_interval,
-            num_rollout_per_epoch if getattr(args, "eval_on_epoch", True) else None,
-            args.num_rollout,
-        ):
+        if eval_due:
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
-        if (
-            args.debug_exit_after_rollout is not None
-            and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
-        ):
+        if debug_exit_due:
             logger.info(
                 "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
                 args.debug_exit_after_rollout,

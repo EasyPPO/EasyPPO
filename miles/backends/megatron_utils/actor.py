@@ -456,6 +456,19 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.update_weights_interval == 1:
                 self.weights_backuper.backup("rollout_actor")
 
+    def finish_async_checkpoint(self) -> None:
+        # The writer owns the staged data. Its finalizers only need live
+        # process groups, so avoid paging both models back in just to publish.
+        temporary_groups = self.args.offload_train and self._asleep
+        if temporary_groups:
+            reload_process_groups()
+        try:
+            with torch_memory_saver.disable() if temporary_groups else nullcontext():
+                self._finalize_pending_async_save()
+        finally:
+            if temporary_groups:
+                destroy_process_groups()
+
     def _finalize_pending_async_save(self) -> None:
         if not self.args.async_save:
             return
@@ -902,12 +915,10 @@ class MegatronTrainRayActor(TrainRayActor):
             assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
             save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
 
-        if force_sync:
+        if force_sync or self.args.custom_megatron_post_save_hook_path is not None:
             self._finalize_pending_async_save()
 
         if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
-            self._finalize_pending_async_save()
-
             from megatron.training.checkpointing import get_checkpoint_name
 
             from miles.utils.function_registry import load_function

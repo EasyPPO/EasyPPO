@@ -408,6 +408,22 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
+    async def start_async_checkpoint(self, rollout_id: int) -> tuple[str, str]:
+        """Return the cell whose Megatron ranks own the pending writer callbacks."""
+
+        async def submit(_):
+            cell = self._first_alive_cell()
+            await cell.execute("save_model", rollout_id=rollout_id, force_sync=False)
+            return cell.cell_id, cell.workers_hash
+
+        return await retry(submit, max_attempts=_RETRY_MAX_ATTEMPTS)
+
+    async def finish_async_checkpoint(self, cell_id: str, workers_hash: str) -> None:
+        cell = self._cells_by_id.get(cell_id)
+        if cell is None or not cell.is_alive or cell.workers_hash != workers_hash:
+            raise RuntimeError(f"Checkpoint writer cell {cell_id} was lost before finalization")
+        await cell.execute("finish_async_checkpoint")
+
     async def export_hf(self, rollout_id: int, path: str) -> None:
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
         await retry(
@@ -620,12 +636,16 @@ class TrainerController:
             self._raise_if_no_cell_can_recover(debug_name=debug_name, cause=_first_exception(outputs))
         return snapshot_alive_cells, outputs
 
-    async def _execute_first_alive(self, fn_name: str, **kwargs):
+    def _first_alive_cell(self) -> TrainerCell:
         alive_cells = [c for c in self._cells if c.is_alive]
         if not alive_cells:
             raise NonRetryableError("No alive cells, therefore cannot heal anymore")
+        return alive_cells[0]
+
+    async def _execute_first_alive(self, fn_name: str, **kwargs):
+        cell = self._first_alive_cell()
         try:
-            return await alive_cells[0].execute(fn_name, **kwargs)
+            return await cell.execute(fn_name, **kwargs)
         except Exception as cause:
             self._raise_if_no_cell_can_recover(debug_name=f"execute_first_alive#{fn_name}", cause=cause)
             raise

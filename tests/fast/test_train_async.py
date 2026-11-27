@@ -207,6 +207,51 @@ async def test_async_checkpoint_publishes_only_after_complete_synchronous_saves(
         assert components.actor_model.trained == []
 
 
+@pytest.mark.parametrize("cpu_offload", [False, True])
+@pytest.mark.parametrize("writer_fails", [False, True])
+async def test_joint_async_writer_overlaps_next_rollout(monkeypatch, tmp_path, cpu_offload, writer_fails):
+    events = []
+    args = _make_args(
+        num_rollout=2, use_critic=True, fully_async=True, use_rollout_logprobs=True,
+        async_save=True, optimizer_cpu_offload=cpu_offload, train_backend="megatron",
+        max_keep=2, save_interval=1, save=str(tmp_path / "actor"), critic_save=str(tmp_path / "critic"),
+    )
+    components = _install_driver_fakes(monkeypatch, args, events)
+    monkeypatch.setattr(train_async_driver, "remove_train_output_refs", lambda *_: None)
+    monkeypatch.setattr(train_async_driver, "finalize_checkpoint", lambda _, step, keep: events.append(f"publish:{step}"))
+
+    def install_writer(model, role):
+        async def start(step):
+            assert step == 0
+            events.append(f"start:{role}")
+            return role, "workers"
+
+        async def finish(cell, workers):
+            assert (cell, workers) == (role, "workers")
+            events.append(f"finish:{role}")
+            if role == "critic" and writer_fails:
+                raise OSError("shard write failed")
+
+        monkeypatch.setattr(model, "start_async_checkpoint", start, raising=False)
+        monkeypatch.setattr(model, "finish_async_checkpoint", finish, raising=False)
+
+    install_writer(components.actor_model, "actor")
+    install_writer(components.critic_model, "critic")
+    if writer_fails:
+        with pytest.raises(OSError, match="shard write failed"):
+            await with_disposer(train_async_driver.train, args)
+        assert "publish:0" not in events
+    else:
+        await with_disposer(train_async_driver.train, args)
+        assert events.index("finish:critic") < events.index("publish:0") < events.index("actor_save:1")
+        assert events.index("critic_save:1") < events.index("publish:1")
+    assert events.index("start:critic") < events.index("generate_done:1") < events.index("finish:actor")
+    if cpu_offload:
+        assert "critic_train:1" not in events or events.index("finish:critic") < events.index("critic_train:1")
+    else:
+        assert events.index("critic_train:1") < events.index("finish:actor")
+
+
 class TestWeightEqualityCheck:
     async def test_weight_equality_check_is_routed_to_the_inference_controller(self, monkeypatch: pytest.MonkeyPatch):
         """--check-weight-update-equal must reach the inference controller with every comparison option intact."""
