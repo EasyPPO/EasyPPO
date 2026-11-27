@@ -50,7 +50,7 @@ def rsync_cmd(path_src: str, path_dst: str) -> str:
 def train_env_vars(
     request: ExecuteTrainRequest, backend_env_vars: dict[str, str], *, config: ExecuteTrainConfig
 ) -> dict[str, str]:
-    return {
+    env = {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
         # If setting this in FSDP, the computation communication overlapping may have issues
@@ -75,6 +75,14 @@ def train_env_vars(
         **request.extra_env_vars,
         **_parse_extra_env_vars(config.extra_env_vars),
     }
+    # These identify the platform's actual mount and node-local lock. Every
+    # worker must use the same pair; request/config overrides cannot relocate it.
+    for key in ("MILES_VOLUME_IO_ROOT", "MILES_VOLUME_IO_LOCK"):
+        if (value := os.environ.get(key)) is not None:
+            if key in env and env[key] != value:
+                raise ValueError(f"{key} cannot override the platform volume access configuration")
+            env[key] = value
+    return env
 
 
 def _parse_extra_env_vars(text: str):
@@ -103,13 +111,16 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
 
-    # Use the actual key value from environment to avoid shell expansion issues
+    # Modal injects the key into every worker before Ray starts. Keep that key
+    # out of the logged launch command; other backends retain their existing
+    # argument-based credential transport unless they opt into environment auth.
     wandb_key = os.environ.get("WANDB_API_KEY")
+    key_args = "" if get_bool_env_var("MILES_WANDB_KEY_FROM_ENV") else f"--wandb-key '{wandb_key}' "
     return (
         "--use-wandb "
         f"--wandb-project miles-{test_name} "
         f"--wandb-group {wandb_run_name} "
-        f"--wandb-key '{wandb_key}' "
+        f"{key_args}"
         "--disable-wandb-random-suffix "
     )
 

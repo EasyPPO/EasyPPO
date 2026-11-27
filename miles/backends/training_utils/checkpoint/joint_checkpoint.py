@@ -79,6 +79,12 @@ def _commit_storage(args) -> None:
         load_function(hook)()
 
 
+def prepare_rollout_checkpoint(args) -> None:
+    """Refresh remote audit events before the executor snapshots rollout state."""
+    if getattr(args, "save_debug_event_data", None) is not None:
+        _commit_storage(args)
+
+
 def finalize_checkpoint(args, rollout_id: int, max_keep: int) -> None:
     # All remote writers must publish their shards and trackers before the
     # driver inspects completeness on its own filesystem view.

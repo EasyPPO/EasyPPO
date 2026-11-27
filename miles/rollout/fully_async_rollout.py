@@ -216,18 +216,34 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         for target in list(self._worker_error_cancel_targets):
             target.cancel()
 
+    def _raise_worker_error(self) -> None:
+        if not self._worker.done():
+            return
+        if not self._worker.cancelled() and (error := self._worker.exception()) is not None:
+            raise error
+        raise AssertionError("the fully-async rollout worker has ended")
+
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
-        assert not self._worker.done(), "the fully-async rollout worker has ended"
-        self._worker_error_cancel_targets.add(asyncio.current_task())
-        entries = await self._output.get(
-            current_version=input.weight_version,
-            num_groups=args.rollout_batch_size,
-            trainer_model_id=input.trainer_model_id,
-        )
-        self._worker_error_cancel_targets.discard(asyncio.current_task())
+        self._raise_worker_error()
+        current_task = asyncio.current_task()
+        self._worker_error_cancel_targets.add(current_task)
+        try:
+            entries = await self._output.get(
+                current_version=input.weight_version,
+                num_groups=args.rollout_batch_size,
+                trainer_model_id=input.trainer_model_id,
+            )
+        except asyncio.CancelledError:
+            # Preserve the original producer failure instead of presenting its
+            # notification to the consumer as an unrelated cancellation.
+            if self._worker.done() and not self._worker.cancelled() and self._worker.exception() is not None:
+                raise self._worker.exception() from None
+            raise
+        finally:
+            self._worker_error_cancel_targets.discard(current_task)
 
         data: list[Group] = []
         do_print = True

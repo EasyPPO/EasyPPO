@@ -9,6 +9,7 @@ from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
 from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
+from miles.utils.volume_io import event_snapshot_access, volume_access
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,13 @@ def snapshot(args: Namespace, directory: Path) -> None:
         return
 
     src = Path(args.save_debug_event_data)
-    assert src.is_dir(), f"--save-debug-event-data names {src}, and a checkpoint cannot copy a log that is not there"
-
-    shutil.copytree(src, directory)
+    # The platform refreshed every node's committed events before this call.
+    # Freeze local appenders while copying so snapshots end at complete events.
+    with volume_access(src), event_snapshot_access(src, exclusive=True):
+        assert (
+            src.is_dir()
+        ), f"--save-debug-event-data names {src}, and a checkpoint cannot copy a log that is not there"
+        shutil.copytree(src, directory)
     logger.info("Snapshotted event dir %s -> %s", src, directory)
 
 
@@ -48,13 +53,14 @@ def discard(args: Namespace) -> None:
         return
 
     dst = Path(args.save_debug_event_data)
-    assert not dst.is_symlink(), f"a take-over moves the event log aside, and {dst} is a symlink"
-    if not dst.is_dir() or not any(dst.iterdir()):
-        return
+    with volume_access(dst), event_snapshot_access(dst, exclusive=True):
+        assert not dst.is_symlink(), f"a take-over moves the event log aside, and {dst} is a symlink"
+        if not dst.is_dir() or not any(dst.iterdir()):
+            return
 
-    # TODO: startup events the new incarnation already wrote go into the trash with the abandoned log
-    trash = _move_aside(dst)
-    dst.mkdir(parents=True)
+        # TODO: startup events the new incarnation already wrote go into the trash with the abandoned log
+        trash = _move_aside(dst)
+        dst.mkdir(parents=True)
     logger.info("Moved the log of the run a hot restart takes over %s -> %s", dst, trash)
 
 

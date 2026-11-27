@@ -62,6 +62,9 @@ class TestInitOrchestrationScript:
             captured["contribute_segment"] = contribute_segment
 
         monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", fake_restore)
+        monkeypatch.setattr(
+            orchestration_utils, "prepare_rollout_checkpoint", lambda _args: calls.append("publish_restored_events")
+        )
         monkeypatch.setattr(orchestration_utils, "configure_logger", fake_configure_logger)
         monkeypatch.setattr(
             orchestration_utils,
@@ -76,6 +79,7 @@ class TestInitOrchestrationScript:
 
         assert calls == [
             "event_logger_checkpoint.restore",
+            "publish_restored_events",
             "configure_logger",
             "maybe_start_periodic_pyspy_dump",
             "init_tracking",
@@ -109,7 +113,7 @@ class TestInitOrchestrationScript:
         monkeypatch.setattr(
             orchestration_utils.object_store, "init_instance", lambda _args, *, contribute_segment: None
         )
-        monkeypatch.setattr(orchestration_utils, "finish_tracking", lambda: released.append("tracking"))
+        monkeypatch.setattr(orchestration_utils, "finish_tracking_on_exit", lambda *_: released.append("tracking"))
         monkeypatch.setattr(orchestration_utils, "shutdown_worker_manager", fake_shutdown_worker_manager)
 
         async with Disposer() as disposer:

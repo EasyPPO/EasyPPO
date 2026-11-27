@@ -17,7 +17,7 @@ from uuid import uuid4
 from modal_launchers.config import parse_args
 
 ROOT = Path(__file__).resolve().parents[1]
-IGNORE = [".git", "**/__pycache__", ".venv", "outputs", "wandb", "*.log"]
+IGNORE = [".git", "**/__pycache__", ".venv", ".pytest_cache", ".ruff_cache", "outputs", "wandb", "*.log"]
 
 
 def _judge_image(modal):
@@ -55,28 +55,47 @@ def _training_image(modal, config):
             f"cd /root/Megatron-LM && git fetch https://github.com/{lock['megatron_repo']}.git {megatron_commit} && git checkout -f {megatron_commit} && git submodule update --init --recursive && python3 -m pip install --no-deps -e .",
             f"TMS_CUDA_MAJOR=13 python3 -m pip install --no-deps --force-reinstall git+https://github.com/fzyzcjy/torch_memory_saver.git@{memory_saver_commit}",
         )
-        .pip_install("harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.19.0", "modal==1.6.2")
+        .pip_install(
+            "harbor==0.24.0", "mini-swe-agent==1.17.1", "transformers==5.19.0", "modal==1.6.2", "wandb==0.31.0"
+        )
     )
     if config.terminal_environment == "docker":
         image = image.apt_install("docker.io", "docker-compose-v2")
     return (
         image.add_local_dir(ROOT, config.source, ignore=IGNORE, copy=True)
         .run_commands(f"python3 -m pip install --no-deps -e {config.source}")
+        .run_commands(f"python3 {config.source}/modal_launchers/patch_transformer_engine.py")
         .env(
             {
                 "PYTHONPATH": f"{config.source}:/root/Megatron-LM",
                 "PYTHONUNBUFFERED": "1",
                 "HF_HOME": f"{config.mount}/cache/huggingface",
                 "EASYPPO_MODAL_VOLUME": config.volume,
+                "MILES_WANDB_KEY_FROM_ENV": "1",
+                "NVTE_FLASH_ATTN_V4": "0",
             }
         )
         .workdir(config.source)
     )
 
 
-def _secrets(modal):
-    keys = [key for key in ("WANDB_API_KEY", "WANDB_ENTITY", "HF_TOKEN") if os.getenv(key)]
-    return [modal.Secret.from_local_environ(keys)] if keys else []
+def _secrets(modal, config=None):
+    secrets = []
+    # A named W&B Secret is authoritative; do not import a different local login.
+    keys = (
+        ("HF_TOKEN",)
+        if config and config.wandb_secret
+        else ("WANDB_API_KEY", "WANDB_ENTITY", "WANDB_BASE_URL", "HF_TOKEN")
+    )
+    present = [key for key in keys if os.getenv(key)]
+    if present:
+        secrets.append(modal.Secret.from_local_environ(present))
+    if config and config.wandb_secret:
+        secrets.append(modal.Secret.from_name(config.wandb_secret, required_keys=["WANDB_API_KEY"]))
+    if config and config.wandb_entity:
+        # An explicit destination overrides any entity stored in the Secret.
+        secrets.append(modal.Secret.from_dict({"WANDB_ENTITY": config.wandb_entity}))
+    return secrets
 
 
 def _build_training(modal, config):
@@ -86,7 +105,7 @@ def _build_training(modal, config):
     common = dict(
         image=image,
         volumes={config.mount: volume},
-        secrets=_secrets(modal),
+        secrets=_secrets(modal, config),
         retries=0,
         single_use_containers=True,
         serialized=True,
@@ -228,7 +247,7 @@ def _prepare(modal, config):
         timeout=86400,
         retries=0,
         volumes={config.mount: volume},
-        secrets=_secrets(modal),
+        secrets=_secrets(modal, config),
         serialized=True,
     )
     def download():
@@ -260,7 +279,7 @@ def _prepare(modal, config):
         max_containers=1,
         single_use_containers=True,
         volumes={config.mount: volume},
-        secrets=_secrets(modal),
+        secrets=_secrets(modal, config),
         serialized=True,
     )
     def prepare():

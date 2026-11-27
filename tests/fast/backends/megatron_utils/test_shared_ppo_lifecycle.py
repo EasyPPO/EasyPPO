@@ -367,6 +367,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
 
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.role = "critic"
     worker.args = Namespace(
         offload_train=True,
         rematerialize_param_from_master_weight=False,
@@ -416,6 +417,46 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
 
     assert saver.resume.call_count == 1
     assert worker._asleep is False
+
+
+@pytest.mark.parametrize("rematerialize", [False, True])
+def test_wake_up_restores_actor_values_before_a_critic_only_checkpoint(
+    actor_module, monkeypatch, tmp_path, rematerialize
+):
+    """Saving before the actor's first train call must preserve its loaded weights."""
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=True)
+    worker.role = "actor"
+    worker.args.rematerialize_param_from_master_weight = rematerialize
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    expected = torch.tensor([0.125, -2.5, 3.75])
+    live = torch.empty_like(expected)
+
+    def source():
+        return iter([("weight", live)])
+
+    if rematerialize:
+        context = MainCastContext(
+            cast_main_to_params=lambda: live.copy_(expected),
+            model_chunks=[],
+            extras_getter=lambda: iter(()),
+            rematerializable_ids={id(live)},
+            check=False,
+        )
+        worker.weights_backuper = TensorBackuper.create(source, context)
+    else:
+        worker.weights_backuper = TensorBackuper.create(source)
+        worker.weights_backuper._backups["actor"] = {"weight": expected.clone()}
+    worker._active_model_tag = "actor"
+    saver.resume.side_effect = lambda **_kwargs: live.fill_(float("nan"))
+    for cycle in range(2):
+        worker._asleep = True
+        worker.wake_up()
+        path = tmp_path / f"checkpoint-{cycle}.pt"
+        torch.save({"weight": live}, path)
+        restored = torch.load(path, weights_only=True)["weight"]
+        torch.testing.assert_close(restored, expected, rtol=0, atol=0)
+        assert worker._asleep is False
 
 
 def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_module, monkeypatch):
@@ -682,7 +723,7 @@ def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPat
 
 def _critic_worker(actor_module: Any) -> Any:
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(global_batch_size=1, loss_type=None)
+    worker.args = Namespace(global_batch_size=1, loss_type=None, save_debug_train_data=None)
     worker.role = "critic"
     worker.model = object()
     worker.optimizer = object()

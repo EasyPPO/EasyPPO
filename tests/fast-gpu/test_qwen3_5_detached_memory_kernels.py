@@ -1,7 +1,5 @@
 """Actual TE rectangular attention and FLA state carry; requires the training image."""
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -13,6 +11,19 @@ def _require_cuda():
         pytest.skip("Native detached-memory kernels require CUDA")
     pytest.importorskip("megatron.core")
     pytest.importorskip("transformer_engine.pytorch")
+
+
+@pytest.fixture
+def model_parallel(nccl_world):
+    from megatron.core import parallel_state
+    from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
+
+    parallel_state.initialize_model_parallel(tensor_model_parallel_size=1)
+    model_parallel_cuda_manual_seed(43)
+    try:
+        yield parallel_state.get_tensor_model_parallel_group()
+    finally:
+        parallel_state.destroy_model_parallel()
 
 
 def _packed():
@@ -30,11 +41,15 @@ def _packed():
     )
 
 
-def test_native_te_bottom_right_memory_attention_values_gradients_and_recompute(monkeypatch):
+@pytest.mark.parametrize("head_dim", [64, 256])
+def test_native_te_bottom_right_memory_attention_values_gradients_and_recompute(monkeypatch, head_dim):
     # Match the training recipe: cuDNN backward rejects the one-token segment.
     monkeypatch.setenv("NVTE_FLASH_ATTN", "1")
     monkeypatch.setenv("NVTE_FUSED_ATTN", "0")
     monkeypatch.setenv("NVTE_UNFUSED_ATTN", "0")
+    # The Qwen FA4 window fix applies to its native 256-wide heads. Keep the
+    # generic 64-wide case on FA2; the pinned FA4 still mishandles that window.
+    monkeypatch.setenv("NVTE_FLASH_ATTN_V4", "1" if head_dim == 256 else "0")
     _require_cuda()
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.transformer_config import TransformerConfig
@@ -44,17 +59,18 @@ def test_native_te_bottom_right_memory_attention_values_gradients_and_recompute(
     torch.manual_seed(41)
     config = TransformerConfig(
         num_layers=1,
-        hidden_size=256,
+        hidden_size=4 * head_dim,
         num_attention_heads=4,
         num_query_groups=2,
-        kv_channels=64,
+        kv_channels=head_dim,
         attention_dropout=0.0,
         hidden_dropout=0.0,
         params_dtype=torch.bfloat16,
     )
     layer = DetachedMemoryDotProductAttention(config, 1, AttnMaskType.causal, "self").cuda()
     inputs = [
-        torch.randn(24, heads, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True) for heads in (4, 2, 2)
+        torch.randn(24, heads, head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        for heads in (4, 2, 2)
     ]
     packed = _packed()
 
@@ -82,35 +98,40 @@ def test_native_te_bottom_right_memory_attention_values_gradients_and_recompute(
         torch.testing.assert_close(value.grad, grad, atol=0.025, rtol=0.025)
 
 
-def test_native_fla_conv_and_recurrent_memory_state_gradients_and_recompute():
+def test_native_fla_conv_and_recurrent_memory_state_gradients_and_recompute(model_parallel):
     _require_cuda()
     pytest.importorskip("fla.ops.gated_delta_rule")
+    from megatron.core.transformer.transformer_config import TransformerConfig
+
+    from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
+    from miles_plugins.models.detached_memory import memory_segments
     from miles_plugins.models.qwen3_5 import Qwen3_5GatedDeltaNet
 
     torch.manual_seed(43)
-    config = SimpleNamespace(
+    config = TransformerConfig(
+        num_layers=1,
         hidden_size=128,
-        linear_num_value_heads=2,
-        linear_num_key_heads=1,
-        linear_key_head_dim=32,
-        linear_value_head_dim=32,
-        linear_conv_kernel_dim=4,
-        hidden_act="silu",
-        rms_norm_eps=1e-6,
-        dtype=torch.bfloat16,
+        num_attention_heads=4,
+        params_dtype=torch.bfloat16,
+        bf16=True,
     )
-    model = Qwen3_5GatedDeltaNet(config, 0, args=SimpleNamespace(linear_attention_backend="fla"))
-    a_log = model.A_log.detach().clone()
-    model = model.cuda().bfloat16()
-    model.A_log.data = a_log.cuda().float()
+    model = Qwen3_5GatedDeltaNet(
+        config,
+        heads=LinearAttnHeads(num_k_heads=1, num_v_heads=2, head_k_dim=32, head_v_dim=32),
+        conv_kernel_size=4,
+        norm_eps=1e-6,
+        tp_group=model_parallel,
+        backend="fla",
+    )
     x = torch.randn(1, 24, 128, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     packed = _packed()
 
     def forward(value):
-        return model(value, packed.cu_seqlens_q, packed)
+        core = model(value, packed.cu_seqlens_q, segments=memory_segments(packed, value.shape[1]))
+        return model.out_proj(core)
 
     memory = forward(x)
-    ordinary = model(x, packed.cu_seqlens_q)
+    ordinary = model.out_proj(model(x, packed.cu_seqlens_q))
     torch.testing.assert_close(memory, ordinary, atol=0.025, rtol=0.025)
     grad = torch.autograd.grad(memory[:, 5:13].float().square().sum(), x)[0]
     assert torch.count_nonzero(grad[:, :5]) == 0
@@ -132,6 +153,7 @@ def test_native_fla_conv_and_recurrent_memory_state_gradients_and_recompute():
 
 @pytest.mark.parametrize("detached", [False, True], ids=["packed-actor", "detached-critic"])
 def test_sm100_fa4_causal_hd256_against_reference(monkeypatch, detached):
+    monkeypatch.setenv("NVTE_FLASH_ATTN_V4", "1")
     _require_cuda()
     if torch.cuda.get_device_capability() != (10, 0):
         pytest.skip("SM100 FA4 regression")

@@ -528,6 +528,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory()
         reload_process_groups()
+        if self.role != "critic" and self._enable_weight_backup:
+            # Parameter buffers have no memory-saver backup. Resume allocates
+            # their storage; restore values before any consumer (including a
+            # checkpoint during critic-only warmup) can read the model.
+            self._switch_model("actor")
         self._asleep = False
         print_memory("after wake_up model")
 

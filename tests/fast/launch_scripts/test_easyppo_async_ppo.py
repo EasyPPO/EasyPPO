@@ -346,12 +346,17 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                                       *(["--num-nodes", str(nodes)] if nodes != 2 else []),
                                       "--tasks-dir", str(tmp_path),
                                       "--model-dir", str(tmp_path), "--output-dir", str(tmp_path / "runs"),
-                                      "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl"])
+                                      "--prompt-data", "train.jsonl", "--eval-data", "eval.jsonl", "--max-keep", "2", "--save-interval", "1",
+                                      "--checkpoint-commit-hook", "modal_launchers.runtime.commit_volume",
+                                      "--trials-dir", str(tmp_path / "live-trials")])
     terminus_ppo.main(mode)
     invocation, = backend.training
     args = shlex.split(invocation["train_args"])
     assert invocation["train_script"] == "train_async.py"
     assert args.count("--use-distributed-post") == 1
+    assert args[args.index("--max-keep") + 1] == "2"
+    assert args[args.index("--checkpoint-commit-hook") + 1] == "modal_launchers.runtime.commit_volume"
+    assert args[args.index("--terminal-trials-dir") + 1] == str(tmp_path / "live-trials")
     assert "--colocate" not in args and "--offload-rollout" not in args
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
     assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
@@ -363,7 +368,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                 "--sglang-max-running-requests": 512,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
                 "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
-                "--rollout-num-gpus": rollout, "--eval-num-gpus": eval_gpus, "--eval-interval": 15, "--save-interval": 5, "--max-keep": 3}
+                "--rollout-num-gpus": rollout, "--eval-num-gpus": eval_gpus, "--eval-interval": 15, "--save-interval": 1, "--max-keep": 2}
     assert "--use-checkpoint-opt-param-scheduler" in args
     for flag, value in expected.items():
         assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(value)

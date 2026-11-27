@@ -5,6 +5,8 @@ import shutil
 import time
 from collections import deque
 
+from miles.utils.function_registry import load_function
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,12 +66,29 @@ class EvalDispatcher:
         while self.pending:
             await self._settle(*self.pending.popleft())
 
+    async def close(self, exc_type, exc, traceback) -> None:
+        if exc_type is None:
+            await self.drain()
+            return
+        # A fatal training error must not keep the allocation alive for a full
+        # baseline evaluation. Worker disposal will stop the remote trial owners.
+        pending, self.pending = self.pending, deque()
+        for _, task, _ in pending:
+            task.cancel()
+        await asyncio.gather(*(task for _, task, _ in pending), return_exceptions=True)
+        # Keep snapshots on failure: a cancelled RPC may still be reading them
+        # until the remote workers are shut down.
+
     async def _export(self, rollout_id: int, hf_dir: str) -> float:
         start = time.time()
         if self.args.offload_train:
             await self.actor_model.onload()
         try:
             await self.actor_model.export_hf(rollout_id, hf_dir)
+            # Snapshot readers on other hosts need the same storage handoff as
+            # checkpoint readers before the evaluation is dispatched.
+            if hook := getattr(self.args, "checkpoint_commit_hook", None):
+                load_function(hook)()
         finally:
             if self.args.offload_train:
                 await self.actor_model.offload()

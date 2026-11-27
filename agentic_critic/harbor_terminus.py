@@ -243,6 +243,24 @@ fi
         self.trace.n_format_errors += int(not commands and not is_complete)
         return interaction
 
+    async def _execute_commands(self, commands, session):
+        try:
+            return await super()._execute_commands(commands, session)
+        except RuntimeError as exc:
+            missing = ("no server running on ", "can't find session:", "can't find pane:", "can't find window:")
+            if not any(message in str(exc) for message in missing):
+                raise
+            # An agent can exit its own shell (including with Ctrl-D). Confirm
+            # the task is reachable and only its tmux session is gone; transport
+            # failures and dead containers must still stop the run.
+            result = await session.environment.exec(
+                command=f"tmux has-session -t {shlex.quote(session._session_name)}", user=session._user
+            )
+            if result.return_code != 1 or not (result.stderr or "").startswith(missing):
+                raise
+            self.logger.warning("Agent terminal session ended before submission")
+            raise EpisodeLimit("SessionEnded") from exc
+
     async def run(self, instruction, environment, context):
         self._confirmed_complete = False
         try:

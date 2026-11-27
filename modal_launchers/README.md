@@ -1,9 +1,85 @@
-# Synchronous FrontierSmith PPO on Modal
+# EasyPPO experiments on Modal
+
+## Asynchronous Terminal Bench
+
+The current experiment is specified in [Claude.md, Terminal Bench](../Claude.md#terminal-bench).
+The local entrypoint calls that recipe directly and submits a detached two-node
+GPU workload. There is no long-lived CPU supervisor. Each run has a separate
+Harbor sandbox app.
+
+```bash
+uv run --no-sync modal run --env YOUR_MODAL_ENV -d -m modal_launchers.terminal \
+  --run-id tb21-full-detach-001 --action all \
+  --wandb-secret wandb-personal --wandb-entity YOUR_ENTITY
+```
+
+`--action prepare` downloads model/data and converts the checkpoint on one GPU.
+`--action validate` runs the remote test suites and a real TB2.1 sandbox smoke test.
+`--action preflight` checks prepared assets and sandbox access using only CPU.
+`--action train` checks the prepared assets and sandbox access before allocating
+the training cluster. `all` runs all three phases in order. Use `--mode actor-summary`
+with a separate run ID for the comparison. Checkpoint retention follows the
+canonical recipe; the async driver waits for all actor/critic/rollout writes before
+publishing the completion marker. The Modal launcher overrides the recipe's
+five-batch save cadence to checkpoint every completed batch for preemption
+recovery, retaining the latest three complete checkpoints. `--save-interval`
+overrides that cadence. Reuse the same run ID and settings to resume; use a new
+ID for a fresh experiment or a changed allocation.
+
+Models, datasets, W&B logs and trial archives use the
+`easyppo-terminal-assets-v2` v2 Volume, mounted at `/mnt/easyppo`. The old
+`easyppo-miles` Volume is not mounted by this launcher. To reuse existing assets,
+copy the pinned model, its converted checkpoint and the current prepared dataset
+directory into the v2 Volume; historical run logs and obsolete FCS data are not
+required. Otherwise use `--action prepare` to populate it.
+The dataset directory includes its preparation revision so upstream task repairs
+use fresh data. Preparation and preflight validate every training and evaluation
+task through Harbor's task loader, including its schema and prompt consistency.
+Checkpoints and eval snapshots live under `/mnt/terminal-runs/<run-id>` on the
+separate `easyppo-terminal-runs` v2 Volume. All nodes commit and reload this
+checkpoint Volume before publishing complete checkpoints or dispatching an
+exported evaluation snapshot. W&B files and archive writers use the other v2
+Volume so open logs cannot block checkpoint reloads. Audit events remain with
+checkpoints to preserve their snapshot/restore contract. The Terminal launcher
+sets `MILES_VOLUME_IO_ROOT` and a node-local `MILES_VOLUME_IO_LOCK`; audit writes
+take shared access, while the checkpoint barrier takes exclusive access on the
+head and then every worker. No node resumes access until every reload finishes.
+Rollout and inference controllers are pinned to the head so a shared lease there
+also protects evaluation's remote weight reads. Before saving rollout state,
+the barrier refreshes committed events from all nodes; the snapshot excludes
+local appenders while copying. These locks are released by the OS if a process
+dies and do not require persistent leases to recover after preemption.
+The canonical Terminus
+recipe stages live trial files on node-local disk and publishes compressed
+archives, as described in Claude.md.
+The Terminal launcher enables FlashAttention 4 using the current Qwen attention
+adapter's causal-window fix; it overrides the older FrontierSmith image setting.
+The [task preparation helper](terminal_runtime.py) imports the published AgentPick
+release selected by the runbook, including its Dockerfiles and build context.
+The [Harbor adapter](../agentic_critic/harbor_terminal.py) allows extra time for
+concurrent VM provisioning while preserving task agent and verifier execution budgets.
+
+Keep the submitting client connected through preparation and preflight, until
+it prints the training App and FunctionCall IDs. It then exits while the GPU
+workload continues independently. Modal cluster preemption restarts the same
+call from the latest complete checkpoint; CPU supervisor preemption cannot
+interrupt it because there is no supervisor. Application errors are not retried.
+The head GPU container cleans up the run's remaining sandboxes on exit. To stop
+immediately, stop the printed training App and terminate remaining sandboxes
+under `easyppo-tasks-<run-id>`; a forced kill may bypass cleanup. Preemption before
+the first completed checkpoint still restarts from the base model.
+
+## Synchronous FrontierSmith
 
 Run from the repository root. Install `modal_launchers/requirements.txt` and
 configure the Modal CLI (`modal setup`). Set
 `WANDB_API_KEY` and optionally `WANDB_ENTITY` to enable W&B; its project is
 `miles-run_qwen3_5_<model-size>_sync_frontiersmith` and its run ID is `--run-id`.
+Alternatively, pass `--wandb-secret <name>` to inject a named Modal Secret
+containing `WANDB_API_KEY` (and optionally `WANDB_BASE_URL`). This takes
+precedence over local W&B credentials. `--wandb-entity <team>` overrides the
+destination in the secret. The Modal image sets `MILES_WANDB_KEY_FROM_ENV=1`
+so training inherits credentials without embedding the key in logged commands.
 
 FrontierSmith/FCS use the [submit-only interaction and reward rules](../examples/easyppo/RECIPES.md#rewards-validation-and-checkpoints).
 The rollout worker sends each C++ submission to an isolated CPU judge for compilation and execution.
@@ -14,6 +90,10 @@ PyTorch 2.14.1. Its build installs the locked SGLang 0.5.22 source and
 `radix_transfer_plugins`, Megatron-LM, torch-memory-saver, and Transformers
 5.19.0. A custom `--image` must provide the same compiled runtime and the
 `/sgl-workspace/sglang` and `/root/Megatron-LM` source trees.
+The image backports Transformer Engine's `NVTE_FLASH_ATTN_V4` opt-out and
+sets it to zero to avoid the pinned TE/FA4 combination's causal masking bug
+([upstream issue](https://github.com/NVIDIA/TransformerEngine/issues/3528)).
+Training on B200 uses FlashAttention 2; FA4 remains installed for other consumers.
 
 ## Preview and launch
 
@@ -40,6 +120,11 @@ Prepare the shared pinned Qwen3.8-27B model once (CPU download, then single-node
 python -m modal_launchers.frontiersmith --action prepare \
   --mode full_detach --run-id sync-fs-full-detach-001
 ```
+
+Training preflight requires the base checkpoint's conversion-version marker to
+match the current Miles layout. After an incompatible update, preserve the old
+conversion separately and rerun preparation. Use a fresh run ID when the image
+changes, because the run manifest pins it.
 
 Two-node plans (16 GPUs):
 

@@ -48,6 +48,10 @@ def prepare_run(config, judge_url):
 
 
 def check_models(config):
+    # Conversion layout is owned by Miles. Import its version only in the remote
+    # preflight, where the training dependencies are installed.
+    from miles.utils.external_utils.command_utils.base_backend import CONVERSION_VERSION, CONVERSION_VERSION_FILE
+
     model = Path(config.models) / config.generation.model_name
     converted = Path(config.models) / f"{config.generation.model_name}_torch_dist"
     for path in (
@@ -60,6 +64,11 @@ def check_models(config):
     step = (converted / "latest_checkpointed_iteration.txt").read_text().strip()
     if step != "release" or not (converted / "release").is_dir():
         raise ValueError("Base conversion must be a completed Megatron release checkpoint")
+    stamp = converted / CONVERSION_VERSION_FILE
+    if not stamp.is_file() or stamp.read_text().strip() != CONVERSION_VERSION:
+        raise ValueError(
+            f"Base checkpoint uses an incompatible conversion layout; run --action prepare for layout {CONVERSION_VERSION}"
+        )
     index = model / "model.safetensors.index.json"
     shards = set(json.loads(index.read_text())["weight_map"].values()) if index.exists() else {"model.safetensors"}
     if any(not (model / shard).is_file() for shard in shards):

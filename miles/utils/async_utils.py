@@ -210,3 +210,10 @@ class Disposer:
                 self._stack.push_async_callback(teardown)
             else:
                 self._stack.callback(teardown)
+
+    def add_exit(self, callback: Callable) -> None:
+        """Register cleanup that needs the exception causing shutdown."""
+        if inspect.iscoroutinefunction(callback):
+            self._stack.push_async_exit(callback)
+        else:
+            self._stack.push(callback)

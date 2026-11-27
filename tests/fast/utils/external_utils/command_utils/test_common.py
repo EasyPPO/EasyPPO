@@ -1,11 +1,29 @@
 import json
 import logging
 import shlex
+from types import SimpleNamespace
 
 import pytest
 
 from miles.utils.external_utils.command_utils import common
 from miles.utils.external_utils.command_utils.common import MOONCAKE_INIT_KWARGS_FLAG, get_mooncake_object_store_args
+
+
+@pytest.mark.parametrize("conflicting_override", [False, True])
+def test_volume_access_configuration_reaches_workers_without_override(monkeypatch, conflicting_override):
+    monkeypatch.setenv("MILES_VOLUME_IO_ROOT", "/checkpoints")
+    monkeypatch.setenv("MILES_VOLUME_IO_LOCK", "/tmp/volume.lock")
+    request = SimpleNamespace(train_backend_fsdp=True, extra_env_vars={})
+    config = SimpleNamespace(cuda_core_dump=False, extra_env_vars=json.dumps(
+        {"MILES_VOLUME_IO_LOCK": "/wrong.lock"} if conflicting_override else {}
+    ))
+    if conflicting_override:
+        with pytest.raises(ValueError, match="cannot override"):
+            common.train_env_vars(request, {}, config=config)
+    else:
+        env = common.train_env_vars(request, {}, config=config)
+        assert env["MILES_VOLUME_IO_ROOT"] == "/checkpoints"
+        assert env["MILES_VOLUME_IO_LOCK"] == "/tmp/volume.lock"
 
 
 class TestGetMooncakeObjectStoreArgs:
@@ -19,6 +37,14 @@ class TestGetMooncakeObjectStoreArgs:
 
 
 class TestGetDefaultWandbArgs:
+    def test_environment_auth_does_not_serialize_the_key(self, monkeypatch):
+        monkeypatch.setenv("WANDB_API_KEY", "test-key-must-not-appear-in-command")
+        monkeypatch.setenv("MILES_WANDB_KEY_FROM_ENV", "1")
+        command = common.get_default_wandb_args("tests/e2e/test_run.py", run_id="personal")
+        assert "--use-wandb" in command
+        assert "--wandb-key" not in command
+        assert "test-key-must-not-appear-in-command" not in command
+
     def test_missing_credentials_configures_logging_before_reporting_the_skip(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

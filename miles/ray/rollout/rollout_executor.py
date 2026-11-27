@@ -50,6 +50,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.simple_checkpointer import atomic_save_folder
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
+from miles.utils.volume_io import async_volume_access
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
 from miles.utils.workers.rpc.common.metadata import DedicatedRpcLoopWorker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -340,20 +341,30 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             raise ValueError("A live eval version requires a dedicated synchronized fleet")
         start_time = time.time()
         async with self._eval_lock:
-            if weight_version is None and require_marker and not is_complete_hf_export(hf_dir):
-                logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
-                return self.report_eval_skip(rollout_id, "ckpt_missing")
-
             version = str(rollout_id) if weight_version is None else weight_version
             try:
                 if weight_version is not None:
                     state = await self._eval_fleet.current(version)
                 else:
-                    state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                    # The Modal launcher pins this controller to the coordinator
+                    # node. Hold its lease until every remote engine has loaded.
+                    async with async_volume_access(hf_dir):
+                        if require_marker and not is_complete_hf_export(hf_dir):
+                            logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
+                            return self.report_eval_skip(rollout_id, "ckpt_missing")
+                        state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )
-                result = await maybe_await(self.eval_generate_rollout(eval_input))
+                # Legacy/custom checkpoint evaluators may perform their own
+                # disk load inside the call. Keep their lease until it returns.
+                guard = (
+                    async_volume_access(hf_dir)
+                    if weight_version is None and self._eval_fleet is None
+                    else nullcontext()
+                )
+                async with guard:
+                    result = await maybe_await(self.eval_generate_rollout(eval_input))
             except EvalSkip as e:
                 return self.report_eval_skip(rollout_id, e.reason)
 

@@ -16,6 +16,7 @@ from pydantic import TypeAdapter
 from miles.utils.audit_utils.event_logger.models import Event, EventBase
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.tracking_utils.structured_log import log_structured, prune_for_log
+from miles.utils.volume_io import event_snapshot_access, volume_access
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,8 @@ EVENTS_DIRNAME: str = "events"
 class EventLogger:
     def __init__(self, *, log_dir: Path | str, file_name: str = "events.jsonl", source: ProcessIdentity) -> None:
         self._log_dir = Path(log_dir)
-        self._log_dir.mkdir(parents=True, exist_ok=True)
+        with volume_access(self._log_dir), event_snapshot_access(self._log_dir):
+            self._log_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._path = self._log_dir / file_name
         self._source = source
@@ -75,7 +77,7 @@ class EventLogger:
             }
         )
         line = event.model_dump_json() + "\n"
-        with self._lock:
+        with self._lock, volume_access(self._path), event_snapshot_access(self._path):
             # Opened per write so the file can be replaced (e.g. restored from a
             # checkpoint snapshot) at any point between events.
             with self._path.open("a", encoding="utf-8") as f:
@@ -160,6 +162,10 @@ class EventReader:
         self._parsed_files: dict[Path, _ParsedFile] = {}
 
     def read(self) -> list[Event]:
+        with volume_access(self._log_dir):
+            return self._read()
+
+    def _read(self) -> list[Event]:
         jsonl_files = sorted(self._log_dir.glob("**/*.jsonl"))
         if not jsonl_files:
             logger.warning("No JSONL files found in %s", self._log_dir)

@@ -39,6 +39,10 @@ class TrackingBackend(ABC):
     @abstractmethod
     def finish(self) -> None: ...
 
+    def finish_with_status(self, *, exit_code: int) -> None:
+        """Preserve the finish() contract for backends without run status."""
+        self.finish()
+
     def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
         """Declare that ``{prefix}/*`` metrics plot against ``step_key``; no-op for
         backends that take the step numerically on every log call."""
@@ -76,9 +80,12 @@ class WandbBackend(TrackingBackend):
         self._defined_step_key_groups.add((prefix, step_key))
 
     def finish(self) -> None:
+        self.finish_with_status(exit_code=0)
+
+    def finish_with_status(self, *, exit_code: int) -> None:
         import wandb
 
-        wandb.finish()
+        wandb.finish(exit_code=exit_code)
 
 
 class TensorboardBackend(TrackingBackend):
@@ -196,10 +203,10 @@ class TrackingManager:
         for backend in self._backends:
             backend.define_step_key_metric_group(prefix, step_key)
 
-    def finish(self) -> None:
+    def finish(self, *, exit_code: int = 0) -> None:
         for backend in self._backends:
             try:
-                backend.finish()
+                backend.finish_with_status(exit_code=exit_code)
             except Exception:
                 logger.exception(
                     "Error finishing tracking backend %s",

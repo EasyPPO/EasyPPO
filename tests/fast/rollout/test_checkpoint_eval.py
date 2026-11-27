@@ -371,15 +371,55 @@ class TestSnapshotEvalGuards:
 class BlockingFleet:
     def __init__(self):
         self.pins = []
+        self.started = asyncio.Event()
         self.release = asyncio.Event()
 
     async def pin(self, checkpoint_dir, weight_version):
         self.pins.append(weight_version)
+        self.started.set()
         await self.release.wait()
         return "fleet-state"
 
 
 class TestEvalFleetSerialization:
+    async def test_reload_waits_for_weight_reads_but_not_evaluation(self, controller_env, monkeypatch, tmp_path):
+        from threading import Event
+        from miles.utils.volume_io import volume_access
+
+        monkeypatch.setenv("MILES_VOLUME_IO_ROOT", str(tmp_path / "volume"))
+        monkeypatch.setenv("MILES_VOLUME_IO_LOCK", str(tmp_path / "io.lock"))
+        snapshot = tmp_path / "volume" / "step_5"
+        snapshot.mkdir(parents=True)
+        (snapshot / ".complete").touch()
+        generating, finish_generation = asyncio.Event(), asyncio.Event()
+
+        async def generate(input):
+            generating.set()
+            await finish_generation.wait()
+            return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
+
+        mgr = make_manager(make_args(), eval_fn=generate, fleet=BlockingFleet())
+        evaluation = asyncio.create_task(mgr.eval(5, hf_dir=str(snapshot)))
+        reloaded = Event()
+
+        def reload():
+            with volume_access(exclusive=True):
+                reloaded.set()
+
+        try:
+            await asyncio.wait_for(mgr._eval_fleet.started.wait(), 2)
+            reload_task = asyncio.create_task(asyncio.to_thread(reload))
+            await asyncio.sleep(0.05)
+            assert not reloaded.is_set()
+            mgr._eval_fleet.release.set()
+            await asyncio.wait_for(generating.wait(), 2)
+            await asyncio.wait_for(reload_task, 2)
+            assert reloaded.is_set() and not evaluation.done()
+        finally:
+            mgr._eval_fleet.release.set()
+            finish_generation.set()
+            await evaluation
+
     async def test_set_eval_fleet_serializes_concurrent_checkpoint_pins(self, controller_env, monkeypatch, tmp_path):
         """One fleet holds one pinned checkpoint, so a second eval point cannot pin until the first finishes."""
         for rollout_id in (5, 6):
@@ -499,6 +539,29 @@ async def test_dispatcher_export_failure_skips(dispatcher_env):
 
     assert manager.eval_calls == []
     assert manager.skip_calls == [(4, "export_failed")]
+
+
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_dispatcher_commits_export_before_readers_start(dispatcher_env, monkeypatch, commit_fails):
+    manager, actor_model = FakeManagerActor(), FakeActorModel()
+    committed = []
+
+    def commit():
+        assert actor_model.exports == [(4, "/dev/shm/eval_hf/step_4")]
+        assert manager.eval_calls == []
+        if commit_fails:
+            raise RuntimeError("commit failed")
+        committed.append(4)
+
+    monkeypatch.setattr(dispatcher_env, "load_function", lambda path: commit)
+    dispatcher, _ = make_dispatcher(dispatcher_env, manager, actor_model, checkpoint_commit_hook="test.commit")
+    await dispatcher.dispatch(4)
+    if commit_fails:
+        assert manager.eval_calls == [] and manager.skip_calls == [(4, "export_failed")]
+    else:
+        assert committed == [4] and len(manager.eval_calls) == 1
+        manager.finish()
+        await dispatcher.drain()
 
 
 async def test_dispatcher_skip_policy_drops_before_export(dispatcher_env):
