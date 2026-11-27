@@ -5,6 +5,7 @@ See Claude.md, Terminal Bench, for cluster setup and both critic commands.
 """
 
 import argparse
+import math
 import os
 import shlex
 import sys
@@ -31,6 +32,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     terminal_agent_protocol: str = "terminus-2"
     rollout_batch_size: int = 32
     samples_per_prompt: int = 12
+    critic_return_std_floor: float | None = None
     num_rollout: int = 150
     eval_interval: int = 15
     eval_temperature: float = 0.7
@@ -41,7 +43,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     use_rollout_logprobs: bool = True
     compact_threshold: int = 16384
     max_tokens_per_gpu: int = 120 * 1024
-    critic_max_tokens_per_gpu: int = 180 * 1024
+    critic_max_tokens_per_gpu: int = 240 * 1024
     score_centering_recompute_loss: bool = False
     max_total_tokens: int = 100 * 1024
     max_context_tokens: int = 32768
@@ -56,6 +58,11 @@ class ScriptArgs(async_ppo.ScriptArgs):
     async_max_concurrent_samples: int = 1000
 
     def __post_init__(self):
+        if self.critic_return_std_floor is None:
+            if self.samples_per_prompt < 2:
+                raise ValueError("The binary return-STD floor requires at least two samples per prompt")
+            # EasyPPO Appendix B.3: binary rewards in {0, 1}, nominal group size.
+            self.critic_return_std_floor = 0.5 / math.sqrt(self.samples_per_prompt)
         if self.num_nodes < 1 or self.num_gpus_per_node < 1:
             raise ValueError("Node and per-node GPU counts must be positive")
         total = self.num_nodes * self.num_gpus_per_node
@@ -89,7 +96,7 @@ def main(default_mode=None):
         help="Maximum input tokens per actor microbatch.",
     )
     parser.add_argument("--critic-max-tokens-per-gpu", type=int, default=ScriptArgs.critic_max_tokens_per_gpu,
-                        help="Maximum input tokens per critic microbatch.")
+                        help="Critic microbatch token budget and maximum chronological training history for both critic modes.")
     parser.add_argument("--num-nodes", type=int, default=ScriptArgs.num_nodes)
     parser.add_argument("--num-gpus-per-node", type=int, default=ScriptArgs.num_gpus_per_node)
     parser.add_argument("--trainer-num-nodes", type=int, default=ScriptArgs.trainer_num_nodes)
@@ -184,7 +191,6 @@ def main(default_mode=None):
             *(("--async-save", "--use-persistent-ckpt-worker") if opts.async_save else ()),
             *(("--checkpoint-commit-hook", opts.checkpoint_commit_hook) if opts.checkpoint_commit_hook else ()),
             "--critic-max-tokens-per-gpu", str(args.critic_max_tokens_per_gpu),
-            "--ppo-prompt-mean",
             *(("--log-probs-backend", "fused") if args.score_centering else ()),
             "--pause-generation-mode",
             "in_place",

@@ -467,6 +467,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
                 self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
+                if requeue := getattr(self.generate_rollout, "requeue_oversized_replay", None):
+                    self._output_snapshotter.requeue_loaded_batches(requeue)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
 

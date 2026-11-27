@@ -289,6 +289,9 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
     def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=prompt_group, reason=reason.value)
 
+    def requeue_oversized_replay(self, samples: list[Sample]) -> bool:
+        return isinstance(self._output, DefaultDataBuffer) and self._output.requeue_oversized_replay(samples)
+
     def save(self, directory: Path) -> None:
         state = _FullyAsyncRolloutState(
             retry_buffer=list(self._retry_buffer),

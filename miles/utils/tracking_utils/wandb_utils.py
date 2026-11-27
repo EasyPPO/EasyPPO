@@ -166,6 +166,8 @@ def _init_wandb_common():
     wandb.define_metric("rollout/*", step_metric="rollout/step")
     wandb.define_metric("multi_turn/*", step_metric="rollout/step")
     wandb.define_metric("passrate/*", step_metric="rollout/step")
+    wandb.define_metric("critic_overlength/dropped")
+    wandb.define_metric("critic_overlength/*", step_metric="critic_overlength/dropped")
     wandb.define_metric("infra/failed_draws")
     wandb.define_metric("infra/*", step_metric="infra/failed_draws")
     wandb.define_metric("eval/step")

@@ -10,6 +10,30 @@ from agentic_critic.critic_input import Segment
 MODES = ("shared", "full")
 
 
+def critic_packing_budget(args) -> int | None:
+    limit = getattr(args, "critic_max_tokens_per_gpu", None)
+    return args.max_tokens_per_gpu if limit is None else limit
+
+
+def full_history_draw_length(rows, mode: str) -> int:
+    """Training admission length for the entire draw, independent of actor compaction."""
+    if mode in ("full_detach", "actor-summary"):
+        # Every sibling carries the same exact memory segments, including environment observations.
+        segments = getattr(rows[0], "critic_segments", None)
+        if segments is not None:
+            return sum(len(segment["tokens"]) for segment in segments)
+        if "generated_tokens" in (rows[0].metadata or {}):
+            raise ValueError("Cannot check terminal rollout length: completed sample is missing critic_segments")
+        # Non-terminal producers may not carry chronological memory; retain their existing admission policy.
+        return 0
+    # Plain full_history also allows unannotated actor rows to be packed independently.
+    lengths = []
+    for row in rows:
+        tokens = getattr(row, "critic_tokens", None)
+        lengths.append(len(row.tokens if tokens is None else tokens))
+    return max(lengths)
+
+
 def critic_segments(segments: list[Segment], mode: str, max_len: int | None = None) -> tuple[list[Segment], list[int]]:
     """Critic samples for one episode and, per sample, how many history tokens were cut to fit ``max_len``.
 

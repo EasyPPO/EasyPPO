@@ -650,3 +650,90 @@ class TestCheckpointQueueOrder:
             buffer.load_state_dict([])
 
         assert caplog.text.count("not checkpointed") == 2
+
+
+@pytest.mark.parametrize("restored", [False, True])
+@pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+async def test_history_limit_drops_one_whole_draw_and_refills(monkeypatch, restored, caplog, mode):
+    from dataclasses import replace
+
+    limit = 240 * 1024
+    under_test = _make_buffer(critic_context_mode=mode, critic_max_tokens_per_gpu=limit)
+    buffer = under_test.buffer
+    events = []
+    monkeypatch.setattr(fully_async_data_buffer.tracking, "log", lambda args, event, step_key: events.append(event))
+    prompts = _make_finished_group(1)
+    draws = []
+    for excess, prompt in enumerate(prompts):
+        rows = [replace(prompt), replace(prompt)]
+        for row in rows:
+            row.metadata = {"task_path": "tasks/example", "trial_dir": "example__1", "source_index": 7}
+            row.critic_segments = [{"tokens": range(limit - 10)}, {"tokens": range(10 + excess)}]
+            # Concatenated actor rows can disagree with the exact memory in either direction.
+            row.critic_tokens = range(1 if excess else limit + 1)
+        draws.append(rows)
+    entry = DataBufferInput(prompt_group=prompts, group=draws)
+    if restored:
+        buffer.load_state_dict([entry])
+    else:
+        await buffer.put(entry)
+
+    refill = _make_finished_group(2)
+    for row in refill:
+        row.critic_segments = [{"tokens": range(1)}]
+    await _put(buffer, refill)
+    consumed = await asyncio.wait_for(buffer.get(num_groups=1), timeout=1)
+    assert [draw for group in consumed for draw in group.group] == [draws[0], refill[0]]
+    assert [p.index for group in consumed for p in group.prompt_group] == [10, 20]
+    saved = buffer.state_dict()
+    assert saved.entries[0].group == [refill[1]]
+    assert under_test.unused == []
+    assert events == [{"critic_overlength/dropped": 1, "critic_overlength/tokens": limit + 1,
+                       "critic_overlength/limit": limit, "critic_overlength/sample_index": 11,
+                       "critic_overlength/source_index": 7}]
+    assert "example__1" in caplog.text
+    metric = "rollout/fully_async/critic_overlength_dropped"
+    assert buffer.get_metrics()[metric] == 1
+    assert buffer.get_metrics()[metric] == 0
+    resumed = _make_buffer(critic_context_mode=mode, critic_max_tokens_per_gpu=limit).buffer
+    resumed.load_state_dict(saved)
+    assert resumed.get_metrics()[metric] == 1
+    await resumed.put(DataBufferInput(prompt_group=prompts, group=draws))
+    assert events[-1]["critic_overlength/dropped"] == 2
+
+
+@pytest.mark.parametrize("mode,kept", [("full_history", False), ("actor-summary", True)])
+async def test_critic_draw_filter_uses_effective_row_budget(mode, kept):
+    under_test = _make_buffer(critic_context_mode=mode, max_tokens_per_gpu=8)
+    group = _make_finished_group(1)
+    group[0].critic_tokens = range(9)
+    group[1].tokens = list(range(9))
+    await _put(under_test.buffer, group)
+    assert bool(under_test.buffer.get_metrics()["rollout/fully_async/queue_size"]) == kept
+    assert under_test.unused == []
+
+
+@pytest.mark.parametrize("mode", ["full_detach", "actor-summary"])
+async def test_legacy_prefetch_snapshot_salvages_only_fitting_episodes(tmp_path, mode):
+    from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
+
+    args = Namespace(ci_inject_missing_prefetched_batch_bug=False)
+    old = _RolloutExecutorOutputSnapshotter(args=args)
+    group = _make_finished_group(1)
+    for i, row in enumerate(group):
+        row.critic_segments = [{"tokens": range(8 + i)}]
+    old.capture(trainer_model_id=None, rollout_id=3, data=group, metadata={})
+    old.capture(trainer_model_id=None, rollout_id=4, data=[group[0]], metadata={"kept": True})
+    old.save(tmp_path)
+    restored = _RolloutExecutorOutputSnapshotter(args=args)
+    restored.load(tmp_path)
+    buffer = _make_buffer(critic_context_mode=mode, max_tokens_per_gpu=8).buffer
+    restored.requeue_loaded_batches(buffer.requeue_oversized_replay)
+    assert restored.get(trainer_model_id=None, rollout_id=3) is None
+    assert restored.get(trainer_model_id=None, rollout_id=4).metadata == {"kept": True}
+    await _put(buffer, _make_finished_group(2))
+    chosen = await asyncio.wait_for(buffer.get(num_groups=1), timeout=1)
+    assert [p.index for entry in chosen for p in entry.prompt_group] == [10, 20]
+    assert chosen[0].group[0][0].reward == 1.0
+    assert chosen[0].prompt_group[0].reward is None
+    assert buffer.get_metrics()["rollout/fully_async/critic_overlength_dropped"] == 1

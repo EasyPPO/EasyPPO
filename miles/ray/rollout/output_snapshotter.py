@@ -2,6 +2,7 @@ import copy
 import enum
 import logging
 from argparse import Namespace
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -56,6 +57,13 @@ class _RolloutExecutorOutputSnapshotter:
 
         self._snapshots[key] = replace(entry, phase=_OutputSnapshotPhase.REPLAYED)
         return copy.deepcopy(entry)
+
+    def requeue_loaded_batches(self, requeue: Callable[[list[Sample]], bool]) -> None:
+        # Each migrated batch prepends to the FIFO; migrate newest first to preserve replay order.
+        for key in sorted(self._snapshots, key=lambda key: key.rollout_id, reverse=True):
+            entry = self._snapshots[key]
+            if entry.phase is _OutputSnapshotPhase.LOADED and requeue(entry.data):
+                del self._snapshots[key]
 
     def discard_completed(self, *, completed_rollout_ids: dict[str | None, int]) -> None:
         self._snapshots = {

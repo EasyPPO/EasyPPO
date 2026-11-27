@@ -14,10 +14,11 @@ from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections import Counter
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
+from agentic_critic.miles_samples import critic_packing_budget, full_history_draw_length
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
 from miles.rollout.filter_hub.common_filters import (
@@ -87,7 +88,7 @@ class DataBufferConstructorInput:
 class DataBufferInput:
     prompt_group: list[Sample]  # resubmittable, for recycling
     group: Group  # finished samples
-    partial: bool = False  # surviving draws from a terminal infrastructure failure or batch split
+    partial: bool = False  # surviving draws after filtering or splitting a group
 
 
 MULTI_POLICY_CHECKPOINT_UNSUPPORTED = "multi-policy rollout state is not checkpointed"
@@ -128,11 +129,19 @@ class DataBuffer(ABC):
 # ============================= one policy buffer ==============================
 
 
+@dataclass
+class _BufferCheckpoint:
+    entries: list[DataBufferInput]
+    overlength_total: int
+    overlength_since_metrics: int
+
+
 class DefaultDataBuffer(DataBuffer):
     """FIFO buffer of finished groups, filtering out what training should not see.
 
     Rejected on put, because the verdict is fixed once the group is generated:
 
+    - full-history critic rows above the configured packing budget (discard their entire draw)
     - terminal infrastructure failures (discard the affected draws and skip empty groups)
     - other aborted groups (the generate function gave up, e.g. an agentic collect timeout)
     - groups with a missing reward
@@ -173,6 +182,8 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_gatherer = MetricGatherer()
         self._terminal_infra_failures: Counter[str] = Counter()
         self._terminal_infra_total: Counter[str] = Counter()
+        self._critic_overlength_drops = 0
+        self._metric_critic_overlength_drops = 0
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
@@ -184,7 +195,7 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_samples = 0
 
     async def put(self, input: DataBufferInput) -> None:
-        if not self._preput_filter(input):
+        if not self._keep_fitting_critic_draws(input) or not self._preput_filter(input):
             return
 
         async with self._cond:
@@ -192,6 +203,52 @@ class DefaultDataBuffer(DataBuffer):
                 await self._cond.wait()
             self._buffer.append(input)
             self._cond.notify_all()
+
+    def _keep_fitting_critic_draws(self, entry: DataBufferInput) -> bool:
+        mode = getattr(self._args, "critic_context_mode", "shared")
+        if mode not in ("full_detach", "actor-summary", "full_history"):
+            return True
+        limit = critic_packing_budget(self._args)
+        if limit is None:
+            return True
+
+        dropped = set()
+        for i, draw in enumerate(entry.group):
+            rows = draw if isinstance(draw, list) else [draw]
+            if not rows:
+                continue
+            length = full_history_draw_length(rows, mode)
+            if length <= limit:
+                continue
+            dropped.add(i)
+            self._critic_overlength_drops += 1
+            self._metric_critic_overlength_drops += 1
+            prompt = entry.prompt_group[i]
+            meta = rows[0].metadata or {}
+            logger.warning(
+                "Dropping oversized critic episode: task=%s trial=%s sample=%s tokens=%d limit=%d",
+                meta.get("task_path"), meta.get("trial_dir"), prompt.index, length, limit,
+            )
+            event = {
+                "critic_overlength/dropped": self._critic_overlength_drops,
+                "critic_overlength/tokens": length,
+                "critic_overlength/limit": limit,
+            }
+            if prompt.index is not None:
+                event["critic_overlength/sample_index"] = prompt.index
+            if isinstance(meta.get("source_index"), int):
+                event["critic_overlength/source_index"] = meta["source_index"]
+            tracking.log(self._args, event, step_key="critic_overlength/dropped")
+
+        if dropped:
+            SampleOwnershipRecorder.log_dropped_samples(
+                args=self._args, samples=[entry.prompt_group[i] for i in sorted(dropped)],
+                reason="critic_history_overlength",
+            )
+            entry.group = [draw for i, draw in enumerate(entry.group) if i not in dropped]
+            entry.prompt_group = [prompt for i, prompt in enumerate(entry.prompt_group) if i not in dropped]
+            entry.partial = True
+        return bool(entry.group)
 
     def _preput_filter(self, input: DataBufferInput) -> bool:
         failures = Counter()
@@ -333,16 +390,53 @@ class DefaultDataBuffer(DataBuffer):
             self._metric_selected_token_lag_sum += token_weighted_lag * stats.versioned_token_count
             self._metric_selected_versioned_tokens += stats.versioned_token_count
 
-    def state_dict(self) -> list[DataBufferInput]:
-        return list(self._buffer)
+    def state_dict(self) -> list[DataBufferInput] | _BufferCheckpoint:
+        entries = list(self._buffer)
+        if self._critic_overlength_drops:
+            return _BufferCheckpoint(entries, self._critic_overlength_drops, self._metric_critic_overlength_drops)
+        return entries
 
-    def load_state_dict(self, state: list[DataBufferInput]) -> None:
+    def load_state_dict(self, state: list[DataBufferInput] | _BufferCheckpoint) -> None:
         assert not self._buffer
-        self._buffer = list(state)
+        if isinstance(state, _BufferCheckpoint):
+            self._critic_overlength_drops = state.overlength_total
+            self._metric_critic_overlength_drops = state.overlength_since_metrics
+            state = state.entries
+        self._buffer = [entry for entry in state if self._keep_fitting_critic_draws(entry)]
+
+    def requeue_oversized_replay(self, samples: list[Sample]) -> bool:
+        """Salvage healthy draws from a prefetched batch captured before packing on an older run."""
+        if getattr(self._args, "critic_context_mode", None) not in ("full_detach", "actor-summary", "full_history"):
+            return False
+        groups = {}
+        for row in samples:
+            source = row.lineage.source_sample_index if row.lineage else row.rollout_id
+            source = row.index if source is None else source
+            groups.setdefault(row.group_index, {}).setdefault(source, []).append(row)
+
+        entries = []
+        for draws in groups.values():
+            # The snapshot contains only completed rows. Reconstruct their original prompt identities.
+            prompts = []
+            for source, rows in draws.items():
+                prompt = replace(rows[0], index=source, lineage=None, rollout_id=None)
+                prompt.reset_for_retry()
+                prompts.append(prompt)
+            entry = DataBufferInput(prompt_group=prompts, group=list(draws.values()))
+            self._keep_fitting_critic_draws(entry)
+            entries.append(entry)
+
+        if not any(entry.partial for entry in entries):
+            return False
+        for entry in entries:
+            entry.partial = len(entry.group) != self._args.n_samples_per_prompt
+        self._buffer[:0] = [entry for entry in entries if entry.group]
+        return True
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         metrics = {
+            f"{prefix}critic_overlength_dropped": self._metric_critic_overlength_drops,
             f"{prefix}terminal_infra_failures": self._terminal_infra_failures.total(),
             **{f"{prefix}terminal_infra_failures/{kind}": n for kind, n in self._terminal_infra_failures.items()},
             f"{prefix}queue_size": len(self._buffer),
@@ -382,6 +476,7 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_tokens = 0
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
+        self._metric_critic_overlength_drops = 0
         self._terminal_infra_failures.clear()
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics

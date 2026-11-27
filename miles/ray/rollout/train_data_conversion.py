@@ -6,7 +6,7 @@ from typing import Any
 import torch
 
 from agentic_critic.critic_input import Segment
-from agentic_critic.miles_samples import critic_episode
+from agentic_critic.miles_samples import critic_episode, critic_packing_budget
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
@@ -531,7 +531,7 @@ def split_full_history_shards(
     critic_budget = getattr(args, "critic_max_tokens_per_gpu", None)
     _pack_shard_steps(
         critic_shards, partitions, critic_rows, critic_batch_size,
-        budget if critic_budget is None else critic_budget,
+        critic_packing_budget(args),
         budget_flag="--max-tokens-per-gpu" if critic_budget is None else "--critic-max-tokens-per-gpu",
     )
     attach_value_slices(shards, critic_shards, spans)

@@ -2,6 +2,7 @@
 
 import base64
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -360,7 +361,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     assert "--colocate" not in args and "--offload-rollout" not in args
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
     assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
-    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880, "--critic-max-tokens-per-gpu": 184320,
+    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880, "--critic-max-tokens-per-gpu": 245760,
                 "--global-batch-size": 384, "--rollout-batch-size": 32, "--n-samples-per-prompt": 12,
                 "--async-max-concurrent-samples": 1000, "--async-data-buffer-capacity-factor": 4, "--max-weight-staleness": 4,
                 "--terminal-train-workers-per-node": 32, "--terminal-eval-workers-per-node": 4,
@@ -376,7 +377,8 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     dataset, = json.loads(base64.b64decode(encoded))["datasets"]
     assert (dataset["name"], dataset["path"]) == ("tb21", "eval.jsonl")
     assert args[args.index("--loss-type") + 1] == "score_centering"
-    assert "--ppo-prompt-mean" in args and "--fully-async" in args
+    assert "--fully-async" in args and "--ppo-prompt-mean" not in args
+    assert float(args[args.index("--critic-return-std-floor") + 1]) == pytest.approx(0.5 / math.sqrt(12))
     assert "--recompute-loss-function" not in args
     for flag, value in {"--critic-context-mode": mode, "--critic-num-steps-per-rollout": "4",
                         "--sglang-attention-backend": flash, "--linear-attention-backend": "fla",
@@ -408,6 +410,13 @@ def test_terminus_score_centering(monkeypatch, tmp_path, mode, enabled):
                         "--rollout-top-logprobs-num": "128", "--score-centering-is": "tis",
                         "--max-weight-staleness": "4", "--pause-generation-mode": "in_place"}.items():
         assert args[args.index(flag) + 1] == value
+
+
+def test_terminus_std_floor_uses_configured_group_size():
+    from examples.easyppo.terminus_ppo import ScriptArgs
+
+    assert ScriptArgs(samples_per_prompt=16).critic_return_std_floor == 0.125
+    assert ScriptArgs(critic_return_std_floor=0.2).critic_return_std_floor == 0.2
 
 
 def test_terminus_explicit_gpu_reservations():
