@@ -355,7 +355,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
     assert "--colocate" not in args and "--offload-rollout" not in args
     assert "--keep-old-actor" not in args and "--use-rollout-logprobs" in args
     assert "--filter-truncated-in-actor-loss" not in args and "--skip-eval-before-train" not in args
-    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880, "--critic-max-tokens-per-gpu": 153600,
+    expected = {"--prompt-data": "train.jsonl", "--num-rollout": 150, "--num-critic-only-steps": 30, "--max-tokens-per-gpu": 122880, "--critic-max-tokens-per-gpu": 184320,
                 "--global-batch-size": 384, "--rollout-batch-size": 32, "--n-samples-per-prompt": 12,
                 "--async-max-concurrent-samples": 1000, "--async-data-buffer-capacity-factor": 4, "--max-weight-staleness": 4,
                 "--terminal-train-workers-per-node": 32, "--terminal-eval-workers-per-node": 4,

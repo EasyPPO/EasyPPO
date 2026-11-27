@@ -40,7 +40,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
     use_rollout_logprobs: bool = True
     compact_threshold: int = 16384
     max_tokens_per_gpu: int = 120 * 1024
-    critic_max_tokens_per_gpu: int = 150 * 1024
+    critic_max_tokens_per_gpu: int = 180 * 1024
     score_centering_recompute_loss: bool = False
     max_total_tokens: int = 100 * 1024
     max_context_tokens: int = 32768

@@ -76,6 +76,10 @@ class MilesTerminalLLM(BaseLLM):
         lookup = backend.token_to_id if backend is not None else tokenizer.get_vocab().get
         markers = ("<|im_end|>", "<|endoftext|>", "<think>", "</think>", "<tool_call>")
         self._marker_ids = {marker: lookup(marker) for marker in markers}
+        # Preserve the sampled Qwen turn terminator when extending the next prompt.
+        stop_ids = (self._marker_ids["<|im_end|>"], self._marker_ids["<|endoftext|>"])
+        self._stop_ids = frozenset(token for token in stop_ids if token is not None)
+        self.session._eos_token_ids |= self._stop_ids
         self._last_request = None
         self._prepared_request = None
         self._episode_budget_notified = False
@@ -90,8 +94,7 @@ class MilesTerminalLLM(BaseLLM):
         # Match parse_qwen35 in PrimeIntellect-ai/renderers@2a7e77eb.
         # Harbor consumes the text block. The recorder keeps every sampled ID.
         vocab = self._marker_ids
-        stop_ids = {vocab.get("<|im_end|>"), vocab.get("<|endoftext|>")}
-        stop = next((i for i, token in enumerate(tokens) if token in stop_ids), len(tokens))
+        stop = next((i for i, token in enumerate(tokens) if token in self._stop_ids), len(tokens))
         ids = tokens[:stop]
         opening, closing = vocab.get("<think>"), vocab.get("</think>")
         decode = self.session.tokenizer.decode
