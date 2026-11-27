@@ -124,11 +124,11 @@ produces 89 evaluation rows pointing to `harbor/terminal-bench-2-1-tmux`. Each e
 Each allocated node runs 32 persistent training trial workers and 4 separate
 evaluation trial workers, each reserving one Ray CPU. Allocate 64 CPUs per
 training node. Dedicated evaluation admits 64 in-flight trials per evaluation
-GPU (64 on the default allocation) and each TP1 eval engine runs at most 64 requests.
+GPU (128 on the default allocation) and each TP1 eval engine runs at most 64 requests.
 
 | Setting | Default |
 |---|---|
-| GPU allocation | 2 nodes × 8 GPUs. Actor and critic share 6, training rollout uses 9, evaluation uses 1. Trainer TP1, one GPU per rollout or eval engine. |
+| GPU allocation | 2 nodes × 8 GPUs. Actor and critic share 6, training rollout uses 8, evaluation uses 2. Trainer TP1, one GPU per rollout or eval engine. |
 | Async rollout | 32 prompts × 12 trajectories per batch. The finished-group buffer holds four batches (128 groups). Concurrency cap 1,000 (996 in complete groups of 12), 512 requests per engine. Ray actors handle HTTP POSTs by default (disable with `--no-use-distributed-post`). Weight publication uses `in_place`; maximum weight staleness is 4 updates. |
 | Generation | Terminus-2 XML, 32,768-token context, up to 8,192 new tokens per action. Compact at 16,384 context tokens, up to 2,048 new tokens per summary including thinking. Each compaction replaces the actor history with the original task and the visible summary, including an empty summary. Episode budget 102,400 generated tokens including summaries, with one reminder at 51,200. |
 | Updates | 150 batches, first 30 critic-only. Four critic updates of 96 trajectories per batch (LR 5e-6, value clip 0.2, value loss coefficient 0.5). One actor update per subsequent batch (LR 3e-6, one warmup step). |

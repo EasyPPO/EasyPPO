@@ -338,7 +338,7 @@ def test_nondivisible_episode_batches_still_fail(launcher, overrides, message):
 
 
 @pytest.mark.parametrize(("mode", "arch", "flash"), [("full_detach", "blackwell", "triton"), ("actor-summary", "hopper", "fa3")])
-@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout", "eval_gpus"), [(1, 1, 3, 4, 1), (2, 1, 6, 9, 1), (4, 2, 6, 16, 4), (8, 3, 8, 32, 8)])
+@pytest.mark.parametrize(("nodes", "train_nodes", "trainer_gpus", "rollout", "eval_gpus"), [(1, 1, 3, 4, 1), (2, 1, 6, 8, 2), (4, 2, 6, 16, 4), (8, 3, 8, 32, 8)])
 def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_nodes, trainer_gpus, rollout, eval_gpus):
     from examples.easyppo import terminus_ppo
 

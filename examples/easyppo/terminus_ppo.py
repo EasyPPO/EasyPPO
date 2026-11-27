@@ -68,7 +68,7 @@ class ScriptArgs(async_ppo.ScriptArgs):
             raise ValueError("Node and per-node GPU counts must be positive")
         total = self.num_nodes * self.num_gpus_per_node
         if self.eval_num_gpus is None:
-            self.eval_num_gpus = 1 if (self.num_nodes, self.num_gpus_per_node) == (2, 8) else max(1, total // 8)
+            self.eval_num_gpus = max(1, total // 8)
         if self.trainer_num_nodes is None and self.trainer_gpus_per_node is None:
             trainer_gpus = max(1, 3 * total // 8)
             # Ray places one worker per slot. Express the trainer world as equal-sized groups.
