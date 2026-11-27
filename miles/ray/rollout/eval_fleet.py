@@ -130,19 +130,26 @@ class InferenceControllerEvalFleet:
         mismatches are retried, then ``False`` lets the caller skip the point."""
         versions: list = []
         for attempt in range(retries):
+            if attempt:
+                await asyncio.sleep(2**attempt)
             try:
-                await asyncio.wait_for(
+                results = await asyncio.wait_for(
                     asyncio.gather(
                         *[
                             client.update_weights_from_disk(model_path=checkpoint_dir, weight_version=weight_version)
                             for client in await self._fleet_api_clients()
-                        ]
+                        ],
+                        return_exceptions=True,
                     ),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
+                # Finish the other clients before retrying a failed disk load.
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
                 versions = await self._weight_versions()
             except Exception as e:
-                logger.warning(f"Weight pin to {checkpoint_dir} failed (attempt {attempt + 1}/{retries}): {e}")
+                logger.warning(f"Weight pin to {checkpoint_dir} failed (attempt {attempt + 1}/{retries}): {e!r}")
                 continue
             if versions and all(str(v) == weight_version for v in versions):
                 return True

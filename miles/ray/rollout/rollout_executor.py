@@ -348,11 +348,19 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 else:
                     # The Modal launcher pins this controller to the coordinator
                     # node. Hold its lease until every remote engine has loaded.
-                    async with async_volume_access(hf_dir):
-                        if require_marker and not is_complete_hf_export(hf_dir):
-                            logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
-                            return self.report_eval_skip(rollout_id, "ckpt_missing")
-                        state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                    for delay in (0, 2, 4):
+                        if delay:
+                            # Leave the lease free for coordinated Volume reload.
+                            logger.warning(f"Eval {rollout_id}: {hf_dir}/.complete missing, retrying in {delay}s")
+                            await asyncio.sleep(delay)
+                        async with async_volume_access(hf_dir):
+                            if require_marker and not is_complete_hf_export(hf_dir):
+                                continue
+                            state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                            break
+                    else:
+                        logger.warning(f"Eval snapshot {hf_dir} still incomplete, skipping eval {rollout_id}")
+                        return self.report_eval_skip(rollout_id, "ckpt_missing")
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )
