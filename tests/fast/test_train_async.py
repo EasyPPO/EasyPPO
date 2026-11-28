@@ -243,7 +243,7 @@ async def test_joint_async_writer_overlaps_next_rollout(monkeypatch, tmp_path, c
         assert "publish:0" not in events
     else:
         await with_disposer(train_async_driver.train, args)
-        assert events.index("finish:critic") < events.index("publish:0") < events.index("actor_save:1")
+        assert events.index("finish:rollout") < events.index("finish:critic") < events.index("publish:0") < events.index("actor_save:1")
         assert events.index("critic_save:1") < events.index("publish:1")
     assert events.index("start:critic") < events.index("generate_done:1") < events.index("finish:actor")
     if cpu_offload:

@@ -1,6 +1,8 @@
 import logging
 import os
 import shutil
+import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any
 import torch
 
 from miles.utils.file_utils import atomic_torch_save
+from miles.utils.volume_io import volume_access
 
 logger = logging.getLogger(__name__)
 
@@ -51,3 +54,11 @@ def atomic_save_folder(target: Path) -> Iterator[Path]:
     os.replace(dir_temp, target)
     if replaced.exists():
         shutil.rmtree(replaced)
+
+
+def publish_staged_checkpoint(staging: tempfile.TemporaryDirectory, target: Path, component: str, state: Any) -> None:
+    started = time.monotonic()
+    with staging, volume_access(target), atomic_save_folder(target) as directory:
+        shutil.copytree(staging.name, directory, dirs_exist_ok=True)
+        save_simple_checkpoint(directory / component, state)
+    logger.info("Published rollout checkpoint %s in %.2fs", target, time.monotonic() - started)

@@ -61,10 +61,13 @@ class FakeRolloutExecutor:
         self.events.append(f"generate_done:{rollout_id}")
         return pack
 
+    async def finish_rollout_save(self) -> None:
+        self.events.append("finish:rollout")
+
     async def _eval(self, rollout_id: int, **_kwargs: Any) -> None:
         self.events.append(f"eval:{rollout_id}")
 
-    async def _save(self, rollout_id: int) -> None:
+    async def _save(self, rollout_id: int, *, background: bool = False) -> None:
         self.events.append(f"executor_save:{rollout_id}")
 
     async def dispose(self) -> None:

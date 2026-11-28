@@ -1,10 +1,12 @@
 import asyncio
 import copy
 import logging
+import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, TypeVar
 
 from miles.backends.training_utils.checkpoint import compute_rollout_checkpoint_dir
@@ -47,7 +49,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.simple_checkpointer import atomic_save_folder
+from miles.utils.simple_checkpointer import atomic_save_folder, publish_staged_checkpoint
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 from miles.utils.volume_io import async_volume_access
@@ -69,6 +71,8 @@ _EXECUTOR_DIRNAME = "executor"
 
 class RolloutExecutor(DedicatedRpcLoopWorker):
     """The class to run rollout and convert rollout data to training data."""
+
+    _checkpoint_writer: asyncio.Future | None = None
 
     def __init__(
         self,
@@ -158,6 +162,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._disposed = True
 
         try:
+            await self.finish_rollout_save()
             if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
                 await maybe_await(self.generate_rollout.dispose())
             if (close := getattr(self.data_source, "close", None)) is not None:
@@ -427,26 +432,55 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
 
     # -------------------------- checkpointing -----------------------------
 
-    # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    # async but never awaits: the RPC layer runs sync methods on a thread, and an await-free coroutine is atomic against the rollout coroutines on this loop
-    async def save(self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None) -> None:
+    async def finish_rollout_save(self) -> None:
+        if self._checkpoint_writer is not None:
+            await asyncio.shield(self._checkpoint_writer)
+            self._checkpoint_writer = None
+
+    async def save(
+        self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None, *, background: bool = False
+    ) -> None:
         assert self.args.save is not None, "the orchestration only saves when --save is set"
-
-        self._output_snapshotter.discard_completed(
-            completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
-        )
+        await self.finish_rollout_save()
         target = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
-        with atomic_save_folder(target) as dir_temp:
-            self.data_source.save(dir_temp / _DATA_SOURCE_DIRNAME)
-            if not self.use_legacy_rollout_v1:
-                if self.generate_rollout is not None:
-                    self.generate_rollout.save(dir_temp / _GENERATE_ROLLOUT_DIRNAME)
-                if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                    eval_fn.save(dir_temp / _EVAL_GENERATE_ROLLOUT_DIRNAME)
-            event_logger_checkpoint.snapshot(self.args, directory=dir_temp / event_logger_checkpoint.SNAPSHOT_DIRNAME)
-            self._output_snapshotter.save(dir_temp / _EXECUTOR_DIRNAME)
+        async with async_volume_access(target):
+            self._output_snapshotter.discard_completed(
+                completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
+            )
+            snapshot = (
+                None
+                if self.use_legacy_rollout_v1
+                else getattr(self.generate_rollout, "snapshot_for_background_save", None)
+            )
+            if not background or snapshot is None:
+                with atomic_save_folder(target) as directory:
+                    self._save_components(directory, save_generator=True)
+                return
 
-    # async but never awaits, for the same reason as save
+            # Freeze all components on the rollout loop before yielding to producers.
+            started = time.monotonic()
+            staging = tempfile.TemporaryDirectory(prefix="miles-rollout-")
+            try:
+                state = snapshot()
+                self._save_components(Path(staging.name), save_generator=False)
+                self._checkpoint_writer = asyncio.get_running_loop().run_in_executor(
+                    None, publish_staged_checkpoint, staging, target, _GENERATE_ROLLOUT_DIRNAME, state
+                )
+            except BaseException:
+                staging.cleanup()
+                raise
+            logger.info("Captured rollout checkpoint %s in %.2fs", target, time.monotonic() - started)
+
+    def _save_components(self, directory: Path, *, save_generator: bool) -> None:
+        self.data_source.save(directory / _DATA_SOURCE_DIRNAME)
+        if not self.use_legacy_rollout_v1:
+            if save_generator and self.generate_rollout is not None:
+                self.generate_rollout.save(directory / _GENERATE_ROLLOUT_DIRNAME)
+            if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
+                eval_fn.save(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+        event_logger_checkpoint.snapshot(self.args, directory=directory / event_logger_checkpoint.SNAPSHOT_DIRNAME)
+        self._output_snapshotter.save(directory / _EXECUTOR_DIRNAME)
+
     async def load(self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None) -> None:
         if self.args.load is None:
             logger.warning("no --load: the rollout side starts fresh")
@@ -454,23 +488,24 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
 
         directory = compute_rollout_checkpoint_dir(self.args.load, rollout_id=rollout_id)
-        assert directory.is_dir(), (
-            f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the "
-            f"rollout-side state moved into one directory per rollout cannot resume that state"
-        )
+        await self.finish_rollout_save()
+        async with async_volume_access(directory):
+            assert directory.is_dir(), (
+                f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the rollout-side state moved into one directory per rollout cannot resume that state"
+            )
 
-        self._output_snapshotter.load(directory / _EXECUTOR_DIRNAME)
-        self._output_snapshotter.discard_completed(
-            completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
-        )
-        self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
-        if not self.use_legacy_rollout_v1:
-            if self.generate_rollout is not None:
-                self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
-                if requeue := getattr(self.generate_rollout, "requeue_oversized_replay", None):
-                    self._output_snapshotter.requeue_loaded_batches(requeue)
-            if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+            self._output_snapshotter.load(directory / _EXECUTOR_DIRNAME)
+            self._output_snapshotter.discard_completed(
+                completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
+            )
+            self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
+            if not self.use_legacy_rollout_v1:
+                if self.generate_rollout is not None:
+                    self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
+                    if requeue := getattr(self.generate_rollout, "requeue_oversized_replay", None):
+                        self._output_snapshotter.requeue_loaded_batches(requeue)
+                if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
+                    eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
 
     # -------------------------- misc APIs -----------------------------
 

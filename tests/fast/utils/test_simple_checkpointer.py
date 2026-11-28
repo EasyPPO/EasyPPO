@@ -1,8 +1,11 @@
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 
 import pytest
 
-from miles.utils.simple_checkpointer import atomic_save_folder, load_simple_checkpoint, save_simple_checkpoint
+from miles.utils.simple_checkpointer import atomic_save_folder, load_simple_checkpoint, publish_staged_checkpoint, save_simple_checkpoint
+from miles.utils.volume_io import volume_access
 
 
 def test_a_saved_state_round_trips_through_its_directory(tmp_path: Path) -> None:
@@ -65,3 +68,32 @@ def test_saving_the_same_target_again_replaces_the_published_directory(tmp_path:
         (dir_temp / "second.pt").write_text("second")
 
     assert [one.name for one in target.iterdir()] == ["second.pt"]
+
+
+def test_background_writer_waits_for_reload(tmp_path, monkeypatch):
+    mount = tmp_path / "volume"
+    target = mount / "rollout" / "2"
+    monkeypatch.setenv("MILES_VOLUME_IO_ROOT", str(mount))
+    monkeypatch.setenv("MILES_VOLUME_IO_LOCK", str(tmp_path / "volume.lock"))
+    staging = tempfile.TemporaryDirectory(dir=tmp_path)
+    (Path(staging.name) / "cursor").write_text("7")
+    with ThreadPoolExecutor() as pool:
+        with volume_access(exclusive=True):
+            writer = pool.submit(publish_staged_checkpoint, staging, target, "generator", {"step": 2})
+            with pytest.raises(TimeoutError):
+                writer.result(timeout=0.1)
+            assert not mount.exists()
+            mount.mkdir()
+        writer.result(timeout=5)
+    assert load_simple_checkpoint(target / "generator") == {"step": 2}
+    assert (target / "cursor").read_text() == "7"
+
+
+def test_background_writer_failure_preserves_recovery_point(tmp_path):
+    target = tmp_path / "rollout" / "2"
+    save_simple_checkpoint(target / "generator", {"step": 1})
+    staging = tempfile.TemporaryDirectory(dir=tmp_path)
+    with pytest.raises(AttributeError):
+        publish_staged_checkpoint(staging, target, "generator", lambda: None)
+    assert load_simple_checkpoint(target / "generator") == {"step": 1}
+    assert not Path(staging.name).exists()

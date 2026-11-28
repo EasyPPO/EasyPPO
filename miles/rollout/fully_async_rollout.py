@@ -293,12 +293,18 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return isinstance(self._output, DefaultDataBuffer) and self._output.requeue_oversized_replay(samples)
 
     def save(self, directory: Path) -> None:
-        state = _FullyAsyncRolloutState(
+        save_simple_checkpoint(directory=directory, data=self._checkpoint_state())
+
+    def snapshot_for_background_save(self):
+        state = self._checkpoint_state()
+        return _FullyAsyncRolloutState(copy.deepcopy(state.retry_buffer), state.running, copy.deepcopy(state.output))
+
+    def _checkpoint_state(self):
+        return _FullyAsyncRolloutState(
             retry_buffer=list(self._retry_buffer),
             running=[_copy_and_reset_for_retry(x.prompt_group) for x in self._running_tasks],
             output=self._output.state_dict(),
         )
-        save_simple_checkpoint(directory=directory, data=state)
 
     def load(self, directory: Path) -> None:
         assert self._worker is None, "restore the fully async rollout state before producer startup"
@@ -322,10 +328,10 @@ class _FullyAsyncRolloutState:
 
 
 def _copy_and_reset_for_retry(prompt_group: list[Sample]) -> list[Sample]:
-    copied = copy.deepcopy(prompt_group)
+    copied = [copy.copy(sample) for sample in prompt_group]
     for sample in copied:
         sample.reset_for_retry()
-    return copied
+    return copy.deepcopy(copied)
 
 
 async def _end_worker(worker: asyncio.Task) -> None:

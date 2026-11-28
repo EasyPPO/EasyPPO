@@ -81,6 +81,7 @@ async def train(args, *, disposer: Disposer):
         return cell
 
     async def publish_pending(rollout_id, cells):
+        await rollout_executor.finish_rollout_save()
         for model, cell in zip((actor_model, critic_model), cells, strict=True):
             await model.finish_async_checkpoint(*cell)
         finalize_checkpoint(args, rollout_id, max_keep)
@@ -190,11 +191,10 @@ async def train(args, *, disposer: Disposer):
                 )
             )
             force_sync = force_sync or (max_keep > 0 and not defer)
-            # Joint retention publishes rollout state before either model's
-            # tracker advances. Keep the existing save order for other runs.
+            # Capture the rollout before model saves. Deferred writers join before joint publication.
             if max_keep > 0:
                 prepare_rollout_checkpoint(args)
-                await rollout_executor.save(rollout_id)
+                await rollout_executor.save(rollout_id, background=defer)
             actor_cell = await save_training_model(actor_model, rollout_id, force_sync, defer)
             if args.use_critic:
                 critic_cell = await save_training_model(critic_model, rollout_id, force_sync, defer)
