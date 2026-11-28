@@ -369,7 +369,7 @@ def test_terminus_launch(monkeypatch, tmp_path, mode, arch, flash, nodes, train_
                 "--sglang-max-running-requests": 512,
                 "--actor-num-nodes": train_nodes, "--critic-num-nodes": train_nodes,
                 "--actor-num-gpus-per-node": trainer_gpus, "--critic-num-gpus-per-node": trainer_gpus,
-                "--rollout-num-gpus": rollout, "--eval-num-gpus": eval_gpus, "--eval-interval": 15, "--save-interval": 1, "--max-keep": 2}
+                "--rollout-num-gpus": rollout, "--eval-num-gpus": eval_gpus, "--eval-interval": 10, "--save-interval": 1, "--max-keep": 2}
     assert "--use-checkpoint-opt-param-scheduler" in args
     for flag, value in expected.items():
         assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(value)
