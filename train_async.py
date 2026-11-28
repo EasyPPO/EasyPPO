@@ -64,7 +64,18 @@ async def train(args, *, disposer: Disposer):
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
     disposer.add_exit(eval_dispatcher.close)
 
-    if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+    recover_evals = max_keep and args.eval_interval and args.eval_uses_snapshots and args.eval_hf_dir
+    if recover_evals:
+        previous = args.start_rollout_id - 1
+        previous_eval_due = 0 <= previous < args.num_rollout and should_run_periodic_action(
+            previous,
+            args.eval_interval,
+            num_rollout_per_epoch if getattr(args, "eval_on_epoch", True) else None,
+            args.num_rollout,
+        )
+        await inference_controller.prepare_eval()
+        await eval_dispatcher.resume_groups(args.start_rollout_id, previous_eval_due=previous_eval_due)
+    elif args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
@@ -106,7 +117,10 @@ async def train(args, *, disposer: Disposer):
     if args.start_rollout_id >= args.num_rollout:
         # The final checkpoint is committed before final evaluation. Finish that
         # evaluation when a timeout interrupted it, without collecting another batch.
-        if max_keep and args.num_rollout > 0 and args.start_rollout_id == args.num_rollout and args.eval_interval:
+        if (
+            not recover_evals and max_keep and args.num_rollout > 0
+            and args.start_rollout_id == args.num_rollout and args.eval_interval
+        ):
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(args.num_rollout - 1, force=True)
         return

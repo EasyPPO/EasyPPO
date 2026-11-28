@@ -365,7 +365,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                             break
                     else:
                         logger.warning(f"Eval snapshot {hf_dir} still incomplete, skipping eval {rollout_id}")
-                        return self.report_eval_skip(rollout_id, "ckpt_missing")
+                        self.report_eval_skip(rollout_id, "ckpt_missing")
+                        return False
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )
@@ -379,7 +380,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 async with guard:
                     result = await maybe_await(self.eval_generate_rollout(eval_input))
             except EvalSkip as e:
-                return self.report_eval_skip(rollout_id, e.reason)
+                self.report_eval_skip(rollout_id, e.reason)
+                return False
 
             data = result.data
             save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
@@ -392,6 +394,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
             if self._metric_checker is not None:
                 self._metric_checker.on_eval(metrics)
+            return metrics
 
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
